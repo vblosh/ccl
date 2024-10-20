@@ -182,12 +182,13 @@ char *Table[] = {
 	"Position 2",
 	"pushed",
 };
+
 static int test_ivector()
 {
-    int valeur = 10 ;
-    int i , y , n , g;
+	int errors=0;
+
+    int i , n;
     int k = 2 ; 
-    int h = 3 ; 
     Vector *mon_vecteur = iVector.Create(sizeof(int),12) ;
     Vector *new_vecteur = iVector.Create(sizeof(int),12) ;
     Vector *vecteur3 = iVector.Create(sizeof(int),15) ; 
@@ -212,6 +213,8 @@ static int test_ivector()
 	iVector.Finalize(vecteur3);
 	iVector.Finalize(new_vecteur);
 	iVector.Finalize(mon_vecteur);
+
+	return errors;
 }
 
 static int testVector(void)

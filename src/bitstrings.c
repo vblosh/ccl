@@ -1023,7 +1023,7 @@ static size_t InsertAt(BitString *b,size_t idx,int value)
 		newval |= (oldval&mask[bitpos-1]);
 	if (bitpos < (CHAR_BIT-1))
 		newval |= (oldval << 1) & (((unsigned)-1) << (bitpos+1));
-	carry = (oldval << (CHAR_BIT-1))?1: 0;
+	carry = (oldval << (CHAR_BIT-1)) != 0 ? 1 : 0;
 	b->contents[bytepos] = (unsigned char )newval;
 	idx += CHAR_BIT-bitpos;
 	bytesToShift = bytesUsed - (idx/CHAR_BIT);

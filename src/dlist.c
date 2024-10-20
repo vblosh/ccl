@@ -292,8 +292,9 @@ static int AddRange(Dlist * AL,size_t n, const void *data)
                 p += AL->ElementSize;
         }
         AL->timestamp++;
-    if (AL->Flags & CONTAINER_HAS_OBSERVER)
+    if (AL->Flags & CONTAINER_HAS_OBSERVER) {
         iObserver.Notify(AL,CCL_ADDRANGE,data,(void *)n);
+    }
 
 	return 1;
 }

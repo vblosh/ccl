@@ -282,7 +282,6 @@ static int Equal(const DATA_TYPE *d1,const DATA_TYPE *d2)
     if (d1->ElementSize != d2->ElementSize)
         return 0;
     for (i=0; i < d1->size;i++) {
-        size_t j = 0;
         p1 = d1->buckets[i]; p2 = d2->buckets[i];
         while (p1 && p2) {
             if (STRCMP((CHARTYPE *)p1->Key,(CHARTYPE *)p2->Key))
@@ -290,7 +289,6 @@ static int Equal(const DATA_TYPE *d1,const DATA_TYPE *d2)
             if (d1->ElementSize &&
                 memcmp(p1->Value,p2->Value,d1->ElementSize))
                 return 0;
-            j++;
             p1 = p1->Next; p2 = p2->Next;
         }
         if (p1 != p2)

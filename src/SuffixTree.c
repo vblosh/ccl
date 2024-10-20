@@ -977,6 +977,8 @@ static int Finalize(SuffixTree* tree)
    if(tree == 0)
       return 0;
    ST_DeleteSubTree(tree->root,tree->allocator);
+   if (tree->tree_string)
+       tree->allocator->free(tree->tree_string);
    tree->allocator->free(tree);
    return 1;
 }

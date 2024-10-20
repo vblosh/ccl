@@ -16,3 +16,4 @@ texdoc/tth
 texdoc/tth.dSYM/
 dotest.dSYM/
 /build
+/.vs

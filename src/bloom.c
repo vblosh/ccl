@@ -79,13 +79,6 @@ static size_t Hash(const void * key, size_t len, unsigned int seed )
 	return h;
 }
 #define TWICE_LOG_2 1.386294361119890618834464242916353136151000268720
-#ifdef _MSC_VER
-static long round(double d)
-{
-	if (d > 0) return (long)(d+0.5);
-	return (long)(d-0.5);
-}
-#endif
 static BloomFilter *Create(size_t nbOfElements,double Probability)
 {
 	size_t nbOfBits;

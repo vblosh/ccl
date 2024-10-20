@@ -157,7 +157,7 @@ static int Clear(List * l)
 /*------------------------------------------------------------------------
  Procedure:     Add ID:1
  Purpose:       Adds an element to the list
- Input:         The list and the elemnt to be added
+ Input:         The list and the element to be added
  Output:        Returns the number of elements in the list or a
                 negative error code if an error occurs.
  Errors:        The element to be added can't be NULL, and the list

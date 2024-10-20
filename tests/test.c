@@ -209,7 +209,9 @@ static int test_ivector()
 	if (test2 != 0)
     printf(" le resultat de Equal pour 2 vecteur different : %d \n",test2) ;
 
-
+	iVector.Finalize(vecteur3);
+	iVector.Finalize(new_vecteur);
+	iVector.Finalize(mon_vecteur);
 }
 
 static int testVector(void)

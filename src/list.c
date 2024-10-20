@@ -1757,7 +1757,9 @@ static int RemoveRange(List * l, size_t start, size_t end)
     }
     rvpS = previous;
     while (rvp && position < end) {
-         rvp = rvp->Next;
+        previous = rvp;
+        rvp = rvp->Next;
+        l->Allocator->free(previous);
         position++;
     }
     // PV: rvp, not previous, is the head of the remaining list

@@ -77,6 +77,8 @@ static int testRemoveRange(void)
     sizeAfter = iList.Size(l1);
     printf("Removing element 0 to 4  (L=%u):\n", (unsigned)sizeAfter);
     PrintList(l1);
+
+	iList.Finalize(l1);
     
     return 1;
 }

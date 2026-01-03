@@ -1935,6 +1935,52 @@ static int test_fprintf(void)
     return 0;
 }
 
+/* Test 93: Contains with SetSlice - Contains searches only slice elements */
+static int test_contains_with_slice(void)
+{
+    ValArrayInt *v = iValArrayInt.Create(10);
+    
+    /* Add 10 elements: 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 */
+    for (int i = 0; i < 10; i++) {
+        iValArrayInt.Add(v, i * 10);
+    }
+    
+    /* Set slice: start=2, length=3, increment=2 (indices 2, 4, 6 -> values 20, 40, 60) */
+    TEST_ASSERT(iValArrayInt.SetSlice(v, 2, 3, 2) >= 0, "SetSlice for Contains succeeds");
+    TEST_ASSERT(iValArrayInt.Size(v) == 3, "After slice: Size == 3 (slice length)");
+    
+    /* Test Contains on slice - should find elements in slice */
+    TEST_ASSERT(iValArrayInt.Contains(v, 20) == 1, "Contains finds 20 in slice (actual[2])");
+    TEST_ASSERT(iValArrayInt.Contains(v, 40) == 1, "Contains finds 40 in slice (actual[4])");
+    TEST_ASSERT(iValArrayInt.Contains(v, 60) == 1, "Contains finds 60 in slice (actual[6])");
+    
+    /* Test Contains on slice - should NOT find elements outside slice */
+    TEST_ASSERT(iValArrayInt.Contains(v, 10) == 0, "Contains does NOT find 10 (not in slice)");
+    TEST_ASSERT(iValArrayInt.Contains(v, 30) == 0, "Contains does NOT find 30 (not in slice)");
+    TEST_ASSERT(iValArrayInt.Contains(v, 50) == 0, "Contains does NOT find 50 (not in slice)");
+    TEST_ASSERT(iValArrayInt.Contains(v, 70) == 0, "Contains does NOT find 70 (not in slice)");
+    TEST_ASSERT(iValArrayInt.Contains(v, 80) == 0, "Contains does NOT find 80 (not in slice)");
+    TEST_ASSERT(iValArrayInt.Contains(v, 90) == 0, "Contains does NOT find 90 (not in slice)");
+    TEST_ASSERT(iValArrayInt.Contains(v, 0) == 0, "Contains does NOT find 0 (not in slice)");
+    
+    /* Test non-existent element */
+    TEST_ASSERT(iValArrayInt.Contains(v, 999) == 0, "Contains does NOT find 999 (non-existent)");
+    
+    /* Reset slice and verify full array Contains works */
+    TEST_ASSERT(iValArrayInt.ResetSlice(v) == 1, "ResetSlice succeeds");
+    TEST_ASSERT(iValArrayInt.Size(v) == 10, "After reset: Size == 10 (full array)");
+    
+    /* Now Contains should find all original elements */
+    TEST_ASSERT(iValArrayInt.Contains(v, 20) == 1, "Contains finds 20 after reset");
+    TEST_ASSERT(iValArrayInt.Contains(v, 50) == 1, "Contains finds 50 after reset (was not in slice)");
+    TEST_ASSERT(iValArrayInt.Contains(v, 80) == 1, "Contains finds 80 after reset (was not in slice)");
+    TEST_ASSERT(iValArrayInt.Contains(v, 0) == 1, "Contains finds 0 after reset");
+    TEST_ASSERT(iValArrayInt.Contains(v, 90) == 1, "Contains finds 90 after reset");
+    
+    iValArrayInt.Finalize(v);
+    return 0;
+}
+
 /* Test Suite Definition */
 static TestCase valarray_int_tests[] = {
     {"test_create_finalize", test_create_finalize},
@@ -2017,6 +2063,7 @@ static TestCase valarray_int_tests[] = {
     {"test_select", test_select},
     {"test_select_copy", test_select_copy},
     {"test_fprintf", test_fprintf},
+    {"test_contains_with_slice", test_contains_with_slice},
 };
 
 /* Export test suite */

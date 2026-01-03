@@ -128,13 +128,8 @@ static int Add(ValArray *AL,ElementType newval)
 {
 	int r;
 	size_t pos = AL->count;
-	if (AL->Slice)
-		pos += AL->Slice->increment-1;
 	if (pos >= AL->capacity) {
-		if (pos != AL->count)
-			r = ResizeTo(AL,pos+pos/2);
-		else
-			r = grow(AL);
+		r = grow(AL);
 		if (r <= 0)
 			return r;
 	}
@@ -143,7 +138,6 @@ static int Add(ValArray *AL,ElementType newval)
 	++AL->count;
 	if (AL->Slice) {
 		AL->Slice->length++;
-		AL->count += AL->Slice->increment-1;
 	}
 	if (AL->Flags & CONTAINER_HAS_OBSERVER)
 		iObserver.Notify(AL,CCL_ADD,&newval,AL->Slice);
@@ -2326,6 +2320,10 @@ ValArrayInterface iValArrayInterface = {
 	RemoveRange,
 	Resize,
 };
+
+
+
+
 
 
 

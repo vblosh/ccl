@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include "containers.h"
+#include "test_suite.h"
 
 
 /* Helper macro to check test results */
@@ -1934,114 +1935,93 @@ static int test_fprintf(void)
     return 0;
 }
 
-/* Main test runner */
-int main(void)
-{
-    int test_count = 0;
-    int failed_count = 0;
+/* Test Suite Definition */
+static TestCase valarray_int_tests[] = {
+    {"test_create_finalize", test_create_finalize},
+    {"test_add", test_add},
+    {"test_get_element", test_get_element},
+    {"test_push_pop_back", test_push_pop_back},
+    {"test_insert_at", test_insert_at},
+    {"test_insert", test_insert},
+    {"test_replace_at", test_replace_at},
+    {"test_contains", test_contains},
+    {"test_index_of", test_index_of},
+    {"test_erase", test_erase},
+    {"test_copy", test_copy},
+    {"test_equal", test_equal},
+    {"test_sort", test_sort},
+    {"test_capacity", test_capacity},
+    {"test_clear", test_clear},
+    {"test_sizeof", test_sizeof},
+    {"test_get_range", test_get_range},
+    {"test_reverse", test_reverse},
+    {"test_back_front", test_back_front},
+    {"test_append", test_append},
+    {"test_initialize_with", test_initialize_with},
+    {"test_flags", test_flags},
+    {"test_get_element_size", test_get_element_size},
+    {"test_iterator", test_iterator},
+    {"test_erase_at", test_erase_at},
+    {"test_mismatch", test_mismatch},
+    {"test_add_range", test_add_range},
+    {"test_copy_element", test_copy_element},
+    {"test_remove_range", test_remove_range},
+    {"test_sum_to", test_sum_to},
+    {"test_sum_scalar_to", test_sum_scalar_to},
+    {"test_multiply_with", test_multiply_with},
+    {"test_multiply_with_scalar", test_multiply_with_scalar},
+    {"test_compare_equal_scalar", test_compare_equal_scalar},
+    {"test_min_max", test_min_max},
+    {"test_rotate_left", test_rotate_left},
+    {"test_mod_scalar", test_mod_scalar},
+    {"test_abs", test_abs},
+    {"test_accumulate", test_accumulate},
+    {"test_product", test_product},
+    {"test_resize", test_resize},
+    {"test_copy_to", test_copy_to},
+    {"test_insert_in", test_insert_in},
+    {"test_index_in", test_index_in},
+    {"test_rotate_right", test_rotate_right},
+    {"test_apply", test_apply},
+    {"test_foreach", test_foreach},
+    {"test_subtract_from", test_subtract_from},
+    {"test_subtract_scalar_from", test_subtract_scalar_from},
+    {"test_divide_by", test_divide_by},
+    {"test_divide_by_scalar", test_divide_by_scalar},
+    {"test_create_sequence", test_create_sequence},
+    {"test_fill_sequential", test_fill_sequential},
+    {"test_slice_operations", test_slice_operations},
+    {"test_divide_by_zero", test_divide_by_zero},
+    {"test_divide_by_zero_element", test_divide_by_zero_element},
+    {"test_incompatible_arrays", test_incompatible_arrays},
+    {"test_mod_scalar_zero", test_mod_scalar_zero},
+    {"test_get_data_readonly", test_get_data_readonly},
+    {"test_front_back_readonly", test_front_back_readonly},
+    {"test_mod_incompatible", test_mod_incompatible},
+    {"test_mod_zero_element", test_mod_zero_element},
+    {"test_init", test_init},
+    {"test_save", test_save},
+    {"test_load", test_load},
+    {"test_save_load_roundtrip", test_save_load_roundtrip},
+    {"test_save_empty_array", test_save_empty_array},
+    {"test_save_single_element", test_save_single_element},
+    {"test_get_element_with_slice", test_get_element_with_slice},
+    {"test_copy_with_slice", test_copy_with_slice},
+    {"test_apply_with_slice", test_apply_with_slice},
+    {"test_foreach_with_slice", test_foreach_with_slice},
+    {"test_reverse_with_slice", test_reverse_with_slice},
+    {"test_popback_with_slice", test_popback_with_slice},
+    {"test_fill_sequential_with_slice", test_fill_sequential_with_slice},
+    {"test_get_data_writable", test_get_data_writable},
+    {"test_memset", test_memset},
+    {"test_select", test_select},
+    {"test_select_copy", test_select_copy},
+    {"test_fprintf", test_fprintf},
+};
 
-    struct {
-        const char *name;
-        int (*test_fn)(void);
-    } tests[] = {
-        {"test_create_finalize", test_create_finalize},
-        {"test_add", test_add},
-        {"test_get_element", test_get_element},
-        {"test_push_pop_back", test_push_pop_back},
-        {"test_insert_at", test_insert_at},
-        {"test_insert", test_insert},
-        {"test_replace_at", test_replace_at},
-        {"test_contains", test_contains},
-        {"test_index_of", test_index_of},
-        {"test_erase", test_erase},
-        {"test_copy", test_copy},
-        {"test_equal", test_equal},
-        {"test_sort", test_sort},
-        {"test_capacity", test_capacity},
-        {"test_clear", test_clear},
-        {"test_sizeof", test_sizeof},
-        {"test_get_range", test_get_range},
-        {"test_reverse", test_reverse},
-        {"test_back_front", test_back_front},
-        {"test_append", test_append},
-        {"test_initialize_with", test_initialize_with},
-        {"test_flags", test_flags},
-        {"test_get_element_size", test_get_element_size},
-        {"test_iterator", test_iterator},
-        {"test_erase_at", test_erase_at},
-        {"test_mismatch", test_mismatch},
-        {"test_add_range", test_add_range},
-        {"test_copy_element", test_copy_element},
-        {"test_remove_range", test_remove_range},
-        {"test_sum_to", test_sum_to},
-        {"test_sum_scalar_to", test_sum_scalar_to},
-        {"test_multiply_with", test_multiply_with},
-        {"test_multiply_with_scalar", test_multiply_with_scalar},
-        {"test_compare_equal_scalar", test_compare_equal_scalar},
-        {"test_min_max", test_min_max},
-        {"test_rotate_left", test_rotate_left},
-        {"test_mod_scalar", test_mod_scalar},
-        {"test_abs", test_abs},
-        {"test_accumulate", test_accumulate},
-        {"test_product", test_product},
-        {"test_resize", test_resize},
-        {"test_copy_to", test_copy_to},
-        {"test_insert_in", test_insert_in},
-        {"test_index_in", test_index_in},
-        {"test_rotate_right", test_rotate_right},
-        {"test_apply", test_apply},
-        {"test_foreach", test_foreach},
-        {"test_subtract_from", test_subtract_from},
-        {"test_subtract_scalar_from", test_subtract_scalar_from},
-        {"test_divide_by", test_divide_by},
-        {"test_divide_by_scalar", test_divide_by_scalar},
-        {"test_create_sequence", test_create_sequence},
-        {"test_fill_sequential", test_fill_sequential},
-        {"test_slice_operations", test_slice_operations},
-        {"test_divide_by_zero", test_divide_by_zero},
-        {"test_divide_by_zero_element", test_divide_by_zero_element},
-        {"test_incompatible_arrays", test_incompatible_arrays},
-        {"test_mod_scalar_zero", test_mod_scalar_zero},
-        {"test_get_data_readonly", test_get_data_readonly},
-        {"test_front_back_readonly", test_front_back_readonly},
-        {"test_mod_incompatible", test_mod_incompatible},
-        {"test_mod_zero_element", test_mod_zero_element},
-        {"test_init", test_init},
-        {"test_save", test_save},
-        {"test_load", test_load},
-        {"test_save_load_roundtrip", test_save_load_roundtrip},
-        {"test_save_empty_array", test_save_empty_array},
-        {"test_save_single_element", test_save_single_element},
-        {"test_get_element_with_slice", test_get_element_with_slice},
-        {"test_copy_with_slice", test_copy_with_slice},
-        {"test_apply_with_slice", test_apply_with_slice},
-        {"test_foreach_with_slice", test_foreach_with_slice},
-        {"test_reverse_with_slice", test_reverse_with_slice},
-        {"test_popback_with_slice", test_popback_with_slice},
-        {"test_fill_sequential_with_slice", test_fill_sequential_with_slice},
-        {"test_get_data_writable", test_get_data_writable},
-        {"test_memset", test_memset},
-        {"test_select", test_select},
-        {"test_select_copy", test_select_copy},
-        {"test_fprintf", test_fprintf},
-    };
-
-    int num_tests = sizeof(tests) / sizeof(tests[0]);
-    int i;
-
-    printf("\n========== Running ValArray Integer Tests ==========\n");
-
-    for (i = 0; i < num_tests; i++) {
-        printf("[%d/%d] %s: ", i + 1, num_tests, tests[i].name);
-        if (tests[i].test_fn() == 0) {
-            test_count++;
-        } else {
-            failed_count++;
-        }
-    }
-
-    printf("\n========== Test Summary ==========\n");
-    printf("Total: %d, Passed: %d, Failed: %d\n", num_tests, test_count, failed_count);
-
-    return failed_count == 0 ? 0 : 1;
-}
+/* Export test suite */
+TestSuite ValArrayInt_Tests = {
+    "ValArrayInt_Tests",
+    valarray_int_tests,
+    sizeof(valarray_int_tests) / sizeof(valarray_int_tests[0])
+};

@@ -1,15 +1,19 @@
 cmake_minimum_required(VERSION 3.10)
 
-#GTEST
-include(GoogleTest)
+# Test executable for ValArray tests
+set(UNIT_TESTS runtests)
+set(SOURCE_FILES 
+    runtests.c 
+    valarrayinttest.c
+)
 
-set(SOURCE_FILES intListTests.cpp)
-set(UNIT_TESTS unittests)
-
-# Use the output directory set in the main project
-message(STATUS "Library output directory in subproject: ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+message(STATUS "Building unit tests: ${UNIT_TESTS}")
 
 add_executable(${UNIT_TESTS} ${SOURCE_FILES})
-# target_include_directories(${UNIT_TESTS} PRIVATE )
-target_link_libraries(${UNIT_TESTS} GTest::GTest GTest::Main ccl)
+target_link_libraries(${UNIT_TESTS} ccl)
+
+# Link math library on Unix systems
+if (UNIX)
+    target_link_libraries(${UNIT_TESTS} m)
+endif()
 

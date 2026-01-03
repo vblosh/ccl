@@ -104,32 +104,14 @@ add_library(ccl STATIC ${CCL_SOURCES})
 
 set_target_properties(ccl PROPERTIES SOVERSION ${VERSION_MAJOR} VERSION ${VERSION_STRING})
 
-# Only do these if this is the main project, and not if it is included through add_subdirectory
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
 
     # Let's nicely support folders in IDEs
     set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
-    # Testing only available if this is the main app and GTest installed
-    find_package(GTest)
-    if(GTest_FOUND)
-        message("GTest found, build unit tests")
-
-        # Note this needs to be done in the main CMakeLists
-        # since it calls enable_testing, which must be in the
-        # main CMakeLists.
-        # include(CTest)
-        # add_subdirectory(unittests)
-    endif()
-endif()
-
-
-add_executable(runtest tests/valarrayinttest.c)
-target_link_libraries(runtest ccl)
-if (UNIX)
-    target_link_libraries(runtest m)
+    # Add unittests subdirectory
+    add_subdirectory(unittests)
 endif()
 
 install(FILES ${CCL_HEADERS} ${PROJECT_BINARY_DIR}/ccl_export.h DESTINATION include/ccl)
 install(TARGETS ccl DESTINATION lib)
-install(TARGETS runtest DESTINATION bin)

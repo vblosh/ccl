@@ -17,3 +17,6 @@ texdoc/tth.dSYM/
 dotest.dSYM/
 /build
 /.vs
+/out
+/CoverageReport*
+/LastCoverageResults.log

@@ -1794,6 +1794,146 @@ static int test_fill_sequential_with_slice(void)
     return 0;
 }
 
+/* Test 88: GetData on writable array */
+static int test_get_data_writable(void)
+{
+    ValArrayInt *v = iValArrayInt.Create(5);
+    
+    iValArrayInt.Add(v, 10);
+    iValArrayInt.Add(v, 20);
+    iValArrayInt.Add(v, 30);
+    
+    /* GetData should return pointer to array contents for writable array */
+    int *data = iValArrayInt.GetData(v);
+    TEST_ASSERT(data != NULL, "GetData returns non-NULL for writable array");
+    TEST_ASSERT(data[0] == 10, "GetData returns correct first element");
+    TEST_ASSERT(data[1] == 20, "GetData returns correct second element");
+    TEST_ASSERT(data[2] == 30, "GetData returns correct third element");
+    
+    /* Verify we can modify through returned pointer */
+    data[1] = 999;
+    TEST_ASSERT(iValArrayInt.GetElement(v, 1) == 999, "Array modified through GetData pointer");
+    
+    iValArrayInt.Finalize(v);
+    return 0;
+}
+
+/* Test 89: Memset - Fill array with constant value */
+static int test_memset(void)
+{
+    ValArrayInt *v = iValArrayInt.Create(10);
+    
+    /* Memset fills array with constant value (increment 0) */
+    TEST_ASSERT(iValArrayInt.Memset(v, 42, 5) == 1, "Memset succeeds");
+    TEST_ASSERT(iValArrayInt.Size(v) == 5, "Memset sets correct size");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 0) == 42, "First element filled with 42");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 1) == 42, "Second element filled with 42");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 2) == 42, "Third element filled with 42");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 4) == 42, "Fifth element filled with 42");
+    
+    iValArrayInt.Finalize(v);
+    return 0;
+}
+
+/* Test 90: Select - Select elements based on mask */
+static int test_select(void)
+{
+    ValArrayInt *v = iValArrayInt.Create(5);
+    Mask *mask = iMask.Create(5);
+    
+    iValArrayInt.Add(v, 10);
+    iValArrayInt.Add(v, 20);
+    iValArrayInt.Add(v, 30);
+    iValArrayInt.Add(v, 40);
+    iValArrayInt.Add(v, 50);
+    
+    /* Create a mask manually by using data array */
+    char maskdata[5] = {1, 0, 1, 0, 1};  /* select indices 0, 2, 4 */
+    Mask *mask2 = iMask.CreateFromMask(5, maskdata);
+    
+    /* Select should keep only masked elements */
+    TEST_ASSERT(iValArrayInt.Select(v, mask2) == 1, "Select succeeds");
+    TEST_ASSERT(iValArrayInt.Size(v) == 3, "Select reduces size to 3");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 0) == 10, "First selected element is 10");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 1) == 30, "Second selected element is 30");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 2) == 50, "Third selected element is 50");
+    
+    iMask.Finalize(mask);
+    iMask.Finalize(mask2);
+    iValArrayInt.Finalize(v);
+    return 0;
+}
+
+/* Test 91: SelectCopy - Select elements based on mask into new array */
+static int test_select_copy(void)
+{
+    ValArrayInt *v = iValArrayInt.Create(5);
+    
+    iValArrayInt.Add(v, 10);
+    iValArrayInt.Add(v, 20);
+    iValArrayInt.Add(v, 30);
+    iValArrayInt.Add(v, 40);
+    iValArrayInt.Add(v, 50);
+    
+    /* Create a mask for selecting indices 1, 3 */
+    char maskdata[5] = {0, 1, 0, 1, 0};
+    Mask *mask = iMask.CreateFromMask(5, maskdata);
+    
+    /* SelectCopy should create new array with masked elements */
+    ValArrayInt *result = iValArrayInt.SelectCopy(v, mask);
+    TEST_ASSERT(result != NULL, "SelectCopy returns non-NULL");
+    TEST_ASSERT(iValArrayInt.Size(result) == 2, "SelectCopy creates array with 2 elements");
+    TEST_ASSERT(iValArrayInt.GetElement(result, 0) == 20, "First selected element is 20");
+    TEST_ASSERT(iValArrayInt.GetElement(result, 1) == 40, "Second selected element is 40");
+    
+    /* Verify original array unchanged */
+    TEST_ASSERT(iValArrayInt.Size(v) == 5, "Original array size unchanged");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 0) == 10, "Original array element unchanged");
+    
+    iMask.Finalize(mask);
+    iValArrayInt.Finalize(result);
+    iValArrayInt.Finalize(v);
+    return 0;
+}
+
+/* Test 92: Fprintf - Output array to file */
+static int test_fprintf(void)
+{
+    ValArrayInt *v = iValArrayInt.Create(5);
+    const char *filename = "test_fprintf.txt";
+    
+    iValArrayInt.Add(v, 100);
+    iValArrayInt.Add(v, 200);
+    iValArrayInt.Add(v, 300);
+    
+    /* Open file for writing */
+    FILE *file = fopen(filename, "w");
+    TEST_ASSERT(file != NULL, "File opened for writing");
+    
+    /* Write array to file using Fprintf */
+    int result = iValArrayInt.Fprintf(v, file, "%d ");
+    TEST_ASSERT(result > 0, "Fprintf returns positive value");
+    
+    fclose(file);
+    
+    /* Verify file was created and has content */
+    file = fopen(filename, "r");
+    TEST_ASSERT(file != NULL, "File exists after Fprintf");
+    
+    /* Read back and verify */
+    int val1, val2, val3;
+    int items_read = fscanf(file, "%d %d %d", &val1, &val2, &val3);
+    TEST_ASSERT(items_read == 3, "File contains 3 values");
+    TEST_ASSERT(val1 == 100, "First value is 100");
+    TEST_ASSERT(val2 == 200, "Second value is 200");
+    TEST_ASSERT(val3 == 300, "Third value is 300");
+    
+    fclose(file);
+    remove(filename);
+    iValArrayInt.Finalize(v);
+    return 0;
+}
+
 /* Main test runner */
 int main(void)
 {
@@ -1879,6 +2019,11 @@ int main(void)
         {"test_reverse_with_slice", test_reverse_with_slice},
         {"test_popback_with_slice", test_popback_with_slice},
         {"test_fill_sequential_with_slice", test_fill_sequential_with_slice},
+        {"test_get_data_writable", test_get_data_writable},
+        {"test_memset", test_memset},
+        {"test_select", test_select},
+        {"test_select_copy", test_select_copy},
+        {"test_fprintf", test_fprintf},
     };
 
     int num_tests = sizeof(tests) / sizeof(tests[0]);

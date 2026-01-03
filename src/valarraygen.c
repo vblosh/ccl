@@ -128,6 +128,9 @@ static int Add(ValArray *AL,ElementType newval)
 {
 	int r;
 	size_t pos = AL->count;
+	if(AL->Slice) {
+		pos = AL->Slice->start + AL->Slice->length * AL->Slice->increment;
+	}
 	if (pos >= AL->capacity) {
 		r = grow(AL);
 		if (r <= 0)
@@ -135,9 +138,13 @@ static int Add(ValArray *AL,ElementType newval)
 	}
 	AL->contents[pos] = newval;
 	AL->timestamp++;
-	++AL->count;
 	if (AL->Slice) {
+		if(pos >= AL->count) 
+			AL->count = pos + 1;
 		AL->Slice->length++;
+	}
+	else {
+		AL->count++;
 	}
 	if (AL->Flags & CONTAINER_HAS_OBSERVER)
 		iObserver.Notify(AL,CCL_ADD,&newval,AL->Slice);

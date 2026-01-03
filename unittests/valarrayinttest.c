@@ -74,6 +74,57 @@ static int test_add(void)
     return 0;
 }
 
+/* Test 2b: Add with SetSlice - Add appends to slice end */
+static int test_add_with_slice(void)
+{
+    ValArrayInt *v = iValArrayInt.Create(15);
+    
+    /* First, populate the full array with initial values (0-90) */
+    for (int i = 0; i < 10; i++) {
+        iValArrayInt.Add(v, i * 10);
+    }
+    TEST_ASSERT(iValArrayInt.Size(v) == 10, "Initial array has 10 elements");
+    
+    /* Set slice: start=2, length=3, increment=2 (indices 2, 4, 6 -> values 20, 40, 60) */
+    TEST_ASSERT(iValArrayInt.SetSlice(v, 2, 3, 2) >= 0, "SetSlice succeeds");
+    TEST_ASSERT(iValArrayInt.Size(v) == 3, "After slice: Size == 3 (slice length)");
+    
+    /* Add to the sliced array - should append to the slice end */
+    TEST_ASSERT(iValArrayInt.Add(v, 100) == 1, "Add to sliced array succeeds");
+    TEST_ASSERT(iValArrayInt.Size(v) == 4, "After Add: Size == 4 (slice length + 1)");
+    
+    /* Verify the added element is accessible in slice view */
+    TEST_ASSERT(iValArrayInt.GetElement(v, 3) == 100, "Added element is at index 3 in slice");
+    
+    /* Verify first three slice elements unchanged */
+    TEST_ASSERT(iValArrayInt.GetElement(v, 0) == 20, "Slice[0] still 20 (actual[2])");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 1) == 40, "Slice[1] still 40 (actual[4])");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 2) == 60, "Slice[2] still 60 (actual[6])");
+    
+    /* Add another element to slice */
+    TEST_ASSERT(iValArrayInt.Add(v, 200) == 1, "Add second element to sliced array succeeds");
+    TEST_ASSERT(iValArrayInt.Size(v) == 5, "After second Add: Size == 5");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 4) == 200, "Second added element at index 4 in slice");
+    
+    /* Reset slice and verify full array */
+    TEST_ASSERT(iValArrayInt.ResetSlice(v) == 1, "ResetSlice succeeds");
+    TEST_ASSERT(iValArrayInt.Size(v) == 11, "After reset: Slice: start=2, length=5, increment=2 Last 2 + (5-1)*2 + 1 = 11");
+    
+    /* Verify original elements still in place */
+    TEST_ASSERT(iValArrayInt.GetElement(v, 0) == 0, "Original[0] == 0");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 2) == 20, "Original[2] == 20");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 4) == 40, "Original[4] == 40");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 6) == 60, "Original[6] == 60");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 9) == 90, "Original[9] == 90");
+    
+    /* Verify new elements added at end */
+    TEST_ASSERT(iValArrayInt.GetElement(v, 8) == 100, "First added element at full array index 10");
+    TEST_ASSERT(iValArrayInt.GetElement(v, 10) == 200, "Second added element at full array index 11");
+    
+    iValArrayInt.Finalize(v);
+    return 0;
+}
+
 /* Test 3: GetElement */
 static int test_get_element(void)
 {
@@ -1985,6 +2036,7 @@ static int test_contains_with_slice(void)
 static TestCase valarray_int_tests[] = {
     {"test_create_finalize", test_create_finalize},
     {"test_add", test_add},
+    {"test_add_with_slice", test_add_with_slice},
     {"test_get_element", test_get_element},
     {"test_push_pop_back", test_push_pop_back},
     {"test_insert_at", test_insert_at},

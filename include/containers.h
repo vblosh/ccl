@@ -5,17 +5,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <wchar.h>
-#ifdef _MSC_VER
-/* Use the library provided stdint.h since microsoft doesn't
-   provide one. Note that it is provided for 32 bits only */
-#include "stdint.h"
-#pragma warning(disable:4100)
-#pragma warning(disable:4127)
-#pragma warning(disable:4232)
-#pragma warning(disable:4820)
-#else
 #include <stdint.h>
-#endif
 #include <limits.h>
 
 /*-------------------------------------------------------------

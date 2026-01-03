@@ -64,6 +64,8 @@ static int ValArrayDefaultCompareFn(const void *pleft,const void *pright)
 
 static size_t Size(const ValArray *AL)
 {
+	if(AL->Slice)
+		return AL->Slice->length;
 	return AL->count;
 }
 static unsigned GetFlags(const ValArray *AL)
@@ -217,13 +219,13 @@ static ValArray *GetRange(const ValArray *AL, size_t start,size_t end)
 		end = AL->Slice->length;
 	if (start > end)
 		return result;
-	top = end - start;
+	top = end - start+1;
 	result = Create(top);
 	if (result == NULL) {
 		NoMemory("GetRange");
 		return NULL;
 	}
-	while (start < end) {
+	while (start <= end) {
 		p = GetElement(AL,start);
 		r=Add(result,p);
 		if (r < 0) {
@@ -270,8 +272,9 @@ static int Contains(const ValArray *AL,ElementType data)
 		start = AL->Slice->start;
 		top = AL->Slice->length;
 		incr = AL->Slice->increment;
+		p += start;
 	}
-	for (i = start; i<top;i++) {
+	for (i = 0; i<top;i++) {
 		if (*p == data)
 			return 1;
 		p += incr;
@@ -526,7 +529,7 @@ static int EraseAt(ValArray *AL,size_t idx)
 	if (AL->Flags & CONTAINER_HAS_OBSERVER)
 		iObserver.Notify(AL,CCL_ERASE_AT,(void *)idx,NULL);
 	if (idx < (AL->count-1)) {
-		memmove(p+idx,p+(idx+1),(AL->count-idx)*sizeof(ElementType));
+		memmove(p,p+1,(AL->count-idx-1)*sizeof(ElementType));
 	}
 	AL->count--;
 	if (AL->Slice && start >= AL->count) {
@@ -696,7 +699,7 @@ static int SetCapacity(ValArray *AL,size_t newCapacity)
 	if (newContents == NULL) {
 		return NoMemory("SetCapacity");
 	}
-	memset(AL->contents,0,sizeof(ElementType)*newCapacity);
+	memset(newContents,0,sizeof(ElementType)*newCapacity);
 	AL->capacity = newCapacity;
 	if (newCapacity > AL->count)
 		newCapacity = AL->count;
@@ -713,7 +716,7 @@ static int SetCapacity(ValArray *AL,size_t newCapacity)
 
 static int Apply(ValArray *AL,int (*Applyfn)(ElementType,void *),void *arg)
 {
-	size_t i,start=0,incr=1,top=AL->count;
+	size_t i,start=0,incr=1,top=AL->count,count=0;
 	ElementType *p;
 	
 	if (AL->Slice) {
@@ -722,7 +725,7 @@ static int Apply(ValArray *AL,int (*Applyfn)(ElementType,void *),void *arg)
 		start = AL->Slice->start;
 	}
 	p=AL->contents;
-	for (i=start; i<top;i += incr) {
+	for (i=start, count=0; count<top; i += incr, count++) {
 		Applyfn(p[i],arg);
 	}
 	return 1;
@@ -730,7 +733,7 @@ static int Apply(ValArray *AL,int (*Applyfn)(ElementType,void *),void *arg)
 
 static int ForEach(ValArray *AL, ElementType (*ApplyFn)(ElementType))
 {
-	size_t i,start=0,incr=1,top=AL->count;
+	size_t i,start=0,incr=1,top=AL->count,count=0;
 	ElementType *p;
 	
 	if (AL->Slice) {
@@ -739,7 +742,7 @@ static int ForEach(ValArray *AL, ElementType (*ApplyFn)(ElementType))
 		start = AL->Slice->start;
 	}
 	p = AL->contents;
-	for (i=start; i<top;i += incr) {
+	for (i=start, count=0; count<top; i += incr, count++) {
 		p[i] = ApplyFn(p[i]);
 	}
 	return 1;
@@ -850,7 +853,6 @@ static int Append(ValArray *AL1, ValArray *AL2)
 	AL1->count = newCount;
 	if (AL1->Flags & CONTAINER_HAS_OBSERVER)
 		iObserver.Notify(AL1,CCL_APPEND,AL2,NULL);
-	AL2->Allocator->free(AL2);
     return 1;
 }
 
@@ -877,8 +879,7 @@ static int Reverse(ValArray *AL)
 	}
 	else {
 		p = AL->contents;
-		s = AL->count;
-		q = p + s*(AL->count-1);
+		q = p + (AL->count-1);
 		while ( p < q ) {
 			t = *p;
 			*p = *q;
@@ -1094,6 +1095,17 @@ static void *GetCurrent(Iterator *it)
 	return ali->Current;
 }
 
+static size_t GetPosition(Iterator *it)
+{
+	struct ValArrayIterator *ali = (struct ValArrayIterator *)it;
+
+	if (ali->Magic != VALARRAY_MAGIC_NUMBER) {
+		iError.RaiseError("ValArray.GetPosition",CONTAINER_ERROR_WRONG_ITERATOR);
+		return (size_t)-1;
+	}
+	return ali->index;
+}
+
 static void *GetFirst(Iterator *it)
 {
 	struct ValArrayIterator *ali = (struct ValArrayIterator *)it;
@@ -1164,6 +1176,7 @@ static Iterator *NewIterator(ValArray *AL)
 	result->it.GetCurrent = GetCurrent;
 	result->it.GetLast = GetLast;
 	result->it.Replace = ReplaceWithIterator;
+	result->it.GetPosition = GetPosition;
 	result->it.Seek = Seek;
 	result->Magic = VALARRAY_MAGIC_NUMBER;
 	result->AL = AL;
@@ -1434,8 +1447,8 @@ static int SubtractFrom(ValArray *left,const ValArray *right)
 	idx_right = start_right;
 	for (i=0; i<top_left; i++) {
 		left->contents[idx_left] -= right->contents[idx_right];
-		idx_left += incr_left;
-		idx_right += incr_right;
+	 idx_left += incr_left;
+	 idx_right += incr_right;
 	}
 	return 1;
 }
@@ -1651,7 +1664,6 @@ static char *Compare(const ValArray *left,const ValArray *right, char *bytearray
 		NoMemory("Compare");
 		return NULL;
 	}
-	memset(bytearray,0,siz);
 	j = right_start;
 	i = left_start;
 	for (k=0;k<left_len;k++) {
@@ -1819,6 +1831,7 @@ static int FillSequential(ValArray *dst,size_t length,ElementType start,ElementT
 		dst->contents[i] = start;
 		start += increment;
 	}
+	dst->count = top;
 	return 1;
 }
 static int Memset(ValArray *dst,ElementType data,size_t length)
@@ -1997,7 +2010,7 @@ static int ResetSlice(ValArray *array)
 static ElementType Max(const ValArray *src)
 {
 	ElementType result=MinElementType;
-	size_t start=0,length=src->count,incr=1,i;
+	size_t start=0,length=src->count,incr=1,i,count;
 	
 	if (src == NULL || src->count == 0)
 		return MaxElementType;
@@ -2007,7 +2020,7 @@ static ElementType Max(const ValArray *src)
 		length = src->Slice->length;
 	}
 	result = src->contents[start];
-	for (i=start; i<length;i += incr) {
+	for (i=start, count=0; count<length; i += incr, count++) {
 		if (result < src->contents[i])
 			result = src->contents[i];
 	}
@@ -2017,7 +2030,7 @@ static ElementType Max(const ValArray *src)
 #ifndef __IS_UNSIGNED__
 static int Abs(ValArray *src)
 {
-	size_t start=0,length=src->count,incr=1,i;
+	size_t start=0,length=src->count,incr=1,i,count;
 	
 	if (src->count == 0)
 		return 0;
@@ -2026,7 +2039,7 @@ static int Abs(ValArray *src)
 		incr = src->Slice->increment;
 		length = src->Slice->length;
 	}
-	for (i=start; i<length;i += incr) {
+	for (i=start, count=0; count<length; i += incr, count++) {
 		if (0 > src->contents[i])
 			src->contents[i] = -src->contents[i];
 	}
@@ -2036,7 +2049,7 @@ static int Abs(ValArray *src)
 
 static ElementType Accumulate(const ValArray *src)
 {
-	size_t start=0,length=src->count,incr=1,i;
+	size_t start=0,length=src->count,incr=1,i,count;
 	ElementType result = 0;
 	
 	if (src->count == 0)
@@ -2046,7 +2059,7 @@ static ElementType Accumulate(const ValArray *src)
 		incr = src->Slice->increment;
 		length = src->Slice->length;
 	}
-	for (i=start; i<length;i += incr) {
+	for (i=start, count=0; count<length; i += incr, count++) {
 		result += src->contents[i];
 	}
 	return result;
@@ -2055,7 +2068,7 @@ static ElementType Accumulate(const ValArray *src)
 
 static ElementType Product(const ValArray *src)
 {
-	size_t start=0,length=src->count,incr=1,i;
+	size_t start=0,length=src->count,incr=1,i,count;
 	ElementType result = 1;
 	
 	if (src->count == 0)
@@ -2065,7 +2078,7 @@ static ElementType Product(const ValArray *src)
 		incr = src->Slice->increment;
 		length = src->Slice->length;
 	}
-	for (i=start; i<length;i += incr) {
+	for (i=start, count=0; count<length; i += incr, count++) {
 		result *= src->contents[i];
 	}
 	return result;
@@ -2075,7 +2088,7 @@ static ElementType Product(const ValArray *src)
 static ElementType Min(const ValArray *src)
 {
 	ElementType result=MaxElementType;
-	size_t start=0,length=src->count,incr=1,i;
+	size_t start=0,length=src->count,incr=1,i,count;
 	
 	if (src == NULL || src->count == 0)
 		return MaxElementType;
@@ -2085,7 +2098,7 @@ static ElementType Min(const ValArray *src)
 		length = src->Slice->length;
 	}
 	result = src->contents[start];
-	for (i=start; i<length;i += incr) {
+	for (i=start, count=0; count<length; i += incr, count++) {
 		if (result > src->contents[i])
 			result = src->contents[i];
 	}
@@ -2313,3 +2326,7 @@ ValArrayInterface iValArrayInterface = {
 	RemoveRange,
 	Resize,
 };
+
+
+
+

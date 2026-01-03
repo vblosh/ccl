@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.10)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake_modules")
 
 project(ccl)
@@ -96,18 +96,35 @@ set(CCL_SOURCES
 
 set(CCL_HEADERS
     include/containers.h
+
     )
 
 
 add_library(ccl STATIC ${CCL_SOURCES})
 
-include(GenerateExportHeader)
-generate_export_header(ccl)
-target_include_directories(ccl PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
-
 set_target_properties(ccl PROPERTIES SOVERSION ${VERSION_MAJOR} VERSION ${VERSION_STRING})
 
-add_executable(runtest tests/test.c)
+# Only do these if this is the main project, and not if it is included through add_subdirectory
+if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
+
+    # Let's nicely support folders in IDEs
+    set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
+    # Testing only available if this is the main app and GTest installed
+    find_package(GTest)
+    if(GTest_FOUND)
+        message("GTest found, build unit tests")
+
+        # Note this needs to be done in the main CMakeLists
+        # since it calls enable_testing, which must be in the
+        # main CMakeLists.
+        # include(CTest)
+        # add_subdirectory(unittests)
+    endif()
+endif()
+
+
+add_executable(runtest tests/valarrayinttest.c)
 target_link_libraries(runtest ccl)
 if (UNIX)
     target_link_libraries(runtest m)

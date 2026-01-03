@@ -1,7 +1,7 @@
 /*
  * Value types generic list routines sample implementation 
  * ----------------------------------- ------------------
- * Thisroutines handle the List container class. This is a very general
+ * This routines handle the List container class. This is a very general
  * implementation and efficiency considerations aren't yet primordial. Lists
  * can have elements of any size. This implement single linked Lists. The
  * design goals here are just correctness and showing how the implementation

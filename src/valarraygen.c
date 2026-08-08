@@ -1823,8 +1823,8 @@ static int FillSequential(ValArray *dst,size_t length,ElementType start,ElementT
 		size_t l = dst->Slice->length;
 		size_t inc = dst->Slice->increment;
 		if (l > length) l = length;
-		for (i=s; i<l;i += inc) {
-			dst->contents[i] = start;
+		for (i=0; i<l; i++) {
+			dst->contents[s+i*inc] = start;
 			start += increment;
 		}
 	}
@@ -1832,7 +1832,8 @@ static int FillSequential(ValArray *dst,size_t length,ElementType start,ElementT
 		dst->contents[i] = start;
 		start += increment;
 	}
-	dst->count = top;
+	if (dst->Slice == NULL)
+		dst->count = top;
 	return 1;
 }
 static int Memset(ValArray *dst,ElementType data,size_t length)
@@ -1904,16 +1905,15 @@ static int XorScalar(ValArray *left, const ElementType right)
 
 static int Not(ValArray *left)
 {
-	size_t i,s=0,top=left->count,incr=1;
+	size_t i,count,s=0,top=left->count,incr=1;
 	
 	if (left->Slice) {
 		s = left->Slice->start;
 		top = left->Slice->length;
 		incr = left->Slice->increment;
 	}
-	for (i=s; i<top;i += incr) {
+	for (i=s,count=0; count<top; i += incr,count++) {
 		left->contents[i] = ~left->contents[i];
-		s += incr;
 	}
 	return 1;
 }
@@ -1922,7 +1922,7 @@ static int RightShift(ValArray *,int);
 
 static int LeftShift(ValArray *data,int shift)
 {
-	size_t i,s=0,top=data->count,incr=1;
+	size_t i,count,s=0,top=data->count,incr=1;
 	if (shift < 0)
 		return RightShift(data,-shift);
 	else if (shift == 0)
@@ -1932,14 +1932,14 @@ static int LeftShift(ValArray *data,int shift)
 		top = data->Slice->length;
 		incr = data->Slice->increment;
 	}
-	for (i=s; i<top; i += incr)
+	for (i=s,count=0; count<top; i += incr,count++)
 		data->contents[i] <<= shift;
 	return 1;
 }
 
 static int RightShift(ValArray *data,int shift)
 {
-	size_t i,s=0,incr=1,top=data->count;
+	size_t i,count,s=0,incr=1,top=data->count;
 	
 	if (shift < 0)
 		return LeftShift(data,-shift);
@@ -1951,7 +1951,7 @@ static int RightShift(ValArray *data,int shift)
 		top = data->Slice->length;
 		incr = data->Slice->increment;
 	}
-	for (i=s; i<top; i += incr)
+	for (i=s,count=0; count<top; i += incr,count++)
 		data->contents[i] >>= shift;
 	return 1;
 }
@@ -1967,9 +1967,8 @@ static int SetSlice(ValArray *array,size_t start,size_t length,size_t increment)
 		iError.RaiseError("SetSlice",CONTAINER_ERROR_BADARG);
 		return CONTAINER_ERROR_BADARG;
 	}
-	if ((array->count-start)/(length*increment) > array->count) {
-		length = 1+(array->count-start)/increment;
-	}
+	if (length > 1+(array->count-1-start)/increment)
+		length = 1+(array->count-1-start)/increment;
 	
 	if (array->Slice == NULL) {
 		array->Slice = array->Allocator->malloc(sizeof(SliceSpecs));

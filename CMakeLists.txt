@@ -1,33 +1,72 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.13)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake_modules")
 
-project(ccl)
+project(ccl LANGUAGES C)
 set(CMAKE_ECLIPSE_VERSION 4.33)
 
+include(CTest)
+
+option(CCL_ENABLE_SANITIZERS
+       "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(CCL_ENABLE_COVERAGE
+       "Build with GCC/gcov coverage instrumentation" OFF)
+
+if(CCL_ENABLE_SANITIZERS AND CCL_ENABLE_COVERAGE)
+    message(FATAL_ERROR
+            "CCL_ENABLE_SANITIZERS and CCL_ENABLE_COVERAGE are mutually exclusive")
+endif()
+
+if(CCL_ENABLE_SANITIZERS)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+        message(FATAL_ERROR
+                "CCL_ENABLE_SANITIZERS requires a GNU or Clang C compiler")
+    endif()
+    set(CCL_INSTRUMENT_COMPILE_OPTIONS
+        -fsanitize=address,undefined
+        -fno-omit-frame-pointer)
+    set(CCL_INSTRUMENT_LINK_OPTIONS
+        -fsanitize=address,undefined)
+endif()
+
+if(CCL_ENABLE_COVERAGE)
+    if(NOT CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        message(FATAL_ERROR "CCL_ENABLE_COVERAGE requires GNU C and gcov")
+    endif()
+
+    find_program(CCL_GCOV_EXECUTABLE NAMES gcov REQUIRED)
+    execute_process(
+        COMMAND "${CCL_GCOV_EXECUTABLE}" --version
+        OUTPUT_VARIABLE CCL_GCOV_VERSION_OUTPUT
+        ERROR_VARIABLE CCL_GCOV_VERSION_ERROR
+        RESULT_VARIABLE CCL_GCOV_VERSION_RESULT
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT CCL_GCOV_VERSION_RESULT EQUAL 0)
+        message(FATAL_ERROR "Unable to execute gcov: ${CCL_GCOV_VERSION_ERROR}")
+    endif()
+    string(REGEX MATCH "([0-9]+)" CCL_GCOV_VERSION_MAJOR
+           "${CCL_GCOV_VERSION_OUTPUT}")
+    string(REGEX MATCH "^[0-9]+" CCL_GCC_VERSION_MAJOR
+           "${CMAKE_C_COMPILER_VERSION}")
+    if(NOT CCL_GCOV_VERSION_MAJOR OR
+       NOT CCL_GCC_VERSION_MAJOR OR
+       NOT CCL_GCOV_VERSION_MAJOR STREQUAL CCL_GCC_VERSION_MAJOR)
+        message(FATAL_ERROR
+                "gcov (${CCL_GCOV_VERSION_OUTPUT}) must match GCC "
+                "${CMAKE_C_COMPILER_VERSION}")
+    endif()
+    set(CCL_INSTRUMENT_COMPILE_OPTIONS
+        --coverage
+        -O0
+        -g
+        -fprofile-abs-path)
+    set(CCL_INSTRUMENT_LINK_OPTIONS --coverage)
+endif()
+
 # Export no symbols by default (if the compiler supports it).
-# This makes e.g. GCC's "visibility behavior" consistent with MSVC's. 
+# This makes e.g. GCC's "visibility behavior" consistent with MSVC's.
 # On Windows/MSVC this is a noop.
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
-
-if(CMAKE_COMPILER_IS_GNUCXX)
-    set(CMAKE_C_FLAGS "-Wall -Wno-pointer-sign -Werror")
-endif()
-
-if(UNIX)
-    add_definitions(-DUNIX)
-endif()
-
-# Check if the MSVC compiler is being used
-if (MSVC)
-    # Add the preprocessor definitions for MSVC
-    add_definitions(
-		-D_CRT_SILENCE_NONCONFORMING_TGMATH_H 
-		-D_CRT_SECURE_NO_WARNINGS
-    )
-endif()
-
-enable_language(C)
 
 # The version number
 set(project_name_VERSION_MAJOR 0)
@@ -37,9 +76,6 @@ set(project_name_VERSION_MINOR 1)
 set (CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
 set (CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
 set (CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
-
-include_directories(include)
-include_directories(${PROJECT_BINARY_DIR}) # for generated headers
 
 set(CCL_SOURCES
     src/bitstrings.c
@@ -94,17 +130,41 @@ set(CCL_SOURCES
     src/wstringlist.c
     )
 
-set(CCL_HEADERS
-    include/containers.h
-
-    )
-
-
 add_library(ccl STATIC ${CCL_SOURCES})
+
+target_include_directories(ccl
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>
+        $<INSTALL_INTERFACE:include/ccl>)
+
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(ccl PRIVATE -Wall -Wno-pointer-sign -Werror)
+endif()
+
+if(UNIX)
+    target_compile_definitions(ccl PRIVATE UNIX)
+endif()
+
+if(MSVC)
+    target_compile_definitions(ccl PRIVATE
+        _CRT_SILENCE_NONCONFORMING_TGMATH_H
+        _CRT_SECURE_NO_WARNINGS)
+endif()
+
+if(CCL_INSTRUMENT_COMPILE_OPTIONS)
+    target_compile_options(ccl PRIVATE ${CCL_INSTRUMENT_COMPILE_OPTIONS})
+endif()
+if(CCL_INSTRUMENT_LINK_OPTIONS)
+    # A static archive contains instrumented objects but performs no link of
+    # its own. Propagate the required sanitizer/coverage runtime flags to
+    # every consumer, including projects that embed ccl via add_subdirectory.
+    target_link_options(ccl PUBLIC ${CCL_INSTRUMENT_LINK_OPTIONS})
+endif()
 
 set_target_properties(ccl PROPERTIES SOVERSION ${VERSION_MAJOR} VERSION ${VERSION_STRING})
 
-if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
+if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME AND BUILD_TESTING)
 
     # Let's nicely support folders in IDEs
     set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -113,5 +173,6 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     add_subdirectory(unittests)
 endif()
 
-install(FILES ${CCL_HEADERS} ${PROJECT_BINARY_DIR}/ccl_export.h DESTINATION include/ccl)
+install(DIRECTORY include/ DESTINATION include/ccl
+        FILES_MATCHING PATTERN "*.h")
 install(TARGETS ccl DESTINATION lib)

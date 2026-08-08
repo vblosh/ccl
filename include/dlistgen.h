@@ -1,8 +1,9 @@
-#ifndef __dlistgen_h__
-#define __dlistgen_h__
 #ifndef DATA_TYPE
 #error "The symbol DATA_TYPE MUST be defined"
 #else
+#ifdef __cplusplus
+extern "C" {
+#endif
 #ifndef DEFAULT_START_SIZE
 #define DEFAULT_START_SIZE 20
 #endif
@@ -13,7 +14,7 @@
 #undef LIST_TYPE_
 #undef INTERFACE
 #undef ITERATOR
-#undef ITERFACE_NAME
+#undef INTERFACE_NAME
 #undef LIST_ELEMENT
 #undef LIST_ELEMENT_
 #undef LIST_STRUCT_INTERNAL_NAME
@@ -51,6 +52,7 @@ struct LIST_STRUCT_INTERNAL_NAME(DATA_TYPE) {
     size_t ElementSize;         /* Size (in bytes) of each element */
     LIST_ELEMENT *Last;         /* The last item */
     LIST_ELEMENT *First;        /* The contents of the list start here */
+    DlistElement *FreeList;     /* Generic Dlist reserved/free-list slot */
     CompareFunction Compare;    /* Element comparison function */
     ErrorFunction RaiseError;   /* Error function */
     ContainerHeap *Heap;
@@ -60,14 +62,42 @@ struct LIST_STRUCT_INTERNAL_NAME(DATA_TYPE) {
 
 struct ITERATOR(DATA_TYPE) {
     Iterator it;
+    long long Magic;
     LIST_TYPE *L;
     size_t index;
     LIST_ELEMENT *Current;
-    LIST_ELEMENT *Previous;
     unsigned  timestamp;
-    DATA_TYPE ElementBuffer;
-    int   (*DlistReplace)(struct _Iterator *,void *data,int direction);
+    unsigned char ElementBuffer[1];
 };
+
+/* The generated objects are deliberately overlays of the generic dlist
+ * objects.  Keep these checks close to the public declarations: a missing
+ * field here turns every delegated method into an ABI-incorrect call. */
+#include "ccl_internal.h"
+#ifdef __cplusplus
+#define DLIST_STATIC_ASSERT static_assert
+#else
+#define DLIST_STATIC_ASSERT _Static_assert
+#endif
+DLIST_STATIC_ASSERT(offsetof(LIST_TYPE, FreeList) == offsetof(Dlist, FreeList),
+               "typed dlist header must match generic FreeList offset");
+DLIST_STATIC_ASSERT(sizeof(LIST_TYPE) == sizeof(Dlist),
+               "typed dlist header must match generic size");
+DLIST_STATIC_ASSERT(offsetof(LIST_ELEMENT, Data) == offsetof(DlistElement, Data),
+               "typed dlist element data must match generic offset");
+DLIST_STATIC_ASSERT(offsetof(struct ITERATOR(DATA_TYPE), Magic) ==
+                   offsetof(struct DListIterator, Magic),
+               "typed dlist iterator must match generic Magic offset");
+DLIST_STATIC_ASSERT(offsetof(struct ITERATOR(DATA_TYPE), L) ==
+                   offsetof(struct DListIterator, L),
+               "typed dlist iterator must match generic list offset");
+DLIST_STATIC_ASSERT(offsetof(struct ITERATOR(DATA_TYPE), ElementBuffer) ==
+                   offsetof(struct DListIterator, ElementBuffer),
+               "typed dlist iterator buffer must match generic offset");
+DLIST_STATIC_ASSERT(sizeof(struct ITERATOR(DATA_TYPE)) ==
+                   sizeof(struct DListIterator),
+               "typed dlist iterator must match generic size");
+#undef DLIST_STATIC_ASSERT
 extern INTERFACE(DATA_TYPE) INTERFACE_NAME(DATA_TYPE);
 
 struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
@@ -140,5 +170,7 @@ struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
     void *(*MoveBack)(LIST_ELEMENT **pLIST_ELEMENT);
     LIST_TYPE *(*SplitAfter)(LIST_TYPE *l, LIST_ELEMENT *pt);
 };
+#ifdef __cplusplus
+}
 #endif
-#endif
+#endif /* DATA_TYPE */

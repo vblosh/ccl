@@ -1,855 +1,792 @@
 /*
-This implements search trees of type 2 (Brass). This trees have no key and the
-data is the key. Sometimes this trees are called node trees, to distinguish them
-from leaf trees, where all the data is stored in the leaves, storing in the nodes
-only the key to the data.
-
-The implementation is roughly based on the algorithms described in "Algorithms
-with C" by Kyle Loudon, and "C unleashed" of Heathfield, Kirby et al.
-*/
-#include <stdlib.h>
-#include <string.h>
-#include <stdlib.h>
+ * AVL search trees whose values are also their keys.
+ *
+ * The public interface is deliberately small and is kept compatible with the
+ * historical implementation.  Nodes own a byte-for-byte copy of each value;
+ * the allocator, comparator, destructor, and error callback are instance
+ * properties even though the interface object itself is shared.
+ */
 #include "containers.h"
 #include "ccl_internal.h"
 
-/*  The tree nodes. */
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
 typedef struct tagBinarySearchTreeNode {
-	char               hidden;
-	signed char        factor; /* Thanks to Alan Curry for this */
-	struct tagBinarySearchTreeNode *left;
-	struct tagBinarySearchTreeNode *right;
-	char               data[MINIMUM_ARRAY_INDEX];
+    char hidden;
+    signed char factor; /* LEFT, BALANCED, or RIGHT. */
+    struct tagBinarySearchTreeNode *left;
+    struct tagBinarySearchTreeNode *right;
+    char data[MINIMUM_ARRAY_INDEX];
 } BinarySearchTreeNode;
 
-static int InsertLeft(BinarySearchTree *tree, BinarySearchTreeNode *node, const void *data);
-static int InsertRight(BinarySearchTree *tree, BinarySearchTreeNode *node, const void *data);
-static void RemoveLeft(BinarySearchTree *tree, BinarySearchTreeNode *node);
-static void RemoveRight(BinarySearchTree *tree, BinarySearchTreeNode *node);
-/*  Define balance factors for AVL trees. */
-#define LEFT   1
-#define BALANCED     0
-#define RIGHT -1
-#define btreeZero(tree) memset(tree,0,sizeof(*tree))
-/* Returns the number of elements stored */
-static size_t GetCount(BinarySearchTree *ST);
-/* Get the flags */
-static unsigned GetFlags(BinarySearchTree *ST);
-/* Sets the flags */
-static unsigned SetFlags(BinarySearchTree *ST, unsigned flags);
-/* Adds one element. Given data is copied */
-static int Add(BinarySearchTree *ST, const void *Data);
-static int Insert(BinarySearchTree *ST, const void *Data,void *ExtraArgs);
-/* Clears all data and frees the memory */
-static int Clear(BinarySearchTree *ST);
-/* Removes the given data if found */
-static int Remove(BinarySearchTree *ST, const void *,void *);
-/* Frees the memory used by the tree */
-static int Finalize(BinarySearchTree *ST);
-/* Calls the given function for all nodes. "Arg" is a used supplied argument */
-/* that can be NULL that is passed to the function to call */
-static int Apply(BinarySearchTree *ST,int (*Applyfn)(const void *data,void *arg),void *arg);
-/* Find a given data in the tree */
-static void *Find(BinarySearchTree *ST,void *data);
-/* Set or unset the error function */
-static ErrorFunction SetErrorFunction(BinarySearchTree *ST, ErrorFunction fn);
-static CompareFunction SetCompareFunction(BinarySearchTree *ST,CompareFunction fn);
-static size_t Sizeof(BinarySearchTree *ST);
-static int DefaultCompareFunction(const void *arg1, const void *arg2, CompareInfo *ExtraArgs);
-static BinarySearchTree *Merge(BinarySearchTree *left, BinarySearchTree *right, const void *data);
-static int Equal(const BinarySearchTree *left, const BinarySearchTree *right);
-static Iterator *NewIterator(BinarySearchTree *);
-static int DeleteIterator(Iterator *);
+#define LEFT       1
+#define BALANCED   0
+#define RIGHT     -1
+#define SEARCHTREE_ITERATOR_MAGIC 0x53545249u
+
+typedef struct tagBinarySearchTreeIterator BinarySearchTreeIterator;
 
 struct tagBinarySearchTree {
-	struct tagBinarySearchTreeInterface *VTable;
-	unsigned             Flags;
-	size_t               count;
-	size_t               ElementSize;
-	ErrorFunction        RaiseError;
-	BinarySearchTreeNode *root;
-	ContainerAllocator *Allocator;
-	DestructorFunction DestructorFn;
-} ;
-#if 0
-static const guid BinarySearchTreeGuid = {0x9a011719, 0x22ac, 0x461d,
-{0x89,0xa1,0x75,0xd4,0x4b,0x85,0x53,0xfb}
+    struct tagBinarySearchTreeInterface *VTable;
+    unsigned Flags;
+    size_t count;
+    size_t ElementSize;
+    ErrorFunction RaiseError;
+    BinarySearchTreeNode *root;
+    ContainerAllocator *Allocator;
+    DestructorFunction DestructorFn;
+    CompareFunction CompareFn;
+    unsigned timestamp;
 };
-#endif
-static BinarySearchTree * Create(size_t ElementSize)
+
+struct tagBinarySearchTreeIterator {
+    Iterator it;
+    unsigned magic;
+    BinarySearchTree *tree;
+    ContainerAllocator *Allocator;
+    unsigned timestamp;
+    size_t index;
+    BinarySearchTreeNode *current;
+    void *buffer;
+};
+
+static size_t GetCount(BinarySearchTree *tree);
+static unsigned GetFlags(BinarySearchTree *tree);
+static unsigned SetFlags(BinarySearchTree *tree, unsigned flags);
+static int Clear(BinarySearchTree *tree);
+static int Contains(BinarySearchTree *tree, void *data);
+static int Remove(BinarySearchTree *tree, const void *data, void *extra);
+static int Finalize(BinarySearchTree *tree);
+static int Apply(BinarySearchTree *tree,
+                 int (*Applyfn)(const void *data, void *arg), void *arg);
+static int Equal(const BinarySearchTree *left, const BinarySearchTree *right);
+static int Add(BinarySearchTree *tree, const void *data);
+static int Insert(BinarySearchTree *tree, const void *data, void *extra);
+static ErrorFunction SetErrorFunction(BinarySearchTree *tree, ErrorFunction fn);
+static CompareFunction SetCompareFunction(BinarySearchTree *tree,
+                                           CompareFunction fn);
+static size_t Sizeof(BinarySearchTree *tree);
+static int DefaultCompareFunction(const void *left, const void *right,
+                                  CompareInfo *extra);
+static BinarySearchTree *Merge(BinarySearchTree *left, BinarySearchTree *right,
+                               const void *data);
+static Iterator *NewIterator(BinarySearchTree *tree);
+static int DeleteIterator(Iterator *iterator);
+static DestructorFunction SetDestructor(BinarySearchTree *tree,
+                                        DestructorFunction fn);
+
+static int report_error(BinarySearchTree *tree, const char *operation, int code)
 {
-	BinarySearchTree *result = CurrentAllocator->malloc(sizeof(BinarySearchTree));
-	if (result) {
-		memset(result,0,sizeof(BinarySearchTree));
-		result->ElementSize = ElementSize;
-		result->VTable = &iBinarySearchTree;
-		result->Allocator = CurrentAllocator;
-	}
-	return result;
+    ErrorFunction fn = tree != NULL ? tree->RaiseError : iError.RaiseError;
+    if (fn != NULL)
+        fn(operation, code);
+    return code;
 }
 
-
-static unsigned SetFlags(BinarySearchTree *l,unsigned newval)
+static int valid_data(const BinarySearchTree *tree, const void *data)
 {
-	int result;
-
-	result = l->Flags;
-	l->Flags = newval;
-	return result;
+    return tree != NULL && (data != NULL || tree->ElementSize == 0);
 }
 
-static unsigned GetFlags(BinarySearchTree *l)
+static BinarySearchTree *create_with_allocator(size_t element_size,
+                                                ContainerAllocator *allocator)
 {
-	return l->Flags;
+    BinarySearchTree *tree;
+
+    if (allocator == NULL)
+        return NULL;
+    tree = allocator->malloc(sizeof(*tree));
+    if (tree == NULL)
+        return NULL;
+    memset(tree, 0, sizeof(*tree));
+    tree->VTable = &iBinarySearchTree;
+    tree->ElementSize = element_size;
+    tree->RaiseError = iError.RaiseError;
+    tree->Allocator = allocator;
+    tree->CompareFn = DefaultCompareFunction;
+    return tree;
 }
 
-static size_t GetCount(BinarySearchTree *l)
+static BinarySearchTree *Create(size_t element_size)
 {
-	return l->count;
+    return create_with_allocator(element_size, CurrentAllocator);
 }
 
-static BinarySearchTreeNode *newTreeNode(BinarySearchTree *tree,const void *data)
+static size_t GetCount(BinarySearchTree *tree)
 {
-	BinarySearchTreeNode *new_node = tree->Allocator->malloc(sizeof(BinarySearchTreeNode)+tree->ElementSize);
-	if (new_node) {
-		memset(new_node,0,sizeof(*new_node));
-		memcpy(new_node->data, data, tree->ElementSize);
-		tree->count++;
-	}
-	return new_node;
+    return tree != NULL ? tree->count : 0;
 }
 
-static int InsertLeft(BinarySearchTree *tree, BinarySearchTreeNode *node, const void *data)
+static unsigned GetFlags(BinarySearchTree *tree)
 {
-	BinarySearchTreeNode *new_node,**position;
-	if (node == NULL) {
-		if (tree->count > 0)
-			return -1;
-		position = &tree->root;
-	}
-	else {
-		/*  Normally allow insertion only at the end of a branch. */
-		if (node->left != NULL)
-			return -1;
-		position = &node->left;
-	}
-	new_node = newTreeNode(tree,data);
-	if (new_node == NULL)
-		return -1;
-	*position = new_node;
-	return 0;
-}
-static int InsertRight(BinarySearchTree *tree, BinarySearchTreeNode *node, const void *data)
-{
-	BinarySearchTreeNode         *new_node, **position;
-	if (node == NULL) {
-		if (tree->count > 0)
-			return -1;
-		position = &tree->root;
-	}
-	else {
-		if (node->right != NULL)
-			return -1;
-		position = &node->right;
-	}
-	new_node = newTreeNode(tree,data);
-	if (new_node == NULL)
-		return -1;
-	*position = new_node;
-	return 0;
-}
-static void RemoveLeft(BinarySearchTree *tree, BinarySearchTreeNode *node)
-{
-	BinarySearchTreeNode         **position;
-	if (tree->count == 0)
-		return;
-	if (node == NULL)
-		position = &tree->root;
-	else
-		position = &node->left;
-	if (*position != NULL) {
-		RemoveLeft(tree, *position);
-		RemoveRight(tree, *position);
-		if (tree->DestructorFn)
-			tree->DestructorFn(*position);
-		tree->Allocator->free(*position);
-		*position = NULL;
-		tree->count--;
-	}
-}
-static void RemoveRight(BinarySearchTree *tree, BinarySearchTreeNode *node)
-{
-	BinarySearchTreeNode         **position;
-	if (tree->count == 0)
-		return;
-	if (node == NULL)
-		position = &tree->root;
-	else
-		position = &node->right;
-	if (*position != NULL) {
-		RemoveLeft(tree, *position);
-		RemoveRight(tree, *position);
-		if (tree->DestructorFn)
-			tree->DestructorFn(*position);
-		tree->Allocator->free(*position);
-		*position = NULL;
-		tree->count--;
-	}
+    return tree != NULL ? tree->Flags : 0;
 }
 
-static BinarySearchTree *Merge(BinarySearchTree *left, BinarySearchTree *right, const void *data)
+static unsigned SetFlags(BinarySearchTree *tree, unsigned flags)
 {
-	BinarySearchTree *merge;
-
-	if (left == NULL || right == NULL || left->ElementSize != right->ElementSize)
-		return NULL;
-	merge = Create(left->ElementSize);
-	if (merge == NULL)
-		return NULL;
-	btreeZero(merge);
-	if (InsertLeft(merge, NULL, data) != 0) {
-		Finalize(merge);
-		return NULL;
-	}
-	merge->root->left = left->root;
-	merge->root->right = right->root;
-	merge->count = merge->count + left->count + right->count;
-	left->root = NULL;
-	left->count = 0;
-	right->root = NULL;
-	right->count = 0;
-	return merge;
-}
-static void destroy_right(BinarySearchTree *tree, BinarySearchTreeNode *node);
-static void rotate_left(BinarySearchTreeNode **node)
-{
-	BinarySearchTreeNode         *left,*Node = *node;
-
-	left = Node->left;
-	if (left->factor == LEFT) {
-	   /* Perform an LL rotation. */
-	   Node->left = left->right;
-	   left->right = Node;
-	   Node->factor = BALANCED;
-	   left->factor = BALANCED;
-	   *node = left;
-	   }
-	else { /*  Perform an LR rotation. */
-	   BinarySearchTreeNode *grandchild = left->right;
-	   left->right = grandchild->left;
-	   grandchild->left = left;
-	   Node->left = grandchild->right;
-	   grandchild->right = Node;
-	   switch (grandchild->factor) {
-		  case LEFT:
-		  Node->factor = RIGHT;
-		  left->factor = BALANCED;
-		  break;
-		  case BALANCED:
-		  Node->factor = BALANCED;
-		  left->factor = BALANCED;
-		  break;
-		  case RIGHT:
-		  Node->factor = BALANCED;
-		  left->factor = LEFT;
-		  break;
-	   }
-	   grandchild->factor = BALANCED;
-	   *node = grandchild;
-	}
-}
-static void rotate_right(BinarySearchTreeNode **node)
-{
-	BinarySearchTreeNode *right, *grandchild,*Node = *node;
-	right = Node->right;
-	if (right->factor == RIGHT) {
-	   /* Perform an RR rotation. */
-	   Node->right = right->left;
-	   right->left = Node;
-	   Node->factor = BALANCED;
-	   right->factor = BALANCED;
-	   *node = right;
-	}
-	else { /*  Perform an RL rotation. */
-	   grandchild = right->left;
-	   right->left = grandchild->right;
-	   grandchild->right = right;
-	   Node->right = grandchild->left;
-	   grandchild->left = Node;
-	   switch (grandchild->factor) {
-		  case LEFT:
-		  Node->factor = BALANCED;
-		  right->factor = RIGHT;
-		  break;
-		  case BALANCED:
-		  Node->factor = BALANCED;
-		  right->factor = BALANCED;
-		  break;
-		  case RIGHT:
-		  Node->factor = LEFT;
-		  right->factor = BALANCED;
-		  break;
-	   }
-	   grandchild->factor = BALANCED;
-	   *node = grandchild;
-	}
+    unsigned old;
+    if (tree == NULL)
+        return 0;
+    old = tree->Flags;
+    tree->Flags = flags;
+    return old;
 }
 
-static void destroy_left(BinarySearchTree *tree, BinarySearchTreeNode *node)
+static BinarySearchTreeNode *new_tree_node(BinarySearchTree *tree,
+                                            const void *data)
 {
-	BinarySearchTreeNode         **position;
-	/*  Do not allow destruction of an empty tree. */
-	if (tree->count > 0) {
-		/*  Determine where to destroy nodes. */
-		if (node == NULL)
-			position = &tree->root;
-		else
-			position = &node->left;
-		/*  Destroy the nodes. */
-		if (*position != NULL) {
-			destroy_left(tree, *position);
-			destroy_right(tree, *position);
-			if (tree->DestructorFn)
-				tree->DestructorFn(*position);
-			
-			tree->Allocator->free(*position);
-			*position = NULL;
-			tree->count--; /* Adjust the size of the tree. */
-		}
-	}
-}
-static void destroy_right(BinarySearchTree *tree, BinarySearchTreeNode *node)
-{
-	BinarySearchTreeNode         **position;
-	/*  Do not allow destruction of an empty tree. */
-	if (tree->count > 0) {
-		if (node == NULL) 	/* Determine where to destroy nodes. */
-			position = &tree->root;
-		else
-			position = &node->right;
-		if (*position != NULL) {
-			destroy_left(tree, *position);
-			destroy_right(tree, *position);
-			if (tree->DestructorFn)
-				tree->DestructorFn(*position);
-			
-			tree->Allocator->free(*position);
-			*position = NULL;
-			tree->count--;
-		}
-	}
+    BinarySearchTreeNode *node;
+    size_t bytes;
+
+    if (tree->ElementSize > SIZE_MAX - sizeof(*node))
+        return NULL;
+    bytes = sizeof(*node) + tree->ElementSize;
+    node = tree->Allocator->malloc(bytes);
+    if (node == NULL)
+        return NULL;
+    memset(node, 0, sizeof(*node));
+    if (tree->ElementSize != 0)
+        memcpy(node->data, data, tree->ElementSize);
+    ++tree->count;
+    return node;
 }
 
-static int insert(BinarySearchTree *tree, BinarySearchTreeNode **node, const void *data, int *balanced,void *ExtraArgs)
+static int node_height(const BinarySearchTreeNode *node)
 {
-	int cmpval, retval;
-	BinarySearchTreeNode *Node = *node;
-
-	/* Insert the data into the tree. */
-	if (Node != NULL) {
-	   /* Handle insertion into a tree that is not empty. */
-	   cmpval = tree->VTable->Compare(data, Node->data,ExtraArgs);
-		if (cmpval < 0) { /*  Move to the left. */
-		  if (Node->left == NULL) {
-			 if (InsertLeft(tree, Node,data) != 0)
-				return -1;
-			 *balanced = 0;
-		  }
-		  else {
-			 if ((retval = insert(tree, &Node->left, data, balanced,ExtraArgs)) != 0) {
-				return retval;
-			 }
-		  }
-		  /* Ensure that the tree remains balanced. */
-		  if (!(*balanced)) {
-			 switch (Node->factor) {
-				case LEFT:
-				rotate_left(node);
-				*balanced = 1;
-				break;
-				case BALANCED:
-				Node->factor = LEFT;
-				break;
-				case RIGHT:
-				Node->factor = BALANCED;
-				*balanced = 1;
-			 }
-		  }
-	   }
-	   else if (cmpval > 0) {
-	  if (Node->right == NULL) { /* Move to the right */
-		 if (InsertRight(tree, Node, data) != 0)
-				return -1;
-			 *balanced = 0;
-		 }
-		 else {
-			 if ((retval = insert(tree, &Node->right, data, balanced,ExtraArgs)) != 0) {
-				return retval;
-			 }
-		  }
-		  if (!(*balanced)) { /* Ensure that the tree remains balanced. */
-			 switch (Node->factor) {
-				case LEFT:
-				Node->factor = BALANCED;
-				*balanced = 1;
-				break;
-				case BALANCED:
-				Node->factor = RIGHT;
-				break;
-				case RIGHT:
-				rotate_right(node);
-				*balanced = 1;
-			 }
-		  }
-	   }
-	   else {  /*  Handle finding a copy of the data. */
-		   if (!Node->hidden) {
-			 /* Do nothing since the data is in the tree and not hidden. */
-			 return 1;
-		}
-		else { /* Insert the new data and mark it as not hidden. */
-			 memcpy(Node->data, data, tree->ElementSize);
-			 Node->hidden = 0;
-			 /*  Do not rebalance because the tree structure is unchanged. */
-			 *balanced = 1;
-		  }
-	   }
-	}
-	else {	/* Handle insertion into an empty tree. */
-			return InsertLeft(tree, NULL, data);
-	}
-	return 0;
+    int left_height;
+    int right_height;
+    if (node == NULL)
+        return 0;
+    left_height = node_height(node->left);
+    right_height = node_height(node->right);
+    return (left_height > right_height ? left_height : right_height) + 1;
 }
 
-
-static int Remove(BinarySearchTree *tree, const void *data, void *ExtraArgs)
+static void update_factor(BinarySearchTreeNode *node)
 {
-	BinarySearchTreeNode *ap[64];
-	char ad[64];
-	int k = 1,compare;
-	BinarySearchTreeNode *w,*x, **y, *z;
-	CompareInfo ci;
-
-	ad[0] = 0;
-	ap[0] = tree->root;
-
-	ci.ContainerLeft = tree;
-	ci.ContainerRight = NULL;
-	ci.ExtraArgs = ExtraArgs;
-	z = tree->root;
-	for (;;) {
-		if (z == NULL)
-			return 0;
-		compare = tree->VTable->Compare(data,z->data,&ci);
-		if (compare == 0)
-			break;
-		ap[k] = z;
-		ad[k] = compare > 0;
-		z = (compare > 0) ? z->right : z->left;
-		k++;
-		if (k >63) {
-			tree->RaiseError("Tree too deep. Stack overflow in Remove",CONTAINER_INTERNAL_ERROR);
-			return 0;
-		}
-	}
-	if (ad[k-1] == 0) {
-		y = &ap[k-1]->left;
-	}
-	else {
-		y = &ap[k-1]->right;
-	}
-
-	if (z->right == NULL)
-		*y = z->left;
-	else {
-		x = z->right;
-		if (x->left == NULL) {
-			x->left = z->left;
-			*y = x;
-			x->factor = z->factor;
-			ad[k] = 1;
-			ap[k++] = x;
-		}
-		else {
-			int j;
-			w = x->left;
-			j = k++;
-			ad[k] = 0;
-			ap[k++] = x;
-			while (w->left) {
-				x = w;
-				w = x->left;
-				ad[k] = 0;
-				ap[k++] = x;
-			}
-			ad[j] = 1;
-			ap[j] = w;
-			w->left = z->left;
-			x->left = w->right;
-			w->right = z->right;
-			w->factor = z->factor;
-			*y = w;
-		}
-	}
-	if (tree->DestructorFn)
-		tree->DestructorFn(z);
-	
-	tree->Allocator->free(z);
-	tree->count--;
-	if (k < 0) {
-		tree->RaiseError("Counter is less than zero in 'Remove'",CONTAINER_INTERNAL_ERROR);
-		return 0;
-	}
-	while (--k) {
-		w = ap[k];
-		if (ad[k] == 0) {
-			if (w->factor == LEFT) {
-				w->factor = BALANCED;
-				continue;
-			}
-			else if (w->factor == BALANCED) {
-				w->factor = RIGHT;
-				break;
-			}
-			if (w->factor != RIGHT) {
-				goto internal_error;
-			}
-			x = w->right;
-			if (x->factor == BALANCED || x->factor == RIGHT) {
-				w->right = x->left;
-				x->left = w;
-				if (ad[k-1] == 0) {
-					ap[k-1]->left = x;
-				}
-				else {
-					ap[k-1]->right = x;
-				}
-				if (x->factor == BALANCED) {
-					x->factor = LEFT;
-					break;
-				}
-				w->factor = x->factor = BALANCED;
-			}
-			else {
-				if (x->factor != LEFT) {
-				internal_error:
-					tree->RaiseError("Memory corruption in 'Remove'",CONTAINER_INTERNAL_ERROR);
-					return 0;
-				}
-				z = x->left;
-				x->left = z->right;
-				z->right = x;
-				w->right = z->left;
-				z->left = w;
-				if (z->factor == RIGHT) {
-					w->factor = LEFT;
-					x->factor = BALANCED;
-				}
-				else if (x->factor == BALANCED) {
-					w->factor = x->factor = BALANCED;
-				}
-				else {
-					w->factor = BALANCED;
-					x->factor = RIGHT;
-				}
-				z->factor = BALANCED;
-				if (ad[k-1] == 0) {
-					ap[k-1]->left = z;
-				}
-				else {
-					ap[k-1]->right = z;
-				}
-			}
-		}
-		else {
-			if (w->factor == RIGHT) {
-				w->factor = BALANCED;
-				continue;
-			}
-			else if (w->factor == BALANCED) {
-				w->factor = LEFT;
-				break;
-			}
-			x = w->left;
-			if (x->factor == LEFT || x->factor == BALANCED) {
-				w->left = x->right;
-				x->right = w;
-				if (ad[k-1] == 0)
-					ap[k-1]->left = x;
-				else
-					ap[k-1]->right = x;
-				if (x->factor == BALANCED) {
-					x->factor = RIGHT;
-					break;
-				}
-				else {
-					w->factor = x->factor = BALANCED;
-				}
-
-			}
-			else if (x->factor == RIGHT) {
-				z = x->right;
-				x->right = z->left;
-				z->left = x;
-				w->left = z->right;
-				z->right = w;
-				if (z->factor == LEFT) {
-					w->factor = RIGHT;
-					x->factor = BALANCED;
-				}
-				else if (z->factor == BALANCED) {
-					w->factor = x->factor = BALANCED;
-				}
-				else {
-					w->factor = BALANCED;
-					x->factor = LEFT;
-				}
-				z->factor = BALANCED;
-				if (ad[k-1] == 0)
-					ap[k-1]->left = z;
-				else
-					ap[k-1]->right = z;
-
-			}
-		}
-	}
-	return 1;
+    int left_height;
+    int right_height;
+    if (node == NULL)
+        return;
+    left_height = node_height(node->left);
+    right_height = node_height(node->right);
+    node->factor = (signed char)(left_height > right_height ? LEFT :
+                                left_height < right_height ? RIGHT : BALANCED);
 }
 
-
-
-
-#if 0
-static int hide(BinarySearchTree *tree, BinarySearchTreeNode *node, const void *data,void *ExtraArgs)
+/* These names describe the direction of the actual rotation. */
+static BinarySearchTreeNode *rotate_right(BinarySearchTreeNode *node)
 {
-	int retval=-1;
-
-	if (node) {
-		int cmpval = tree->VTable->Compare(data, node->data,ExtraArgs);
-		if (cmpval < 0) {  /*  Move to the left. */
-			retval = hide(tree, node->left, data, ExtraArgs);
-		}
-		else if (cmpval > 0) {/* Move to the right. */
-			retval = hide(tree, node->right, data,ExtraArgs);
-		}
-		else {	   /*  Mark the node as hidden. */
-			node->hidden = 1;
-			retval = 0;
-		}
-	}
-	return retval;
-}
-#endif
-static void *lookup(BinarySearchTree *tree, BinarySearchTreeNode *node, void *data,CompareInfo *ExtraArgs)
-{
-	void *retval=NULL;
-
-	if (node) {
-		int cmpval = tree->VTable->Compare(data, node->data,ExtraArgs);
-	if (cmpval < 0) { /*  Move to the left. */
-			retval = lookup(tree, node->left, data, ExtraArgs);
-		}
-		else if (cmpval > 0) {  /*  Move to the right. */
-			retval = lookup(tree, node->right, data, ExtraArgs);
-		}
-		else {
-			if (!node->hidden) {
-				/*  Pass back the data from the tree. */
-				retval = node->data;
-			}
-		}
-	}
-	return retval;
+    BinarySearchTreeNode *child = node->left;
+    node->left = child->right;
+    child->right = node;
+    update_factor(node);
+    update_factor(child);
+    return child;
 }
 
-static int DefaultCompareFunction(const void *arg1, const void *arg2, CompareInfo *ExtraArgs)
+static BinarySearchTreeNode *rotate_left(BinarySearchTreeNode *node)
 {
-	BinarySearchTree *tree = (BinarySearchTree *)ExtraArgs->ContainerLeft;
-	size_t len = tree->ElementSize;
-	return memcmp(arg1,arg2,len);
+    BinarySearchTreeNode *child = node->right;
+    node->right = child->left;
+    child->left = node;
+    update_factor(node);
+    update_factor(child);
+    return child;
+}
+
+static BinarySearchTreeNode *rebalance(BinarySearchTreeNode *node)
+{
+    int left_height;
+    int right_height;
+
+    if (node == NULL)
+        return NULL;
+    left_height = node_height(node->left);
+    right_height = node_height(node->right);
+    if (left_height - right_height > 1) {
+        if (node_height(node->left->left) < node_height(node->left->right))
+            node->left = rotate_left(node->left);
+        return rotate_right(node);
+    }
+    if (right_height - left_height > 1) {
+        if (node_height(node->right->right) < node_height(node->right->left))
+            node->right = rotate_right(node->right);
+        return rotate_left(node);
+    }
+    update_factor(node);
+    return node;
+}
+
+static int compare_values(const BinarySearchTree *tree, const void *left,
+                          const void *right, void *extra)
+{
+    CompareInfo info;
+    info.ContainerLeft = tree;
+    info.ContainerRight = NULL;
+    info.ExtraArgs = extra;
+    return tree->CompareFn(left, right, &info);
+}
+
+static BinarySearchTreeNode *insert_node(BinarySearchTree *tree,
+                                         BinarySearchTreeNode *node,
+                                         const void *data, void *extra,
+                                         int *result)
+{
+    int comparison;
+
+    if (node == NULL) {
+        node = new_tree_node(tree, data);
+        if (node == NULL) {
+            *result = -1;
+            return NULL;
+        }
+        *result = 0;
+        return node;
+    }
+
+    comparison = compare_values(tree, data, node->data, extra);
+    if (comparison < 0) {
+        BinarySearchTreeNode *child = insert_node(tree, node->left, data,
+                                                   extra, result);
+        if (*result < 0)
+            return node;
+        node->left = child;
+    } else if (comparison > 0) {
+        BinarySearchTreeNode *child = insert_node(tree, node->right, data,
+                                                   extra, result);
+        if (*result < 0)
+            return node;
+        node->right = child;
+    } else if (!node->hidden) {
+        *result = 1;
+        return node;
+    } else {
+        if (tree->ElementSize != 0)
+            memcpy(node->data, data, tree->ElementSize);
+        node->hidden = 0;
+        *result = 0;
+        return node;
+    }
+    return rebalance(node);
+}
+
+static void destroy_nodes(BinarySearchTree *tree, BinarySearchTreeNode *node)
+{
+    if (node == NULL)
+        return;
+    destroy_nodes(tree, node->left);
+    destroy_nodes(tree, node->right);
+    if (tree->DestructorFn != NULL)
+        tree->DestructorFn(node->data);
+    tree->Allocator->free(node);
+}
+
+static BinarySearchTreeNode *detach_min(BinarySearchTreeNode *node,
+                                         BinarySearchTreeNode **minimum)
+{
+    if (node->left == NULL) {
+        *minimum = node;
+        return node->right;
+    }
+    node->left = detach_min(node->left, minimum);
+    return rebalance(node);
+}
+
+static BinarySearchTreeNode *delete_node(BinarySearchTree *tree,
+                                         BinarySearchTreeNode *node,
+                                         const void *data, void *extra,
+                                         int *removed)
+{
+    int comparison;
+
+    if (node == NULL)
+        return NULL;
+    comparison = compare_values(tree, data, node->data, extra);
+    if (comparison < 0) {
+        BinarySearchTreeNode *child = delete_node(tree, node->left, data,
+                                                   extra, removed);
+        if (!*removed)
+            return node;
+        node->left = child;
+        return rebalance(node);
+    }
+    if (comparison > 0) {
+        BinarySearchTreeNode *child = delete_node(tree, node->right, data,
+                                                   extra, removed);
+        if (!*removed)
+            return node;
+        node->right = child;
+        return rebalance(node);
+    }
+
+    *removed = 1;
+    if (node->left == NULL || node->right == NULL) {
+        BinarySearchTreeNode *replacement = node->left != NULL ? node->left
+                                                                  : node->right;
+        if (tree->DestructorFn != NULL)
+            tree->DestructorFn(node->data);
+        tree->Allocator->free(node);
+        --tree->count;
+        return replacement;
+    }
+    {
+        BinarySearchTreeNode *successor = NULL;
+        BinarySearchTreeNode *right = detach_min(node->right, &successor);
+        successor->left = node->left;
+        successor->right = right;
+        if (tree->DestructorFn != NULL)
+            tree->DestructorFn(node->data);
+        tree->Allocator->free(node);
+        --tree->count;
+        return rebalance(successor);
+    }
 }
 
 static int Clear(BinarySearchTree *tree)
 {
-	/* Destroy all nodes in the tree. */
-	destroy_left(tree, NULL);
-	/*  No operations are allowed now, but clear the structure as a precaution. */
-	btreeZero(tree);
-	return 1;
+    if (tree == NULL)
+        return report_error(NULL, "iBinarySearchTree.Clear", CONTAINER_ERROR_BADARG);
+    if (tree->Flags & CONTAINER_READONLY)
+        return report_error(tree, "iBinarySearchTree.Clear", CONTAINER_ERROR_READONLY);
+    destroy_nodes(tree, tree->root);
+    tree->root = NULL;
+    tree->count = 0;
+    ++tree->timestamp;
+    return 1;
 }
 
 static int Finalize(BinarySearchTree *tree)
 {
-	Clear(tree);
-	CurrentAllocator->free(tree);
-	return 1;
+    ContainerAllocator *allocator;
+    if (tree == NULL)
+        return report_error(NULL, "iBinarySearchTree.Finalize", CONTAINER_ERROR_BADARG);
+    allocator = tree->Allocator != NULL ? tree->Allocator : CurrentAllocator;
+    destroy_nodes(tree, tree->root);
+    tree->root = NULL;
+    tree->count = 0;
+    allocator->free(tree);
+    return 1;
 }
 
-static int Insert(BinarySearchTree *tree, const void *data,void *ExtraArgs)
+static int Add(BinarySearchTree *tree, const void *data)
 {
-	int                balanced = 0;
-	CompareInfo ci;
-
-	ci.ContainerLeft = tree;
-	ci.ContainerRight = NULL;
-	ci.ExtraArgs = ExtraArgs;
-
-	return insert(tree, &tree->root, data, &balanced, &ci);
+    int result = -1;
+    if (tree == NULL || !valid_data(tree, data))
+        return report_error(tree, "iBinarySearchTree.Add", CONTAINER_ERROR_BADARG);
+    if (tree->Flags & CONTAINER_READONLY)
+        return report_error(tree, "iBinarySearchTree.Add", CONTAINER_ERROR_READONLY);
+    tree->root = insert_node(tree, tree->root, data, NULL, &result);
+    if (result == 0)
+        ++tree->timestamp;
+    if (result < 0)
+        report_error(tree, "iBinarySearchTree.Add", CONTAINER_ERROR_NOMEMORY);
+    return result;
 }
 
-static int Add(BinarySearchTree *tree,const void *data)
+static int Insert(BinarySearchTree *tree, const void *data, void *extra)
 {
-	int balanced = 0;
-	return insert(tree,&tree->root,data,&balanced,tree);
+    int result = -1;
+    if (tree == NULL || !valid_data(tree, data))
+        return report_error(tree, "iBinarySearchTree.Insert", CONTAINER_ERROR_BADARG);
+    if (tree->Flags & CONTAINER_READONLY)
+        return report_error(tree, "iBinarySearchTree.Insert", CONTAINER_ERROR_READONLY);
+    tree->root = insert_node(tree, tree->root, data, extra, &result);
+    if (result == 0)
+        ++tree->timestamp;
+    if (result < 0)
+        report_error(tree, "iBinarySearchTree.Insert", CONTAINER_ERROR_NOMEMORY);
+    return result;
+}
+
+static int Remove(BinarySearchTree *tree, const void *data, void *extra)
+{
+    int removed = 0;
+    if (tree == NULL || !valid_data(tree, data))
+        return report_error(tree, "iBinarySearchTree.Erase", CONTAINER_ERROR_BADARG);
+    if (tree->Flags & CONTAINER_READONLY)
+        return report_error(tree, "iBinarySearchTree.Erase", CONTAINER_ERROR_READONLY);
+    tree->root = delete_node(tree, tree->root, data, extra, &removed);
+    if (removed)
+        ++tree->timestamp;
+    return removed;
+}
+
+static void *lookup(BinarySearchTree *tree, BinarySearchTreeNode *node,
+                    void *data)
+{
+    while (node != NULL) {
+        int comparison = compare_values(tree, data, node->data, NULL);
+        if (comparison < 0)
+            node = node->left;
+        else if (comparison > 0)
+            node = node->right;
+        else
+            return node->hidden ? NULL : node->data;
+    }
+    return NULL;
 }
 
 static void *Find(BinarySearchTree *tree, void *data)
 {
-	CompareInfo ci;
-
-	ci.ContainerLeft = tree;
-	ci.ContainerRight = NULL;
-	ci.ExtraArgs = NULL;
-	return lookup(tree, tree->root, data, &ci);
+    if (tree == NULL || !valid_data(tree, data)) {
+        report_error(tree, "iBinarySearchTree.Find", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    return lookup(tree, tree->root, data);
 }
 
-static int Visit(BinarySearchTreeNode *node,int (*Applyfn)(const void *data,void *arg),void *arg)
+static int Contains(BinarySearchTree *tree, void *data)
 {
-	int r=1;
-	if (node->left)
-		r += Visit(node->left,Applyfn,arg);
-	Applyfn(node->data,arg);
-	if (node->right)
-		r += Visit(node->right,Applyfn,arg);
-	return r;
+    if (tree == NULL || !valid_data(tree, data))
+        return report_error(tree, "iBinarySearchTree.Contains", CONTAINER_ERROR_BADARG);
+    return Find(tree, data) != NULL ? 1 : CONTAINER_ERROR_NOTFOUND;
 }
 
-static int Apply(BinarySearchTree *tree, int (*Applyfn)(const void *data,void *arg),void *arg)
+static int visit_nodes(BinarySearchTreeNode *node,
+                       int (*Applyfn)(const void *data, void *arg), void *arg)
 {
-	if (tree->root == NULL)
-		return 0;
-	return Visit(tree->root,Applyfn,arg);
+    if (node == NULL)
+        return 1;
+    if (!visit_nodes(node->left, Applyfn, arg))
+        return 0;
+    if (!Applyfn(node->data, arg))
+        return 0;
+    return visit_nodes(node->right, Applyfn, arg);
 }
 
-static ErrorFunction SetErrorFunction(BinarySearchTree *ST,ErrorFunction fn)
+static int Apply(BinarySearchTree *tree,
+                 int (*Applyfn)(const void *data, void *arg), void *arg)
 {
-	ErrorFunction old;
-	if (ST == NULL) return iError.RaiseError;
-	old = ST->RaiseError;
-	ST->RaiseError = (fn) ? fn : iError.EmptyErrorFunction;
-	return old;
+    if (tree == NULL || Applyfn == NULL)
+        return report_error(tree, "iBinarySearchTree.Apply", CONTAINER_ERROR_BADARG);
+    if (tree->root == NULL)
+        return 0;
+    return visit_nodes(tree->root, Applyfn, arg);
 }
 
-static size_t Sizeof(BinarySearchTree *ST)
+static ErrorFunction SetErrorFunction(BinarySearchTree *tree, ErrorFunction fn)
 {
-	if (ST == NULL)
-		return sizeof(BinarySearchTree);
-	return sizeof(*ST) + ST->ElementSize * ST->count + ST->count *sizeof(BinarySearchTreeNode);
+    ErrorFunction old;
+    if (tree == NULL)
+        return iError.RaiseError;
+    old = tree->RaiseError;
+    tree->RaiseError = fn != NULL ? fn : iError.EmptyErrorFunction;
+    return old;
 }
 
-static CompareFunction SetCompareFunction(BinarySearchTree *l,CompareFunction fn)
+static size_t Sizeof(BinarySearchTree *tree)
 {
-	CompareFunction oldfn = l->VTable->Compare;
-
-	if (fn != NULL) /* Treat NULL as an enquiry to get the compare function */
-		l->VTable->Compare = fn;
-	return oldfn;
+    if (tree == NULL)
+        return sizeof(BinarySearchTree);
+    return sizeof(*tree) + tree->count * (sizeof(BinarySearchTreeNode) +
+                                          tree->ElementSize);
 }
 
-static int compareHeaders(const BinarySearchTree *left,const BinarySearchTree *right)
+static int DefaultCompareFunction(const void *left, const void *right,
+                                  CompareInfo *extra)
 {
-	if (left->count != right->count || left->ElementSize != right->ElementSize)
-		return 0;
-	if (left->VTable->Compare != right->VTable->Compare)
-		return 0;
-	return 1;
+    const BinarySearchTree *tree = extra != NULL ? extra->ContainerLeft : NULL;
+    size_t element_size = tree != NULL ? tree->ElementSize : 0;
+    if (element_size == 0)
+        return 0;
+    if (left == NULL || right == NULL)
+        return left == right ? 0 : (left == NULL ? -1 : 1);
+    return memcmp(left, right, element_size);
 }
 
-static int compareNodes(const BinarySearchTreeNode *left,const BinarySearchTreeNode *right,CompareInfo *ci)
+static CompareFunction SetCompareFunction(BinarySearchTree *tree,
+                                           CompareFunction fn)
 {
-	const BinarySearchTree *tree;
-
-	if (left->hidden != right->hidden || left->factor != right->factor)
-		return 0;
-	if ((left->left == NULL && right->left != NULL) ||
-		(left->left != NULL && right->left == NULL))
-		return 0;
-
-	if ((left->right == NULL && right->right != NULL) ||
-		(left->right != NULL && right->right == NULL))
-		return 0;
-	tree = ci->ContainerLeft;
-	if (tree->VTable->Compare(left->data,right->data,ci))
-		return 0;
-	if (left->left) {
-		if (!compareNodes(left->left,right->left,ci))
-			return 0;
-	}
-	if (left->right) {
-		if (!compareNodes(left->right,right->right,ci))
-			return 0;
-	}
-	return 1;
-
+    CompareFunction old;
+    if (tree == NULL)
+        return NULL;
+    old = tree->CompareFn;
+    if (fn != NULL)
+        tree->CompareFn = fn;
+    return old;
 }
+
+static int compare_headers(const BinarySearchTree *left,
+                           const BinarySearchTree *right)
+{
+    return left != NULL && right != NULL &&
+           left->count == right->count &&
+           left->ElementSize == right->ElementSize &&
+           left->CompareFn == right->CompareFn;
+}
+
+static int compare_nodes(const BinarySearchTree *tree,
+                         const BinarySearchTreeNode *left,
+                         const BinarySearchTreeNode *right)
+{
+    if (left == NULL || right == NULL)
+        return left == right;
+    if (left->hidden != right->hidden || left->factor != right->factor)
+        return 0;
+    if (compare_values(tree, left->data, right->data, NULL) != 0)
+        return 0;
+    return compare_nodes(tree, left->left, right->left) &&
+           compare_nodes(tree, left->right, right->right);
+}
+
 static int Equal(const BinarySearchTree *left, const BinarySearchTree *right)
 {
-	CompareInfo ci;
-	if (!compareHeaders(left,right))
-		return 0;
-	ci.ExtraArgs = NULL;
-	ci.ContainerLeft = (void *)left;
-	ci.ContainerRight = NULL;
-	return compareNodes(left->root,right->root,&ci);
+    if (!compare_headers(left, right))
+        return 0;
+    if (left->root == NULL || right->root == NULL)
+        return left->root == right->root;
+    return compare_nodes(left, left->root, right->root);
+}
+
+static BinarySearchTreeNode *node_at(BinarySearchTreeNode *node, size_t *index,
+                                     size_t wanted)
+{
+    BinarySearchTreeNode *result;
+    if (node == NULL)
+        return NULL;
+    result = node_at(node->left, index, wanted);
+    if (result != NULL)
+        return result;
+    if (*index == wanted)
+        return node;
+    ++*index;
+    return node_at(node->right, index, wanted);
+}
+
+static BinarySearchTreeNode *iterator_node(BinarySearchTreeIterator *iterator,
+                                            size_t index)
+{
+    size_t current = 0;
+    return node_at(iterator->tree->root, &current, index);
+}
+
+static int iterator_stale(BinarySearchTreeIterator *iterator,
+                           const char *operation)
+{
+    if (iterator == NULL || iterator->magic != SEARCHTREE_ITERATOR_MAGIC)
+        return 1;
+    if (iterator->timestamp != iterator->tree->timestamp) {
+        iterator->tree->RaiseError(operation, CONTAINER_ERROR_OBJECT_CHANGED);
+        return 1;
+    }
+    return 0;
+}
+
+static void *iterator_value(BinarySearchTreeIterator *iterator)
+{
+    if (iterator->current == NULL)
+        return NULL;
+    if (iterator->tree->Flags & CONTAINER_READONLY) {
+        if (iterator->tree->ElementSize != 0)
+            memcpy(iterator->buffer, iterator->current->data,
+                   iterator->tree->ElementSize);
+        return iterator->buffer;
+    }
+    return iterator->current->data;
+}
+
+static void *IteratorGetFirst(Iterator *base)
+{
+    BinarySearchTreeIterator *iterator = (BinarySearchTreeIterator *)base;
+    if (iterator_stale(iterator, "iBinarySearchTree.GetFirst") ||
+        iterator->tree->count == 0)
+        return NULL;
+    iterator->index = 0;
+    iterator->current = iterator_node(iterator, iterator->index);
+    return iterator_value(iterator);
+}
+
+static void *IteratorGetLast(Iterator *base)
+{
+    BinarySearchTreeIterator *iterator = (BinarySearchTreeIterator *)base;
+    if (iterator_stale(iterator, "iBinarySearchTree.GetLast") ||
+        iterator->tree->count == 0)
+        return NULL;
+    iterator->index = iterator->tree->count - 1;
+    iterator->current = iterator_node(iterator, iterator->index);
+    return iterator_value(iterator);
+}
+
+static void *IteratorGetCurrent(Iterator *base)
+{
+    BinarySearchTreeIterator *iterator = (BinarySearchTreeIterator *)base;
+    if (iterator_stale(iterator, "iBinarySearchTree.GetCurrent"))
+        return NULL;
+    return iterator_value(iterator);
+}
+
+static void *IteratorGetNext(Iterator *base)
+{
+    BinarySearchTreeIterator *iterator = (BinarySearchTreeIterator *)base;
+    if (iterator_stale(iterator, "iBinarySearchTree.GetNext") ||
+        iterator->current == NULL || iterator->index + 1 >= iterator->tree->count)
+        return NULL;
+    ++iterator->index;
+    iterator->current = iterator_node(iterator, iterator->index);
+    return iterator_value(iterator);
+}
+
+static void *IteratorGetPrevious(Iterator *base)
+{
+    BinarySearchTreeIterator *iterator = (BinarySearchTreeIterator *)base;
+    if (iterator_stale(iterator, "iBinarySearchTree.GetPrevious") ||
+        iterator->current == NULL || iterator->index == 0)
+        return NULL;
+    --iterator->index;
+    iterator->current = iterator_node(iterator, iterator->index);
+    return iterator_value(iterator);
+}
+
+static void *IteratorSeek(Iterator *base, size_t index)
+{
+    BinarySearchTreeIterator *iterator = (BinarySearchTreeIterator *)base;
+    if (iterator_stale(iterator, "iBinarySearchTree.Seek") ||
+        index >= iterator->tree->count)
+        return NULL;
+    iterator->index = index;
+    iterator->current = iterator_node(iterator, index);
+    return iterator_value(iterator);
+}
+
+static size_t IteratorGetPosition(Iterator *base)
+{
+    BinarySearchTreeIterator *iterator = (BinarySearchTreeIterator *)base;
+    if (iterator_stale(iterator, "iBinarySearchTree.GetPosition"))
+        return (size_t)-1;
+    return iterator->index;
+}
+
+static int IteratorReplace(Iterator *base, void *data, int direction)
+{
+    (void)base;
+    (void)data;
+    (void)direction;
+    return CONTAINER_ERROR_NOTIMPLEMENTED;
 }
 
 static Iterator *NewIterator(BinarySearchTree *tree)
 {
-	return NULL;
+    BinarySearchTreeIterator *iterator;
+    if (tree == NULL) {
+        report_error(NULL, "iBinarySearchTree.NewIterator", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    iterator = tree->Allocator->calloc(1, sizeof(*iterator));
+    if (iterator == NULL) {
+        report_error(tree, "iBinarySearchTree.NewIterator", CONTAINER_ERROR_NOMEMORY);
+        return NULL;
+    }
+    if (tree->ElementSize != 0 && (tree->Flags & CONTAINER_READONLY)) {
+        iterator->buffer = tree->Allocator->malloc(tree->ElementSize);
+        if (iterator->buffer == NULL) {
+            tree->Allocator->free(iterator);
+            report_error(tree, "iBinarySearchTree.NewIterator", CONTAINER_ERROR_NOMEMORY);
+            return NULL;
+        }
+    }
+    iterator->it.GetNext = IteratorGetNext;
+    iterator->it.GetPrevious = IteratorGetPrevious;
+    iterator->it.GetFirst = IteratorGetFirst;
+    iterator->it.GetCurrent = IteratorGetCurrent;
+    iterator->it.GetLast = IteratorGetLast;
+    iterator->it.Seek = IteratorSeek;
+    iterator->it.GetPosition = IteratorGetPosition;
+    iterator->it.Replace = IteratorReplace;
+    iterator->magic = SEARCHTREE_ITERATOR_MAGIC;
+    iterator->tree = tree;
+    iterator->Allocator = tree->Allocator;
+    iterator->timestamp = tree->timestamp;
+    iterator->index = (size_t)-1;
+    return &iterator->it;
 }
 
-static int DeleteIterator(Iterator *tree)
+static int DeleteIterator(Iterator *base)
 {
-	return 1;
+    BinarySearchTreeIterator *iterator;
+    if (base == NULL)
+        return CONTAINER_ERROR_BADARG;
+    iterator = (BinarySearchTreeIterator *)base;
+    if (iterator->magic != SEARCHTREE_ITERATOR_MAGIC)
+        return CONTAINER_ERROR_WRONG_ITERATOR;
+    if (iterator->buffer != NULL)
+        iterator->Allocator->free(iterator->buffer);
+    iterator->magic = 0;
+    iterator->Allocator->free(iterator);
+    return 1;
 }
 
-static int Contains(BinarySearchTree *tree , void *data)
+static BinarySearchTree *Merge(BinarySearchTree *left, BinarySearchTree *right,
+                               const void *data)
 {
-	if (Find(tree,data))
-		return 1;
-	return CONTAINER_ERROR_NOTFOUND;
+    BinarySearchTree *merge;
+    if (left == NULL || right == NULL ||
+        left->ElementSize != right->ElementSize ||
+        left->CompareFn != right->CompareFn ||
+        left->Allocator != right->Allocator ||
+        left->DestructorFn != right->DestructorFn ||
+        !valid_data(left, data))
+        return NULL;
+    if ((left->Flags & CONTAINER_READONLY) || (right->Flags & CONTAINER_READONLY))
+        return NULL;
+    merge = create_with_allocator(left->ElementSize, left->Allocator);
+    if (merge == NULL)
+        return NULL;
+    merge->Flags = left->Flags;
+    merge->RaiseError = left->RaiseError;
+    merge->CompareFn = left->CompareFn;
+    merge->DestructorFn = left->DestructorFn;
+    merge->root = new_tree_node(merge, data);
+    if (merge->root == NULL) {
+        merge->Allocator->free(merge);
+        return NULL;
+    }
+    merge->root->left = left->root;
+    merge->root->right = right->root;
+    update_factor(merge->root);
+    merge->count += left->count + right->count;
+    left->root = NULL;
+    left->count = 0;
+    right->root = NULL;
+    right->count = 0;
+    ++left->timestamp;
+    ++right->timestamp;
+    ++merge->timestamp;
+    return merge;
 }
-static DestructorFunction SetDestructor(BinarySearchTree *cb,DestructorFunction fn)
+
+static DestructorFunction SetDestructor(BinarySearchTree *tree,
+                                        DestructorFunction fn)
 {
-	DestructorFunction oldfn;
-	if (cb == NULL)
-		return NULL;
-	oldfn = cb->DestructorFn;
-	if (fn)
-		cb->DestructorFn = fn;
-	return oldfn;
+    DestructorFunction old;
+    if (tree == NULL)
+        return NULL;
+    old = tree->DestructorFn;
+    tree->DestructorFn = fn;
+    return old;
 }
 
 BinarySearchTreeInterface iBinarySearchTree = {
-	GetCount,
-	GetFlags,
-	SetFlags,
-	Clear,
-	Contains,
-	Remove,
-	Finalize,
-	Apply,
-	Equal,
-	Add,
-	Insert,
-	SetErrorFunction,
-	SetCompareFunction,
-	Sizeof,
-	DefaultCompareFunction,
-	Merge,
-	NewIterator,
-	DeleteIterator,
-	Create,
-	SetDestructor,
+    GetCount,
+    GetFlags,
+    SetFlags,
+    Clear,
+    Contains,
+    Remove,
+    Finalize,
+    Apply,
+    Equal,
+    Add,
+    Insert,
+    SetErrorFunction,
+    SetCompareFunction,
+    Sizeof,
+    DefaultCompareFunction,
+    Merge,
+    NewIterator,
+    DeleteIterator,
+    Create,
+    SetDestructor,
 };
-

@@ -8,46 +8,79 @@ typedef struct _tagObserver {
 
 static Observer *ObserverVector;
 static size_t vsize;
+/* The vector has process lifetime and no public reset operation.  Keep the
+   allocator that owns it so a later iAllocator.Change cannot make a growth
+   operation pass a block to a different allocator. */
+static const ContainerAllocator *ObserverAllocator;
 #define CHUNK_SIZE	25
 
 static int Subscribe(void *ObservedObject, ObserverFunction callback, unsigned flags)
 {
         size_t i;
-        Observer *pObs=NULL;
-        GenericContainer *gen = ObservedObject;
-        unsigned Subjectflags = gen->Flags;
+        Observer *pObs = NULL;
+        const ContainerAllocator *allocator;
 
-        Subjectflags |= CONTAINER_HAS_OBSERVER;
-        gen->Flags=Subjectflags;
+        if (ObservedObject == NULL || callback == NULL || flags == 0) {
+                iError.RaiseError("iObserver.Subscribe",CONTAINER_ERROR_BADARG);
+                return CONTAINER_ERROR_BADARG;
+        }
+
         if (ObserverVector == NULL) {
-		ObserverVector = calloc(sizeof(Observer),CHUNK_SIZE);
-		if (ObserverVector == NULL) {
-			iError.RaiseError("iObserver.Subscribe",CONTAINER_ERROR_NOMEMORY);
-	                return CONTAINER_ERROR_NOMEMORY;
-		}
-		vsize = CHUNK_SIZE;
+                allocator = CurrentAllocator;
+                if (allocator == NULL || allocator->calloc == NULL) {
+                        iError.RaiseError("iObserver.Subscribe",CONTAINER_ERROR_NOMEMORY);
+                        return CONTAINER_ERROR_NOMEMORY;
+                }
+                ObserverVector = allocator->calloc(CHUNK_SIZE,
+                                                   sizeof(*ObserverVector));
+                if (ObserverVector == NULL) {
+                        iError.RaiseError("iObserver.Subscribe",CONTAINER_ERROR_NOMEMORY);
+                        return CONTAINER_ERROR_NOMEMORY;
+                }
+                ObserverAllocator = allocator;
+                vsize = CHUNK_SIZE;
         }
-        for (i=0; i<vsize;i++) {
-            if (ObserverVector[i].ObservedObject==NULL) {
-				pObs = ObserverVector+i;
-				break;
-            }
+        for (i = 0; i < vsize; i++) {
+                if (ObserverVector[i].ObservedObject == NULL) {
+                        pObs = ObserverVector + i;
+                        break;
+                }
         }
-	if (i >= vsize) {
-        	Observer *tmp = realloc(ObserverVector,(vsize+CHUNK_SIZE)*sizeof(Observer));
-        	if (tmp == NULL) {
-               		iError.RaiseError("iObserver.Subscribe",CONTAINER_ERROR_NOMEMORY);
-                	return CONTAINER_ERROR_NOMEMORY;
-		}
-        	ObserverVector = tmp;
-        	memset(ObserverVector+vsize+1,0,(CHUNK_SIZE-1)*sizeof(Observer));
-		pObs = ObserverVector + vsize;
-        	vsize+= CHUNK_SIZE;
-	}
-	pObs->ObservedObject = ObservedObject;
-	pObs->Callback = callback;
-	pObs->Flags = flags;
-	return 1;
+        if (pObs == NULL) {
+                size_t old_size = vsize;
+                size_t new_size;
+                Observer *tmp;
+
+                if (old_size > (size_t)-1 - CHUNK_SIZE)
+                        goto no_memory;
+                new_size = old_size + CHUNK_SIZE;
+                if (new_size > (size_t)-1 / sizeof(*ObserverVector))
+                        goto no_memory;
+                allocator = ObserverAllocator;
+                if (allocator == NULL || allocator->realloc == NULL)
+                        goto no_memory;
+                tmp = allocator->realloc(ObserverVector,
+                                         new_size * sizeof(*ObserverVector));
+                if (tmp == NULL)
+                        goto no_memory;
+                ObserverVector = tmp;
+                memset(ObserverVector + old_size, 0,
+                       CHUNK_SIZE * sizeof(*ObserverVector));
+                pObs = ObserverVector + old_size;
+                vsize = new_size;
+        }
+
+        /* No operation after this point can fail, so the subject flag is
+           changed only after the relationship has been committed. */
+        pObs->ObservedObject = ObservedObject;
+        pObs->Callback = callback;
+        pObs->Flags = flags;
+        ((GenericContainer *)ObservedObject)->Flags |= CONTAINER_HAS_OBSERVER;
+        return 1;
+
+no_memory:
+        iError.RaiseError("iObserver.Subscribe",CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
 }
 
 
@@ -55,11 +88,21 @@ static int Notify(const void *ObservedObject,unsigned operation,const void *Extr
 {
 	int count=0;
 	size_t idx;
+	size_t scan_limit;
 	const void *ExtraInfo[2];
+
+	if (ObservedObject == NULL || operation == 0) {
+		iError.RaiseError("iObserver.Notify",CONTAINER_ERROR_BADARG);
+		return CONTAINER_ERROR_BADARG;
+	}
 
 	ExtraInfo[0] = ExtraInfo1;
 	ExtraInfo[1] = ExtraInfo2;
-	for (idx=0; idx < vsize;idx++) {
+	/* A callback may subscribe while notification is in progress.  Do not
+	   chase a table grown by that callback; the notification covers the
+	   table extent that existed when it began. */
+	scan_limit = vsize;
+	for (idx=0; idx < scan_limit;idx++) {
 		if (ObserverVector[idx].ObservedObject == ObservedObject) {
 			if (ObserverVector[idx].Flags & operation) {
 				ObserverVector[idx].Callback(ObservedObject,operation,ExtraInfo);

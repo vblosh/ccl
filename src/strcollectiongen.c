@@ -16,17 +16,35 @@ extern int stricmp(const char *,const char *);
 static int decode_ule128(FILE *stream, size_t *val)
 {
         size_t i = 0;
+        size_t shift = 0;
+        size_t result = 0;
         int c;
 
-        val[0] = 0;
+        if (stream == NULL || val == NULL)
+                return EOF;
         do {
+                unsigned char byte;
+                size_t part;
                 c = fgetc(stream);
                 if (c == EOF)
                         return EOF;
-                val[0] += ((c & 0x7f) << (i * 7));
+                byte = (unsigned char)c;
+                part = (size_t)(byte & 0x7f);
+                if (shift >= sizeof(size_t) * CHAR_BIT ||
+                    (part > (SIZE_MAX >> shift)))
+                        return EOF;
+                result |= part << shift;
                 i++;
-        } while((0x80 & c) && (i < 2*sizeof(size_t)));
-        return (int)i;
+                if (!(byte & 0x80)) {
+                        /* Reject non-canonical encodings such as 0x80 0x00. */
+                        if (i > 1 && part == 0)
+                                return EOF;
+                        *val = result;
+                        return (int)i;
+                }
+                shift += 7;
+        } while (i < (sizeof(size_t) * CHAR_BIT + 6) / 7);
+        return EOF;
 }
 
 static int encode_ule128(FILE *stream,size_t val)
@@ -58,6 +76,33 @@ static int NullPtrError(const char *fnName)
     iError.RaiseError(buf,CONTAINER_ERROR_BADARG);
     return CONTAINER_ERROR_BADARG;
 }
+
+static int SizeAdd(size_t a,size_t b,size_t *result)
+{
+    if (b > SIZE_MAX-a)
+        return 0;
+    *result = a+b;
+    return 1;
+}
+
+static int SizeMul(size_t a,size_t b,size_t *result)
+{
+    if (a != 0 && b > SIZE_MAX/a)
+        return 0;
+    *result = a*b;
+    return 1;
+}
+
+static void DestroyString(ElementType *SC,CHAR_TYPE *str)
+{
+    if (str == NULL)
+        return;
+    if (SC->DestructorFn)
+        SC->DestructorFn(str);
+    SC->Allocator->free(str);
+}
+
+static int SortCompare(const void *left,const void *right,CompareInfo *info);
 static int doerrorCall(ErrorFunction err,const char *fnName,int code)
 {
     char buf[256];
@@ -160,6 +205,10 @@ static int Mismatch(const ElementType *a1,const ElementType *a2,size_t *mismatch
     CompareInfo ci;
     CHAR_TYPE **p1,**p2;
 
+    if (mismatch == NULL) {
+        NullPtrError("Mismatch");
+        return CONTAINER_ERROR_BADARG;
+    }
     *mismatch = 0;
     if (a1 == a2)
         return 0;
@@ -169,12 +218,12 @@ static int Mismatch(const ElementType *a1,const ElementType *a2,size_t *mismatch
     if (siz > a2->count)
         siz = a2->count;
     if (siz == 0)
-        return 1;
+        return a1->count != a2->count;
     p1 = a1->contents;
     p2 = a2->contents;
     ci.ContainerLeft = (ElementType *)a1;
     ci.ContainerRight = (ElementType *)a2;
-    ci.ExtraArgs = NULL;
+    ci.ExtraArgs = a1->StringCompareContext;
     for (i=0;i<siz;i++) {
         if (a1->strcompare((const void **)p1,(const void **)p2,&ci) != 0) {
             *mismatch = i;
@@ -208,22 +257,35 @@ static unsigned SetFlags(ElementType *SC,unsigned newval)
 static int ResizeTo(ElementType *SC,size_t newcapacity)
 {
     CHAR_TYPE **oldcontents;
+    CHAR_TYPE **newcontents = NULL;
+    size_t bytes;
+    size_t keep;
+    size_t i;
 
     if (SC == NULL) {
         return NullPtrError("ResizeTo");
     }
-    oldcontents = SC->contents;
-    SC->contents = SC->Allocator->malloc(newcapacity*sizeof(CHAR_TYPE *));
-    if (SC->contents == NULL) {
-        SC->contents = oldcontents;
+    if (!SizeMul(newcapacity,sizeof(*newcontents),&bytes))
         return NoMemoryError(SC,"ResizeTo");
+    if (bytes != 0) {
+        newcontents = SC->Allocator->malloc(bytes);
+        if (newcontents == NULL)
+            return NoMemoryError(SC,"ResizeTo");
+        memset(newcontents,0,bytes);
     }
-    memset(SC->contents,0,sizeof(CHAR_TYPE *)*newcapacity);
-    memcpy(SC->contents,oldcontents,SC->count*sizeof(CHAR_TYPE *));
+    oldcontents = SC->contents;
+    keep = SC->count < newcapacity ? SC->count : newcapacity;
+    if (newcapacity < SC->count) {
+        for (i=newcapacity; i<SC->count; ++i)
+            DestroyString(SC,SC->contents[i]);
+    }
+    if (keep != 0)
+        memcpy(newcontents,oldcontents,keep*sizeof(*newcontents));
+    SC->contents = newcontents;
     SC->capacity = newcapacity;
-    if (SC->DestructorFn)
-        SC->DestructorFn(oldcontents);
-    SC->Allocator->free(oldcontents);
+    SC->count = keep;
+    if (oldcontents != NULL)
+        SC->Allocator->free(oldcontents);
     SC->timestamp++;
     return 1;
 }
@@ -238,7 +300,13 @@ static int ResizeTo(ElementType *SC,size_t newcapacity)
 ------------------------------------------------------------------------*/
 static int Resize(ElementType *SC)
 {
-    return ResizeTo(SC, SC->capacity + 1+SC->capacity/4);
+    size_t growth;
+    if (SC == NULL)
+        return NullPtrError("Resize");
+    growth = SC->capacity/4 + 1;
+    if (growth > SIZE_MAX-SC->capacity)
+        return NoMemoryError(SC,"Resize");
+    return ResizeTo(SC, SC->capacity + growth);
 }
 
 /*------------------------------------------------------------------------
@@ -256,20 +324,17 @@ static int Add(ElementType *SC,const CHAR_TYPE *newval)
 
     if (SC->Flags & CONTAINER_READONLY)
         return ReadOnlyError(SC,"Add");
-    if ((SC->count+1) >= SC->capacity) {
+    if (newval == NULL)
+        return BadArgError(SC,"Add");
+    if (SC->count >= SC->capacity) {
         int r = Resize(SC);
         if (r <= 0)
             return r;
     }
 
-    if (newval) {
-        SC->contents[SC->count] = DuplicateString(SC,newval,"Add");
-        if (SC->contents[SC->count] == NULL) {
-            return 0;
-        }
-    }
-    else
-        SC->contents[SC->count] = NULL;
+    SC->contents[SC->count] = DuplicateString(SC,newval,"Add");
+    if (SC->contents[SC->count] == NULL)
+        return 0;
     SC->timestamp++;
     ++SC->count;
     return 1;
@@ -278,7 +343,9 @@ static int Add(ElementType *SC,const CHAR_TYPE *newval)
 static int AddRange(ElementType *SC,size_t n, const CHAR_TYPE **data)
 {
     size_t newcapacity;
-    CHAR_TYPE **p;
+    size_t i;
+    size_t bytes;
+    CHAR_TYPE **copies = NULL;
 
     if (n == 0)
         return 1;
@@ -291,21 +358,47 @@ static int AddRange(ElementType *SC,size_t n, const CHAR_TYPE **data)
     if (SC->Flags & CONTAINER_READONLY) {
         return ReadOnlyError(SC,"AddRange");
     }
-
-    newcapacity = SC->count+n;
-    if (newcapacity >= SC->capacity-1) {
-        CHAR_TYPE **newcontents;
-        newcapacity += SC->count/4;
-        newcontents = SC->Allocator->realloc(SC->contents,newcapacity*sizeof(void *));
-        if (newcontents == NULL) {
-            return NoMemoryError(SC,"AddRange");
+    if (n > SIZE_MAX-SC->count)
+        return NoMemoryError(SC,"AddRange");
+    if (!SizeMul(n,sizeof(*copies),&bytes))
+        return NoMemoryError(SC,"AddRange");
+    copies = SC->Allocator->malloc(bytes);
+    if (copies == NULL)
+        return NoMemoryError(SC,"AddRange");
+    memset(copies,0,bytes);
+    for (i=0; i<n; ++i) {
+        if (data[i] == NULL) {
+            for (i=0; i<n; ++i)
+                DestroyString(SC,copies[i]);
+            SC->Allocator->free(copies);
+            return BadArgError(SC,"AddRange");
         }
-        SC->capacity = newcapacity;
-        SC->contents = newcontents;
+        copies[i] = DuplicateString(SC,data[i],"AddRange");
+        if (copies[i] == NULL) {
+            while (i > 0)
+                DestroyString(SC,copies[--i]);
+            SC->Allocator->free(copies);
+            return 0;
+        }
     }
-    p = SC->contents;
-    p += SC->count;
-    memcpy(p,data,n*sizeof(void *));
+    newcapacity = SC->count+n;
+    if (newcapacity > SC->capacity) {
+        size_t growth = newcapacity/4 + 1;
+        if (growth > SIZE_MAX-newcapacity)
+            growth = 0;
+        if (growth != 0 && newcapacity <= SIZE_MAX-growth)
+            newcapacity += growth;
+        if (newcapacity < SC->count+n)
+            newcapacity = SC->count+n;
+        if (ResizeTo(SC,newcapacity) <= 0) {
+            for (i=0; i<n; ++i)
+                DestroyString(SC,copies[i]);
+            SC->Allocator->free(copies);
+            return 0;
+        }
+    }
+    memcpy(SC->contents+SC->count,copies,n*sizeof(*copies));
+    SC->Allocator->free(copies);
     SC->count += n;
     SC->timestamp++;
 
@@ -333,13 +426,11 @@ static int Clear(ElementType *SC)
     if (SC->Flags & CONTAINER_READONLY)
         return ReadOnlyError(SC,"Clear");
     for (i=0; i<SC->count;i++) {
-        if (SC->DestructorFn)
-            SC->DestructorFn(SC->contents[i]);
-        SC->Allocator->free(SC->contents[i]);
+        DestroyString(SC,SC->contents[i]);
         SC->contents[i] = NULL;
     }
     SC->count = 0;
-    SC->timestamp=0;
+    SC->timestamp++;
     SC->Flags=0;
     return 1;
 }
@@ -347,7 +438,6 @@ static int Clear(ElementType *SC)
 
 static int Contains(const ElementType *SC,const CHAR_TYPE *str)
 {
-    int c;
     size_t i;
 
     if (SC == NULL) {
@@ -355,10 +445,9 @@ static int Contains(const ElementType *SC,const CHAR_TYPE *str)
     }
     if (str == NULL)
         return 0;
-    c = *str;
     for (i=0; i<SC->count;i++) {
-        if (c == SC->contents[i][0] && !SC->strcompare((const void **)&SC->contents[i],
-            (const void **)&str,NULL))
+    if (!SC->strcompare((const void **)&SC->contents[i],
+            (const void **)&str,SC->StringCompareContext))
             return 1;
     }
     return 0;
@@ -403,6 +492,8 @@ static int IndexOf(const ElementType *SC,const CHAR_TYPE *str,size_t *result)
     }
     if (str == NULL)
         return BadArgError(SC,"IndexOf");
+    if (result == NULL)
+        return BadArgError(SC,"IndexOf");
 
     for (i=0; i<SC->count;i++) {
         if (!SC->strcompare((const void **)&SC->contents[i],
@@ -418,18 +509,13 @@ static int Finalize(ElementType *SC)
     size_t i;
 
     if (SC == NULL) {
-        return CONTAINER_ERROR_BADARG;
+        return NullPtrError("Finalize");
     }
-    if (SC->Flags & CONTAINER_READONLY) {
-        return ReadOnlyError(SC,"Finalize");
-    }
-
     for (i=0; i<SC->count;i++) {
-        if (SC->DestructorFn)
-            SC->DestructorFn(SC->contents[i]);
-        SC->Allocator->free(SC->contents[i]);
+        DestroyString(SC,SC->contents[i]);
     }
-    SC->Allocator->free(SC->contents);
+    if (SC->contents != NULL)
+        SC->Allocator->free(SC->contents);
     if (SC->VTable != &INTERFACE_OBJECT)
         SC->Allocator->free(SC->VTable);
     SC->Allocator->free(SC);
@@ -469,14 +555,18 @@ static ElementType *IndexIn(const ElementType *SC,const Vector *AL)
         return NULL;
     }
     top = iVector.Size(AL);
-    result = iElementType.Create(top);
+    result = iElementType.CreateWithAllocator(top,SC->Allocator);
+    if (result == NULL)
+        return NULL;
     for (i=0; i<top;i++) {
         idx = *(size_t *)iVector.GetElement(AL,i);
-        p = GetElement(SC,idx);
-        if (p == NULL)
+        if (idx >= SC->count) {
+            IndexError(SC,idx,"IndexIn");
             goto err;
+        }
+        p = SC->contents[idx];
         r = Add(result,p);
-        if (r < 0) {
+        if (r <= 0) {
 err:
             Finalize(result);
             return NULL;
@@ -497,31 +587,23 @@ static int InsertAt(ElementType *SC,size_t idx,const CHAR_TYPE *newval)
     if (SC->Flags & CONTAINER_READONLY) {
         return ReadOnlyError(SC,"InsertAt");
     }
-    if (idx >= SC->count) {
+    if (idx > SC->count) {
         return IndexError(SC,idx,"InsertAt");
     }
-    if ((SC->count+1) >= SC->capacity) {
-        int r = Resize(SC);
-        if (r <= 0)
-            return r;
-    }
     p = DuplicateString(SC,newval,"InsertAt");
-    if (p == NULL) {
-        return NoMemoryError(SC,"InsertAt");
+    if (p == NULL)
+        return 0;
+    if (SC->count >= SC->capacity) {
+        int r = Resize(SC);
+        if (r <= 0) {
+            DestroyString(SC,p);
+            return r;
+        }
     }
-
-    if (idx == 0) {
-        if (SC->count > 0)
-            memmove(SC->contents+1,SC->contents,SC->count*sizeof(CHAR_TYPE *));
-        SC->contents[0] = p;
-    }
-    else if (idx == SC->count) {
-        SC->contents[idx] = p;
-    }
-    else if (idx < SC->count) {
-        memmove(SC->contents+idx+1,SC->contents+idx,(SC->count-idx+1)*sizeof(CHAR_TYPE *));
-        SC->contents[idx] = p;
-    }
+    if (idx < SC->count)
+        memmove(SC->contents+idx+1,SC->contents+idx,
+                (SC->count-idx)*sizeof(*SC->contents));
+    SC->contents[idx] = p;
     SC->timestamp++;
     ++SC->count;
     return 1;
@@ -529,8 +611,9 @@ static int InsertAt(ElementType *SC,size_t idx,const CHAR_TYPE *newval)
 
 static int InsertIn(ElementType *source, size_t idx, ElementType *newData)
 {
-    size_t newCount,i,j,siz;
-    CHAR_TYPE **p,**oldcontents;
+    size_t newCount,i,j;
+    CHAR_TYPE **copies;
+    size_t bytes;
 
     if (source == NULL || newData == NULL) {
         return NullPtrError("InsertIn");
@@ -540,38 +623,52 @@ static int InsertIn(ElementType *source, size_t idx, ElementType *newData)
     if (idx > source->count) {
         return IndexError(source,idx,"InsertIn");
     }
+    if (newData->count > SIZE_MAX-source->count)
+        return NoMemoryError(source,"InsertIn");
     newCount = source->count + newData->count;
     if (newData->count == 0)
         return 1;
     if (newCount == 0)
         return 1;
-    if (newCount >= (source->capacity-1)) {
-        int r = ResizeTo(source,1+newCount+newCount/4);
-        if (r <= 0)
-            return r;
-    }
-    p = source->contents;
-    siz = source->capacity*sizeof(CHAR_TYPE *);
-    oldcontents = source->Allocator->malloc(siz);
-    if (oldcontents == NULL) {
+    if (!SizeMul(newData->count,sizeof(*copies),&bytes))
+        return NoMemoryError(source,"InsertIn");
+    copies = source->Allocator->malloc(bytes);
+    if (copies == NULL) {
         return NoMemoryError(source,"InsertIn");
     }
-    memset(oldcontents,0,siz);
-    memcpy(oldcontents,p,sizeof(char *)*source->count);
-    if (idx < source->count) {
-        memmove(p+(idx+newData->count),
-                p+idx,
-                (source->count-idx)*sizeof(char *));
-    }
-    for (i=idx,j=0; i<idx+newData->count;i++,j++) {
-        source->contents[i] = DuplicateString(newData,newData->contents[j],"InsertIn");
-        if (source->contents[i] == NULL) {
-            source->Allocator->free(source->contents);
-            source->contents = oldcontents;
-            return NoMemoryError(source,"InsertIn");
+    for (i=0; i<newData->count; ++i) {
+        if (newData->contents[i] == NULL) {
+            while (i > 0)
+                DestroyString(source,copies[--i]);
+            source->Allocator->free(copies);
+            return BadArgError(source,"InsertIn");
+        }
+        copies[i] = DuplicateString(source,newData->contents[i],"InsertIn");
+        if (copies[i] == NULL) {
+            while (i > 0)
+                DestroyString(source,copies[--i]);
+            source->Allocator->free(copies);
+            return 0;
         }
     }
-    source->Allocator->free(oldcontents);
+    if (newCount > source->capacity) {
+        size_t capacity = newCount;
+        size_t growth = capacity/4 + 1;
+        if (growth <= SIZE_MAX-capacity)
+            capacity += growth;
+        if (ResizeTo(source,capacity) <= 0) {
+            for (i=0; i<newData->count; ++i)
+                DestroyString(source,copies[i]);
+            source->Allocator->free(copies);
+            return 0;
+        }
+    }
+    if (idx < source->count)
+        memmove(source->contents+idx+newData->count,source->contents+idx,
+                (source->count-idx)*sizeof(*source->contents));
+    for (i=idx,j=0; j<newData->count; ++i,++j)
+        source->contents[i] = copies[j];
+    source->Allocator->free(copies);
     source->timestamp++;
     source->count = newCount;
     return 1;
@@ -594,11 +691,10 @@ static int RemoveAt(ElementType *SC,size_t idx)
     /* Test for remove of an empty collection */
     if (SC->count == 0)
         return 0;
-    if (SC->DestructorFn)
-        SC->DestructorFn(SC->contents[idx]);
-    SC->Allocator->free(SC->contents[idx]);
+    DestroyString(SC,SC->contents[idx]);
     if (idx < (SC->count-1)) {
-        memmove(SC->contents+idx,SC->contents+idx+1,(SC->count-idx)*sizeof(char *));
+        memmove(SC->contents+idx,SC->contents+idx+1,
+                (SC->count-idx-1)*sizeof(*SC->contents));
     }
     SC->contents[SC->count-1]=NULL;
     SC->timestamp++;
@@ -613,27 +709,24 @@ static int RemoveRange(ElementType *SC,size_t start, size_t end)
         return NullPtrError("RemoveRange");
     if (SC->count == 0)
         return 0;
+    if (SC->Flags & CONTAINER_READONLY)
+        return ReadOnlyError(SC,"RemoveRange");
+    if (start > end)
+        return IndexError(SC,start,"RemoveRange");
     if (end > SC->count)
         end = SC->count;
     if (start == end) return 0;
     if (start >= SC->count)
         return IndexError(SC,start,"RemoveRange");
-    if (SC->DestructorFn) {
-        for (i=start; i<end; i++) {
-            SC->DestructorFn(SC->contents[i]);
-            SC->Allocator->free(SC->contents[i]);
-        }
-    }
-    else {
-        for (i=start; i<end; i++) {
-            SC->Allocator->free(SC->contents[i]);
-        }
-    }
+    for (i=start; i<end; i++)
+        DestroyString(SC,SC->contents[i]);
     if (end < SC->count)
     memmove(SC->contents+start,
         SC->contents+end,
-        (SC->count-end)*sizeof(char *));
+        (SC->count-end)*sizeof(*SC->contents));
     SC->count -= end - start;
+    memset(SC->contents+SC->count,0,(end-start)*sizeof(*SC->contents));
+    SC->timestamp++;
     return 1;
 }
 
@@ -652,10 +745,10 @@ static int EraseInternal(ElementType *SC,const CHAR_TYPE *str,int all)
     for (i=0; i<SC->count;i++) {
         if (!SC->strcompare((const void **)&SC->contents[i],
                             (const void **)&str,SC->StringCompareContext)) {
-            if (SC->DestructorFn) SC->DestructorFn(SC->contents[i]);
-            SC->Allocator->free(SC->contents[i]);
+            DestroyString(SC,SC->contents[i]);
             if (i < (SC->count-1))
-                memmove(SC->contents+i,SC->contents+i+1,(SC->count-i)*sizeof(char *));
+                memmove(SC->contents+i,SC->contents+i+1,
+                        (SC->count-i-1)*sizeof(*SC->contents));
             --SC->count;
             SC->contents[SC->count]=NULL;
             SC->timestamp++;
@@ -686,7 +779,9 @@ static int PushBack(ElementType *SC,const CHAR_TYPE *str)
     if (SC->Flags&CONTAINER_READONLY) {
         return ReadOnlyError(SC,"PushBack");
     }
-    if (SC->count >= SC->capacity-1) {
+    if (str == NULL)
+        return BadArgError(SC,"PushBack");
+    if (SC->count >= SC->capacity) {
         int res = Resize(SC);
         if (res <= 0)
             return res;
@@ -708,8 +803,8 @@ static int PushFront(ElementType *SC,CHAR_TYPE *str)
     if (str == NULL)
         return BadArgError(SC,"PushFront");
     if (SC->Flags&CONTAINER_READONLY)
-        return 0;
-    if (SC->count >= SC->capacity-1) {
+        return ReadOnlyError(SC,"PushFront");
+    if (SC->count >= SC->capacity) {
         int res = Resize(SC);
         if (res <= 0)
             return res;
@@ -733,23 +828,26 @@ static size_t PopBack(ElementType *SC,CHAR_TYPE *buffer,size_t buflen)
         NullPtrError("PopBack");
         return 0;
     }
-    if (SC->Flags&CONTAINER_READONLY)
+    if (SC->Flags&CONTAINER_READONLY) {
+        ReadOnlyError(SC,"PopBack");
         return 0;
+    }
     if (SC->count == 0)
         return 0;
-    len = 1+strlen((char *)SC->contents[SC->count-1]);
+    len = 1+STRLEN(SC->contents[SC->count-1]);
     SC->count--;
     result = SC->contents[SC->count];
     SC->contents[SC->count] = NULL;
     SC->timestamp++;
-    tocopy = len;
-	if (buffer) {
-    	if (buflen < tocopy)
-        	tocopy = buflen-1;
-    	memcpy(buffer,result,tocopy);
-    	buffer[tocopy-1] = 0;
-	}
-    SC->Allocator->free(result);
+    if (buffer != NULL && buflen > 0) {
+        tocopy = len-1;
+        if (tocopy >= buflen)
+            tocopy = buflen-1;
+        if (tocopy > 0)
+            memcpy(buffer,result,tocopy*sizeof(*buffer));
+        buffer[tocopy] = 0;
+    }
+    DestroyString(SC,result);
     return len;
 }
 
@@ -760,25 +858,28 @@ static size_t PopFront(ElementType *SC,CHAR_TYPE *buffer,size_t buflen)
 
     if (SC == NULL)
         return 0;
-    if ((SC->Flags&CONTAINER_READONLY) || SC->count == 0)
+    if (SC->Flags&CONTAINER_READONLY) {
+        ReadOnlyError(SC,"PopFront");
         return 0;
-    len = 1+strlen((char *)SC->contents[0]);
-    if (buffer == NULL)
-        return len;
+    }
+    if (SC->count == 0)
+        return 0;
+    len = 1+STRLEN(SC->contents[0]);
     SC->count--;
     result = SC->contents[0];
     if (SC->count) {
         memmove(SC->contents,SC->contents+1,SC->count*sizeof(void *));
     }
     SC->timestamp++;
-	if (buffer) {
-    	tocopy = len;
-    	if (buflen < tocopy)
-        	tocopy = buflen-1;
-    	memcpy(buffer,result,tocopy);
-    	buffer[tocopy] = 0;
-	}
-    SC->Allocator->free(result);
+    if (buffer != NULL && buflen > 0) {
+        tocopy = len-1;
+        if (tocopy >= buflen)
+            tocopy = buflen-1;
+        if (tocopy > 0)
+            memcpy(buffer,result,tocopy*sizeof(*buffer));
+        buffer[tocopy] = 0;
+    }
+    DestroyString(SC,result);
     return len;
 }
 
@@ -794,27 +895,36 @@ static size_t GetCapacity(const ElementType *SC)
 
 static int SetCapacity(ElementType *SC,size_t newCapacity)
 {
-    CHAR_TYPE **newContents;
+    CHAR_TYPE **newContents = NULL;
+    CHAR_TYPE **oldContents;
+    size_t bytes;
+    size_t keep;
+    size_t i;
     if (SC == NULL) {
         return NullPtrError("SetCapacity");
     }
     if (SC->Flags & CONTAINER_READONLY) {
         return ReadOnlyError(SC,"SetCapacity");
     }
-    newContents = SC->Allocator->malloc(newCapacity*sizeof(void *));
-    if (newContents == NULL) {
+    if (!SizeMul(newCapacity,sizeof(*newContents),&bytes))
         return NoMemoryError(SC,"SetCapacity");
+    if (bytes != 0) {
+        newContents = SC->Allocator->malloc(bytes);
+        if (newContents == NULL)
+            return NoMemoryError(SC,"SetCapacity");
+        memset(newContents,0,bytes);
     }
-    memset(SC->contents,0,sizeof(void *)*newCapacity);
+    keep = newCapacity < SC->count ? newCapacity : SC->count;
+    for (i=keep; i<SC->count; ++i)
+        DestroyString(SC,SC->contents[i]);
+    if (keep != 0)
+        memcpy(newContents,SC->contents,keep*sizeof(*newContents));
+    oldContents = SC->contents;
+    SC->contents = newContents;
     SC->capacity = newCapacity;
-    if (newCapacity > SC->count)
-        newCapacity = SC->count;
-    else if (newCapacity < SC->count)
-        SC->count = newCapacity;
-    if (newCapacity > 0) {
-        memcpy(newContents,SC->contents,newCapacity*sizeof(void *));
-    }
-    SC->Allocator->free(SC->contents);
+    SC->count = keep;
+    if (oldContents != NULL)
+        SC->Allocator->free(oldContents);
     SC->contents = newContents;
     SC->timestamp++;
     return 1;
@@ -823,6 +933,7 @@ static int SetCapacity(ElementType *SC,size_t newCapacity)
 static int Apply(ElementType *SC,int (*Applyfn)(CHAR_TYPE *,void *),void *arg)
 {
     size_t i;
+    unsigned timestamp;
 
     if (SC == NULL) {
         return NullPtrError("Apply");
@@ -830,8 +941,14 @@ static int Apply(ElementType *SC,int (*Applyfn)(CHAR_TYPE *,void *),void *arg)
     if (Applyfn == NULL) {
         return BadArgError(SC,"Apply");
     }
+    timestamp = SC->timestamp;
     for (i=0; i<SC->count;i++) {
-        Applyfn(SC->contents[i],arg);
+        if (Applyfn(SC->contents[i],arg) < 0)
+            return 0;
+        if (SC->timestamp != timestamp) {
+            SC->RaiseError("strCollection.Apply",CONTAINER_ERROR_OBJECT_CHANGED);
+            return CONTAINER_ERROR_OBJECT_CHANGED;
+        }
     }
     return 1;
 }
@@ -851,11 +968,12 @@ static int ReplaceAt(ElementType *SC,size_t idx,CHAR_TYPE *newval)
     if (idx >= SC->count) {
         return IndexError(SC,idx,"ReplaceAt");
     }
-    SC->Allocator->free(SC->contents[idx]);
+    if (newval == NULL)
+        return BadArgError(SC,"ReplaceAt");
     r = DuplicateString(SC,newval,(char *)"ReplaceAt");
-    if (r == NULL) {
-        return NoMemoryError(SC,"ReplaceAt");
-    }
+    if (r == NULL)
+        return 0;
+    DestroyString(SC,SC->contents[idx]);
     SC->contents[idx] = r;
     SC->timestamp++;
     return 1;
@@ -899,12 +1017,13 @@ static ElementType *Copy(const ElementType *SC)
         NullPtrError("Copy");
         return NULL;
     }
-    result = iElementType.Create(SC->count);
+    result = iElementType.CreateWithAllocator(SC->count,SC->Allocator);
     if (result) {
-        result->VTable = SC->VTable;
         result->strcompare = SC->strcompare;
+        result->StringCompareContext = SC->StringCompareContext;
+        result->DestructorFn = SC->DestructorFn;
         for (i=0; i<SC->count;i++) {
-            if (SC->VTable->Add(result,SC->contents[i]) <= 0) {
+            if (Add(result,SC->contents[i]) <= 0) {
                 Finalize(result);
                 return NULL;
             }
@@ -940,7 +1059,9 @@ static int Sort(ElementType *SC)
     if (SC->Flags & CONTAINER_READONLY) {
         return ReadOnlyError(SC,"Sort");
     }
-    qsortEx(SC->contents,SC->count,sizeof(char *),(CompareFunction)SC->strcompare,&ci);
+    if (SC->count > 1)
+        qsortEx(SC->contents,SC->count,sizeof(*SC->contents),
+                SortCompare,&ci);
     SC->timestamp++;
     return 1;
 }
@@ -953,10 +1074,20 @@ static size_t Sizeof(const ElementType *SC)
     if (SC == NULL) {
         return sizeof(ElementType);
     }
-    for (i=0; i<SC->count;i++) {
-        result += strlen((char *)SC->contents[i]) + 1 + sizeof(char *);
+    {
+        size_t slots;
+        if (!SizeMul(SC->capacity,sizeof(CHAR_TYPE *),&slots) ||
+            !SizeAdd(result,slots,&result))
+            return SIZE_MAX;
     }
-    result += (SC->capacity - SC->count) * sizeof(char *);
+    for (i=0; i<SC->count;i++) {
+        size_t chars = STRLEN(SC->contents[i]);
+        size_t bytes;
+        if (!SizeAdd(chars,1,&chars) ||
+            !SizeMul(chars,sizeof(CHAR_TYPE),&bytes) ||
+            !SizeAdd(result,bytes,&result))
+            return SIZE_MAX;
+    }
     return result;
 }
 
@@ -973,10 +1104,40 @@ struct strCollectionIterator {
     CHAR_TYPE *current;
 };
 
+/* The iterator layout is part of the public ABI.  Keep ownership in the
+ * existing private Flags word so placement iterators can be detached without
+ * attempting to free caller-owned storage. */
+#define STR_ITERATOR_OWNED 1UL
+
 static size_t GetPosition(Iterator *it)
 {
-    struct VectorIterator *ali = (struct VectorIterator *)it;
+    struct strCollectionIterator *ali = (struct strCollectionIterator *)it;
+    if (ali == NULL)
+        return 0;
+    if (ali->SC != NULL && ali->timestamp != ali->SC->timestamp) {
+        ali->SC->RaiseError("GetPosition",CONTAINER_ERROR_OBJECT_CHANGED);
+        return SIZE_MAX;
+    }
     return ali->index;
+}
+
+static void *GetLast(Iterator *it)
+{
+    struct strCollectionIterator *sci = (struct strCollectionIterator *)it;
+    if (sci == NULL || sci->SC == NULL)
+        return NULL;
+    if (sci->timestamp != sci->SC->timestamp) {
+        sci->SC->RaiseError("GetLast",CONTAINER_ERROR_OBJECT_CHANGED);
+        return NULL;
+    }
+    if (sci->SC->count == 0) {
+        sci->index = SIZE_MAX;
+        sci->current = NULL;
+        return NULL;
+    }
+    sci->index = sci->SC->count-1;
+    sci->current = sci->SC->contents[sci->index];
+    return sci->current;
 }
 
 static void *GetNext(Iterator *it)
@@ -989,15 +1150,18 @@ static void *GetNext(Iterator *it)
         return NULL;
     }
     SC = sci->SC;
-    if (SC->count == 0)
+    if (SC == NULL || SC->count == 0)
     return NULL;
     if (sci->timestamp != SC->timestamp) {
         SC->RaiseError("GetNext",CONTAINER_ERROR_OBJECT_CHANGED);
         return NULL;
     }
-    if (sci->index >= SC->count-1)
+    if (sci->index == SIZE_MAX)
+        sci->index = 0;
+    else if (sci->index >= SC->count-1)
         return NULL;
-    sci->index++;
+    else
+        sci->index++;
     sci->current = sci->SC->contents[sci->index];
     return sci->current;
 }
@@ -1012,13 +1176,18 @@ static void *GetPrevious(Iterator *it)
         return NULL;
     }
     SC = ali->SC;
-    if (SC->count == 0 || ali->index >= SC->count || ali->index == 0)
+    if (SC == NULL || SC->count == 0)
         return NULL;
     if (ali->timestamp != SC->timestamp) {
         SC->RaiseError("GetPrevious",CONTAINER_ERROR_OBJECT_CHANGED);
         return NULL;
     }
-    ali->index--;
+    if (ali->index == SIZE_MAX)
+        ali->index = SC->count-1;
+    else if (ali->index >= SC->count || ali->index == 0)
+        return NULL;
+    else
+        ali->index--;
     ali->current = ali->SC->contents[ali->index];
     return ali->current;
 }
@@ -1029,6 +1198,12 @@ static void *GetFirst(Iterator *it)
 
     if (ali == NULL) {
         NullPtrError("GetFirst");
+        return NULL;
+    }
+    if (ali->SC == NULL)
+        return NULL;
+    if (ali->timestamp != ali->SC->timestamp) {
+        ali->SC->RaiseError("GetFirst",CONTAINER_ERROR_OBJECT_CHANGED);
         return NULL;
     }
     if (ali->SC->count == 0)
@@ -1049,7 +1224,7 @@ static void *Seek(Iterator *it,size_t idx)
                 return NULL;
         }
         AL = ali->SC;
-        if (idx >= AL->count)
+        if (AL == NULL || idx >= AL->count)
                 return NULL;
         if (ali->timestamp != AL->timestamp) {
                 AL->RaiseError("Seek",CONTAINER_ERROR_OBJECT_CHANGED);
@@ -1070,6 +1245,10 @@ static void *GetCurrent(Iterator *it)
         NullPtrError("GetCurrent");
         return NULL;
     }
+    if (ali->SC != NULL && ali->timestamp != ali->SC->timestamp) {
+        ali->SC->RaiseError("GetCurrent",CONTAINER_ERROR_OBJECT_CHANGED);
+        return NULL;
+    }
     return ali->current;
 }
 
@@ -1082,7 +1261,7 @@ static int ReplaceWithIterator(Iterator *it, void *data,int direction)
     if (it == NULL) {
         return NullPtrError("Replace");
     }
-    if (ali->SC->count == 0)
+    if (ali->SC == NULL || ali->index == SIZE_MAX || ali->SC->count == 0)
         return 0;
     if (ali->timestamp != ali->SC->timestamp) {
         ali->SC->RaiseError("Replace",CONTAINER_ERROR_OBJECT_CHANGED);
@@ -1093,10 +1272,6 @@ static int ReplaceWithIterator(Iterator *it, void *data,int direction)
         return CONTAINER_ERROR_READONLY;
     }    
     pos = ali->index;
-    if (direction)
-        GetNext(it);
-    else
-        GetPrevious(it);
     if (data == NULL)
         result = RemoveAt(ali->SC,pos);
     else {
@@ -1104,6 +1279,23 @@ static int ReplaceWithIterator(Iterator *it, void *data,int direction)
     }
     if (result >= 0) {
         ali->timestamp = ali->SC->timestamp;
+        if (data != NULL) {
+            ali->index = pos;
+            ali->current = ali->SC->contents[pos];
+        } else if (ali->SC->count == 0) {
+            ali->index = SIZE_MAX;
+            ali->current = NULL;
+        } else if (direction) {
+            if (pos >= ali->SC->count)
+                pos = ali->SC->count-1;
+            ali->index = pos;
+            ali->current = ali->SC->contents[pos];
+        } else {
+            if (pos > 0)
+                --pos;
+            ali->index = pos;
+            ali->current = ali->SC->contents[pos];
+        }
     }
     return result;
 }
@@ -1113,6 +1305,10 @@ static Iterator *NewIterator(ElementType *SC)
 {
     struct strCollectionIterator *result;
 
+    if (SC == NULL) {
+        NullPtrError("NewIterator");
+        return NULL;
+    }
     result  = SC->Allocator->malloc(sizeof(struct strCollectionIterator));
     if (result == NULL) {
         NoMemoryError(SC,"NewIterator");
@@ -1121,6 +1317,7 @@ static Iterator *NewIterator(ElementType *SC)
     result->it.GetNext = GetNext;
     result->it.GetPrevious = GetPrevious;
     result->it.GetFirst = GetFirst;
+    result->it.GetLast = GetLast;
     result->it.GetCurrent = GetCurrent;
     result->it.Seek = Seek;
     result->it.Replace = ReplaceWithIterator;
@@ -1128,21 +1325,32 @@ static Iterator *NewIterator(ElementType *SC)
     result->SC = SC;
     result->timestamp = SC->timestamp;
     result->current = NULL;
+    result->index = SIZE_MAX;
+    result->Flags = STR_ITERATOR_OWNED;
     return &result->it;
 }
 static int InitIterator(ElementType *SC,void *buf)
 {
     struct strCollectionIterator *result=buf;
 
+    if (SC == NULL)
+        return NullPtrError("InitIterator");
+    if (buf == NULL)
+        return BadArgError(SC,"InitIterator");
+
     result->it.GetNext = GetNext;
     result->it.GetPrevious = GetPrevious;
     result->it.GetFirst = GetFirst;
+    result->it.GetLast = GetLast;
     result->it.GetCurrent = GetCurrent;
     result->it.Seek = Seek;
     result->it.Replace = ReplaceWithIterator;
+    result->it.GetPosition = GetPosition;
     result->SC = SC;
     result->timestamp = SC->timestamp;
     result->current = NULL;
+    result->index = SIZE_MAX;
+    result->Flags = 0;
     return 1;
 }
 
@@ -1156,7 +1364,8 @@ static int DeleteIterator(Iterator *it)
         return NullPtrError("DeleteIterator");
     }
     SC = sci->SC;
-    SC->Allocator->free(it);
+    if (sci->Flags & STR_ITERATOR_OWNED)
+        SC->Allocator->free(it);
     return 1;
 }
 
@@ -1169,18 +1378,23 @@ static int DefaultSaveFunction(const void *element,void *arg, FILE *Outfile)
 {
     const CHAR_TYPE *str = (const CHAR_TYPE *)element;
     size_t len = STRLEN(str);
+    size_t bytes;
 
     if (encode_ule128(Outfile, len) <= 0)
         return EOF;
-    len++;
-    return len == fwrite(str,1,len,Outfile);
+    if (!SizeAdd(len,1,&len) || !SizeMul(len,sizeof(CHAR_TYPE),&bytes))
+        return EOF;
+    return bytes == fwrite(str,1,bytes,Outfile);
 }
 
 static int DefaultLoadFunction(void *element,void *arg, FILE *Infile)
 {
     size_t len = *(size_t *)arg;
+    size_t bytes;
 
-    return len == fread(element,1,len,Infile);
+    if (!SizeAdd(len,1,&len) || !SizeMul(len,sizeof(CHAR_TYPE),&bytes))
+        return EOF;
+    return bytes == fread(element,1,bytes,Infile);
 }
 
 static int Save(const ElementType *SC,FILE *stream, SaveFunction saveFn,void *arg)
@@ -1195,6 +1409,10 @@ static int Save(const ElementType *SC,FILE *stream, SaveFunction saveFn,void *ar
     }
     if (saveFn == NULL)
         saveFn = DefaultSaveFunction;
+    for (i=0; i<SC->count; ++i) {
+        if (SC->contents[i] == NULL)
+            return BadArgError(SC,"Save");
+    }
     if (fwrite(&strCollectionGuid,sizeof(guid),1,stream) == 0)
         return EOF;
     if (SaveHeader(SC,stream) <= 0)
@@ -1208,7 +1426,7 @@ static int Save(const ElementType *SC,FILE *stream, SaveFunction saveFn,void *ar
 
 static ElementType *Load(FILE *stream, ReadFunction readFn,void *arg)
 {
-    size_t i,len=0;
+    size_t i,len=0,bytes;
     ElementType *result,SC;
     guid Guid;
 
@@ -1220,7 +1438,7 @@ static ElementType *Load(FILE *stream, ReadFunction readFn,void *arg)
         readFn = DefaultLoadFunction;
         arg = &len;
     }
-    if (fread(&Guid,sizeof(guid),1,stream) == 0) {
+    if (fread(&Guid,sizeof(guid),1,stream) != 1) {
         iError.RaiseError("istrCollection.Load",CONTAINER_ERROR_FILE_READ);
         return NULL;
     }
@@ -1228,7 +1446,11 @@ static ElementType *Load(FILE *stream, ReadFunction readFn,void *arg)
         iError.RaiseError("istrCollection.Load",CONTAINER_ERROR_WRONGFILE);
         return NULL;
     }
-    if (fread(&SC,1,sizeof(ElementType),stream) == 0) {
+    if (fread(&SC,1,sizeof(ElementType),stream) != sizeof(ElementType)) {
+        iError.RaiseError("istrCollection.Load",CONTAINER_ERROR_FILE_READ);
+        return NULL;
+    }
+    if (SC.count > SIZE_MAX/sizeof(CHAR_TYPE *)) {
         iError.RaiseError("istrCollection.Load",CONTAINER_ERROR_FILE_READ);
         return NULL;
     }
@@ -1241,29 +1463,46 @@ static ElementType *Load(FILE *stream, ReadFunction readFn,void *arg)
         if (decode_ule128(stream, &len) <= 0) {
             goto err;
         }
-        len++;
-        result->contents[i] = result->Allocator->malloc(len);
+        if (len == SIZE_MAX || !SizeAdd(len,1,&bytes) ||
+            !SizeMul(bytes,sizeof(CHAR_TYPE),&bytes))
+            goto err;
+        result->contents[i] = result->Allocator->malloc(bytes);
         if (result->contents[i] == NULL) {
             NoMemoryError(result,"Load");
             Finalize(result);
             return NULL;
         }
         if (readFn(result->contents[i],arg,stream) <= 0) {
+            result->Allocator->free(result->contents[i]);
+            result->contents[i] = NULL;
         err:
             iError.RaiseError("ElementType.Load",CONTAINER_ERROR_FILE_READ);
-            break;
+            Finalize(result);
+            return NULL;
         }
+        ((CHAR_TYPE *)result->contents[i])[bytes/sizeof(CHAR_TYPE)-1] = 0;
         result->count++;
     }
     return result;
 }
 static Vector *CastToArray(const ElementType *SC)
 {
-    Vector *AL = iVector.Create(sizeof(void *),SC->count);
+    Vector *AL;
     size_t i;
 
+    if (SC == NULL) {
+        NullPtrError("CastToArray");
+        return NULL;
+    }
+    AL = iVector.Create(sizeof(void *),SC->count);
+    if (AL == NULL)
+        return NULL;
+
     for (i=0; i<SC->count;i++) {
-        iVector.Add(AL,SC->contents[i]);
+        if (iVector.Add(AL,&SC->contents[i]) <= 0) {
+            iVector.Finalize(AL);
+            return NULL;
+        }
     }
     return AL;
 }
@@ -1315,34 +1554,27 @@ static ElementType *CreateFromFile(const char *fileName)
 static ElementType *GetRange(ElementType *SC, size_t start,size_t end)
 {
     ElementType *result;
-    size_t idx=0;
+    size_t i;
     
     if (SC == NULL) {
         NullPtrError("GetRange");
         return NULL;
     }
-    result = SC->VTable->Create(SC->count);
-    result->VTable = SC->VTable;
-    if (SC->count == 0)
-        return result;
-    if (end >= SC->count)
+    if (end > SC->count)
         end = SC->count;
     if (start > end)
-        return result;
-    while (start < end) {
-        result->contents[idx] = DuplicateString(SC,SC->contents[start],"GetRange");
-        if (result->contents[idx] == NULL) {
-            while (idx > 0) {
-                if (idx > 0)
-                    idx--;
-                SC->Allocator->free(result->contents[idx]);
-            }
-            SC->Allocator->free(SC->contents);
-            SC->Allocator->free(result);
-            NoMemoryError(SC,"GetRange");
+        start = end;
+    result = SC->VTable->CreateWithAllocator(end-start,SC->Allocator);
+    if (result == NULL)
+        return NULL;
+    result->strcompare = SC->strcompare;
+    result->StringCompareContext = SC->StringCompareContext;
+    result->DestructorFn = SC->DestructorFn;
+    for (i=start; i<end; ++i) {
+        if (Add(result,SC->contents[i]) <= 0) {
+            Finalize(result);
             return NULL;
         }
-        start++;
     }
     result->Flags = SC->Flags;
     return result;
@@ -1354,7 +1586,6 @@ static int WriteToFile(const ElementType *SC,const  char *fileName)
     FILE *f;
     size_t i;
     int result = 0;
-    CHAR_TYPE nl[2];
 
     if (SC == NULL || fileName == NULL) {
         return NullPtrError("WriteToFile");
@@ -1364,18 +1595,29 @@ static int WriteToFile(const ElementType *SC,const  char *fileName)
         SC->RaiseError("istrCollection.WriteToFile",CONTAINER_ERROR_FILEOPEN);
         return CONTAINER_ERROR_FILEOPEN;
     }
-    nl[0] = NEWLINE;
     for (i=0; i<SC->count;i++) {
-        if (SC->contents[i][0] && fwrite(SC->contents[i],1,strlen((char *)SC->contents[i]),f) == 0) {
+        if (SC->contents[i] == NULL) {
+            result = CONTAINER_ERROR_BADARG;
+            break;
+        }
+#ifdef WCHAR_TYPE
+        if (fputws(SC->contents[i],f) == WEOF) {
+#else
+        if (fputs(SC->contents[i],f) == EOF) {
+#endif
 writeerror:
             iError.RaiseError("istrCollection.WriteToFile",CONTAINER_ERROR_FILE_WRITE);
             result = CONTAINER_ERROR_FILE_WRITE;
             break;
         }
-        if (fwrite(nl,1,sizeof(CHAR_TYPE),f) == 0)
+#ifdef WCHAR_TYPE
+        if (fputwc(NEWLINE,f) == WEOF)
+#else
+        if (fputc(NEWLINE,f) == EOF)
+#endif
             goto writeerror;
     }
-    if (i == SC->count && i > 0)
+    if (i == SC->count)
         result = 1;
     fclose(f);
     return result;
@@ -1403,8 +1645,10 @@ static StringCompareFn SetCompareFunction(ElementType *SC,StringCompareFn fn)
         return 0;
     }
     oldFn = SC->strcompare;
-    if (fn)
+    if (fn && fn != oldFn) {
         SC->strcompare = fn;
+        SC->timestamp++;
+    }
     return oldFn;
 }
 
@@ -1427,15 +1671,21 @@ static ElementType *FindText(const ElementType *SC,const CHAR_TYPE *text)
     ElementType *result = NULL;
     size_t i;
 
+    if (SC == NULL || text == NULL) {
+        NullPtrError("FindText");
+        return NULL;
+    }
     for (i=0; i<SC->count;i++) {
         if (STRSTR(SC->contents[i],text)) {
             if (result == NULL) {
-                result = iElementType.Create(sizeof(size_t));
+                result = iElementType.CreateWithAllocator(SC->count,SC->Allocator);
                 if (result == NULL)
                     return NULL;
             }
-            if (iElementType.Add(result,SC->contents[i]) <= 0)
-                break;
+            if (iElementType.Add(result,SC->contents[i]) <= 0) {
+                iElementType.Finalize(result);
+                return NULL;
+            }
         }
     }
     return result;
@@ -1446,6 +1696,10 @@ static Vector *FindTextIndex(const ElementType *SC,const CHAR_TYPE *text)
     Vector *result = NULL;
     size_t i;
 
+    if (SC == NULL || text == NULL) {
+        NullPtrError("FindTextIndex");
+        return NULL;
+    }
     for (i=0; i<SC->count;i++) {
         if (STRSTR(SC->contents[i],text)) {
             if (result == NULL) {
@@ -1453,8 +1707,10 @@ static Vector *FindTextIndex(const ElementType *SC,const CHAR_TYPE *text)
                 if (result == NULL)
                     return NULL;
             }
-            if (iVector.Add(result,SC->contents[i]) <= 0)
-                break;
+            if (iVector.Add(result,&i) <= 0) {
+                iVector.Finalize(result);
+                return NULL;
+            }
         }
     }
     return result;
@@ -1466,6 +1722,10 @@ static Vector *FindTextPositions(const ElementType *SC,const CHAR_TYPE *text)
     CHAR_TYPE *p;
     size_t i,idx;
 
+    if (SC == NULL || text == NULL) {
+        NullPtrError("FindTextPositions");
+        return NULL;
+    }
     for (i=0; i<SC->count;i++) {
         if (NULL != (p=STRSTR(SC->contents[i],text))) {
             if (result == NULL) {
@@ -1474,10 +1734,11 @@ static Vector *FindTextPositions(const ElementType *SC,const CHAR_TYPE *text)
                     return NULL;
             }
             idx = p - SC->contents[i];
-            if (iVector.Add(result,&i) <= 0)
-                break;
-            if (iVector.Add(result,&idx) <=0)
-                break;
+            if (iVector.Add(result,&i) <= 0 ||
+                iVector.Add(result,&idx) <=0) {
+                iVector.Finalize(result);
+                return NULL;
+            }
         }
     }
     return result;
@@ -1485,6 +1746,16 @@ static Vector *FindTextPositions(const ElementType *SC,const CHAR_TYPE *text)
 static int Strcmp(const void **s1,const void **s2, CompareInfo *info)
 {
     return STRCMP(*s1,*s2);
+}
+
+static int SortCompare(const void *left,const void *right,CompareInfo *info)
+{
+    const ElementType *SC = info != NULL ?
+        (const ElementType *)info->ContainerLeft : NULL;
+    if (SC == NULL)
+        return 0;
+    return SC->strcompare((const void **)left,(const void **)right,
+                          SC->StringCompareContext);
 }
 /*------------------------------------------------------------------------
  Procedure:     Create ID:1
@@ -1496,16 +1767,23 @@ static int Strcmp(const void **s1,const void **s2, CompareInfo *info)
  ------------------------------------------------------------------------*/
 static ElementType *InitWithAllocator(ElementType *result,size_t startsize,const ContainerAllocator *allocator)
 {
+    size_t bytes;
+    if (result == NULL || allocator == NULL)
+        return NULL;
     memset(result,0,sizeof(ElementType));
     result->VTable = &iElementType;
     if (startsize > 0) {
-        result->contents = allocator->malloc(startsize*sizeof(char *));
+        if (!SizeMul(startsize,sizeof(char *),&bytes)) {
+            iError.RaiseError("istrCollection.Create",CONTAINER_ERROR_NOMEMORY);
+            return NULL;
+        }
+        result->contents = allocator->malloc(bytes);
         if (result->contents == NULL) {
             iError.RaiseError("istrCollection.Create",CONTAINER_ERROR_NOMEMORY);
             return NULL;
         }
         else {
-            memset(result->contents,0,sizeof(char *)*startsize);
+            memset(result->contents,0,bytes);
             result->capacity = startsize;
         }
     }
@@ -1519,15 +1797,16 @@ static ElementType  *CreateWithAllocator(size_t startsize,const ContainerAllocat
 {
     ElementType *result,*r1;
 
+    if (allocator == NULL)
+        return NULL;
     r1 = allocator->malloc(sizeof(*result));
     if (r1 == NULL) {
         iError.RaiseError("istrCollection.Create",CONTAINER_ERROR_NOMEMORY);
         return NULL;
     }
     result = InitWithAllocator(r1,startsize,allocator);
-    if (r1 == NULL) {
-        allocator->free(result);
-    }
+    if (result == NULL)
+        allocator->free(r1);
     return result;
 }
 
@@ -1544,16 +1823,20 @@ static ElementType *Create(size_t startsize)
 static ElementType *InitializeWith(size_t n, CHAR_TYPE **data)
 {
     size_t i;
+    if (n != 0 && data == NULL) {
+        NullPtrError("InitializeWith");
+        return NULL;
+    }
     ElementType *result = Create(n);
     if (result == NULL) return result;
     for (i=0; i<n; i++) {
-        result->contents[i] = DuplicateString(result,data[i],"InitializeWith");
-        if (result->contents[i] == NULL) {
+        if (data[i] == NULL ||
+            (result->contents[i] = DuplicateString(result,data[i],"InitializeWith")) == NULL) {
             Finalize(result);
             return NULL;
         }
+        result->count++;
     }
-    result->count = n;
     return result;
 }
 
@@ -1674,7 +1957,9 @@ static Mask *CompareEqual(const ElementType *left,const ElementType *right,Mask 
         return NULL;
     }
     for (i=0; i<left_len;i++) {
-        bytearray->data[i] = !STRCMP(left->contents[i],right->contents[i]);
+        bytearray->data[i] = !left->strcompare((const void **)&left->contents[i],
+                                                (const void **)&right->contents[i],
+                                                left->StringCompareContext);
     }
     return bytearray;
 }
@@ -1704,7 +1989,9 @@ static Mask *CompareEqualScalar(const ElementType *left,const CHAR_TYPE *right,M
         return NULL;
     }
     for (i=0; i<left_len;i++) {
-        bytearray->data[i] = !STRCMP(left->contents[i],right);
+        bytearray->data[i] = !left->strcompare((const void **)&left->contents[i],
+                                                (const void **)&right,
+                                                left->StringCompareContext);
     }
     return bytearray;
 }
@@ -1715,29 +2002,26 @@ static int Select(ElementType *src,const Mask *m)
 
     if (src == NULL || m == NULL)
         return NullPtrError("Select");
+    if (src->Flags & CONTAINER_READONLY)
+        return ReadOnlyError(src,"Select");
     if (m->length != src->count) {
         iError.RaiseError("iVector.Select",CONTAINER_ERROR_BADMASK,src,m);
         return CONTAINER_ERROR_BADMASK;
     }
     for (i=0; i<m->length;i++) {
         if (m->data[i]) {
-            if (i != offset) {
-                if (src->DestructorFn) src->DestructorFn(src->contents[offset]);
-                src->Allocator->free(src->contents[offset]);
+            if (i != offset)
                 src->contents[offset] = src->contents[i];
-            }
-            offset++;
+            ++offset;
+        } else {
+            DestroyString(src,src->contents[i]);
         }
     }
+    if (src->count > offset)
+        memset(src->contents+offset,0,
+               (src->count-offset)*sizeof(*src->contents));
     src->count = offset;
-    if (offset < i) {
-        while (offset < i) {
-            if (src->DestructorFn) src->DestructorFn(src->contents[offset]);
-            src->Allocator->free(src->contents[offset]);
-            src->contents[offset] = NULL;
-            offset++;
-        }
-    }
+    src->timestamp++;
     return 1;
 }
 
@@ -1746,18 +2030,20 @@ static ElementType  *SelectCopy(const ElementType *src,const Mask *m)
     size_t i,offset=0;
     ElementType *result;
     
+    if (src == NULL || m == NULL)
+        return NULL;
     if (m->length != src->count) {
         iError.RaiseError("iVector.SelectCopy",CONTAINER_ERROR_BADMASK,src,m);
         return NULL;
     }
-    result = Create(src->count);
+    result = CreateWithAllocator(src->count,src->Allocator);
     if (result == NULL) {
         NoMemoryError(src,"SelectCopy");
         return NULL;
     }
     for (i=0; i<m->length;i++) {
         if (m->data[i]) {
-            result->contents[offset] = DuplicateString(src,src->contents[i],"SelectCopy");
+            result->contents[offset] = DuplicateString(result,src->contents[i],"SelectCopy");
             if (result->contents[offset] == NULL) {
                 Finalize(result);
                 return NULL;

@@ -31,19 +31,22 @@
  * $DragonFly: src/lib/libc/stdlib/qsort.c,v 1.5 2005/11/20 12:37:49 swildner Exp $
  */
 
+#include <stdint.h>
 #include <stdlib.h>
 
-typedef int              cmp_t(void *, const void *, const void *);
-static inline char      *med3(char *, char *, char *, cmp_t *, void *);
-static inline void       swapfunc(char *, char *, int, int);
+/* CCL's private BSD-style comparator ABI.  Do not call this qsort_r: on
+ * glibc (and several other systems) that name denotes a different ABI. */
+typedef int ccl_qsort_r_compare(void *, const void *, const void *);
+static inline char *med3(char *, char *, char *, ccl_qsort_r_compare *, void *);
+static inline void swapfunc(char *, char *, size_t, int);
 
-#define min(a, b)       (a) < (b) ? a : b
+#define min(a, b)       ((a) < (b) ? (a) : (b))
 
 /*
  * Qsort routine from Bentley & McIlroy's "Engineering a Sort Function".
  */
 #define swapcode(TYPE, parmi, parmj, n) {               \
-        long i = (n) / sizeof (TYPE);                   \
+        size_t i = (n) / sizeof (TYPE);                 \
         TYPE *pi = (TYPE *) (parmi);            \
         TYPE *pj = (TYPE *) (parmj);            \
         do {                                            \
@@ -53,11 +56,11 @@ static inline void       swapfunc(char *, char *, int, int);
         } while (--i > 0);                              \
 }
 
-#define SWAPINIT(a, es) swaptype = ((char *)a - (char *)0) % sizeof(long) || \
+#define SWAPINIT(a, es) swaptype = ((uintptr_t)(const void *)(a)) % sizeof(long) || \
         es % sizeof(long) ? 2 : es == sizeof(long)? 0 : 1;
 
 static inline void
-swapfunc(char *a, char *b, int n, int swaptype)
+swapfunc(char *a, char *b, size_t n, int swaptype)
 {
         if(swaptype <= 1)
                 swapcode(long, a, b, n)
@@ -78,20 +81,24 @@ swapfunc(char *a, char *b, int n, int swaptype)
 #define CMP(t, x, y) (cmp((t), (x), (y)))
 
 static inline char *
-med3(char *a, char *b, char *c, cmp_t *cmp, void *thunk)
+med3(char *a, char *b, char *c, ccl_qsort_r_compare *cmp, void *thunk)
 {
         return CMP(thunk, a, b) < 0 ?
                (CMP(thunk, b, c) < 0 ? b : (CMP(thunk, a, c) < 0 ? c : a ))
               :(CMP(thunk, b, c) > 0 ? b : (CMP(thunk, a, c) < 0 ? a : c ));
 }
 
-void qsort_r(void *a, size_t n, size_t es, void *thunk, cmp_t *cmp)
+void ccl_qsort_r(void *a, size_t n, size_t es, void *thunk,
+                 ccl_qsort_r_compare *cmp)
 {
         char *pa, *pb, *pc, *pd, *pl, *pm, *pn;
         size_t d, r;
         int cmp_result;
         int swaptype, swap_cnt;
 
+        if (n < 2 || es == 0) {
+                return;
+        }
 loop:   SWAPINIT(a, es);
         swap_cnt = 0;
         if (n < 7) {
@@ -154,10 +161,10 @@ loop:   SWAPINIT(a, es);
         pn = (char *)a + n * es;
         r = min(pa - (char *)a, pb - pa);
         vecswap(a, pb - r, r);
-        r = min(pd - pc, pn - pd - es);
+        r = min((size_t)(pd - pc), pn - pd - es);
         vecswap(pb, pn - r, r);
         if ((r = pb - pa) > es)
-                qsort_r(a, r / es, es, thunk, cmp);
+                ccl_qsort_r(a, r / es, es, thunk, cmp);
         if ((r = pd - pc) > es) {
                 /* Iterate rather than recurse to save stack space */
                 a = pn - r;
@@ -165,4 +172,3 @@ loop:   SWAPINIT(a, es);
                 goto loop;
         }
 }
-

@@ -17,18 +17,6 @@
         } \
     } while(0)
 
-/* Test helper function to print integer valarray */
-static void PrintValArrayInt(ValArrayInt *v)
-{
-    size_t i, size = iValArrayInt.Size(v);
-    printf("ValArray [Size: %lu, Capacity: %lu]: ", (unsigned long)size, (unsigned long)iValArrayInt.GetCapacity(v));
-    for (i = 0; i < size; i++) {
-        int val = iValArrayInt.GetElement(v, i);
-        printf("%d ", val);
-    }
-    printf("\n");
-}
-
 /* Helper function for Apply test - multiplies element by 2 */
 static int apply_multiply_by_two(int element, void *arg)
 {
@@ -47,28 +35,15 @@ static int foreach_add_five(int element) {
     return element + 5;
 }
 
-/* Helper function to calculate slice position (last + 1) for clarity in tests */
-static size_t CalculateSliceNextPosition(size_t start, size_t length, size_t increment)
-{
-    return start + length * increment;
-}
+static unsigned valarray_observer_events;
 
-/* Helper function to document slice state for debugging */
-static void PrintSliceState(const char *context, ValArrayInt *v, const char *label)
+static void valarray_observer_callback(const void *object, unsigned operation,
+                                       const void *extra[])
 {
-    size_t start, length, incr;
-    int has_slice = iValArrayInt.GetSlice(v, &start, &length, &incr);
-
-    if (has_slice) {
-        size_t next_pos = CalculateSliceNextPosition(start, length, incr);
-        printf("  [%s] %s: start=%lu, length=%lu, incr=%lu, nextPos=%lu, count=%lu\n",
-            context, label,
-            (unsigned long)start, (unsigned long)length, (unsigned long)incr,
-            (unsigned long)next_pos, (unsigned long)iValArrayInt.Size(v));
-    } else {
-        printf("  [%s] %s: No slice (count=%lu)\n", context, label,
-            (unsigned long)iValArrayInt.Size(v));
-    }
+    (void)object;
+    (void)operation;
+    (void)extra;
+    ++valarray_observer_events;
 }
 
 /* Test 1: Create and Finalize */
@@ -632,7 +607,7 @@ static int test_mismatch(void)
 {
     ValArrayInt *v1 = iValArrayInt.Create(5);
     ValArrayInt *v2 = iValArrayInt.Create(5);
-    int val1 = 10, val2 = 20, val3 = 30, val4 = 99;
+    int val1 = 10, val2 = 20, val4 = 99;
 
     iValArrayInt.Add(v1, val1);
     iValArrayInt.Add(v1, val2);
@@ -805,8 +780,484 @@ static int test_compare_equal_scalar(void)
     Mask *mask = NULL;
     mask = iValArrayInt.CompareEqualScalar(v, scalar, mask);
     TEST_ASSERT(mask != NULL, "CompareEqualScalar returns non-NULL mask");
+    TEST_ASSERT(iMask.Size(mask) == 4, "CompareEqualScalar returns one mask entry per value");
+    TEST_ASSERT(iMask.GetElement(mask, 0) == 0, "CompareEqualScalar marks non-matching value");
+    TEST_ASSERT(iMask.GetElement(mask, 1) == 1, "CompareEqualScalar marks first match");
+    TEST_ASSERT(iMask.GetElement(mask, 2) == 1, "CompareEqualScalar marks second match");
+    TEST_ASSERT(iMask.GetElement(mask, 3) == 0, "CompareEqualScalar marks trailing non-match");
 
+    iMask.Finalize(mask);
+    mask = NULL;
+
+    /* Reusing a larger mask exercises the non-allocating path as well. */
+    Mask *reused = iMask.Create(8);
+    TEST_ASSERT(reused != NULL, "Can create reusable mask");
+    mask = iValArrayInt.CompareEqualScalar(v, scalar, reused);
+    TEST_ASSERT(mask == reused, "CompareEqualScalar reuses a sufficiently large mask");
+    TEST_ASSERT(iMask.Size(mask) == 4, "Reused mask is resized to the result length");
+    TEST_ASSERT(iMask.GetElement(mask, 1) == 1 && iMask.GetElement(mask, 2) == 1,
+                "Reused mask contains the expected matches");
+
+    iMask.Finalize(mask);
     iValArrayInt.Finalize(v);
+    return 0;
+}
+
+/* Exercise every concrete ValArray wrapper so all specializations get a
+ * compile/link/runtime smoke check in the ownership suite. */
+static int test_valarray_specializations(void)
+{
+    ValArraySize_t *size_array = iValArraySize_t.Create(1);
+    ValArrayShort *short_array = iValArrayShort.Create(1);
+    ValArrayDouble *double_array = iValArrayDouble.Create(1);
+    ValArrayLongDouble *long_double_array = iValArrayLongDouble.Create(1);
+    ValArrayLLong *long_long_array = iValArrayLLong.Create(1);
+    ValArrayULLong *unsigned_long_long_array = iValArrayULLong.Create(1);
+    ValArrayFloat *float_array = iValArrayFloat.Create(1);
+    ValArrayUInt *unsigned_array = iValArrayUInt.Create(1);
+
+    TEST_ASSERT(size_array != NULL, "size_t ValArray wrapper creates an array");
+    TEST_ASSERT(short_array != NULL, "short ValArray wrapper creates an array");
+    TEST_ASSERT(double_array != NULL, "double ValArray wrapper creates an array");
+    TEST_ASSERT(long_double_array != NULL, "long double ValArray wrapper creates an array");
+    TEST_ASSERT(long_long_array != NULL, "long long ValArray wrapper creates an array");
+    TEST_ASSERT(unsigned_long_long_array != NULL,
+                "unsigned long long ValArray wrapper creates an array");
+    TEST_ASSERT(float_array != NULL, "float ValArray wrapper creates an array");
+    TEST_ASSERT(unsigned_array != NULL, "unsigned ValArray wrapper creates an array");
+
+    TEST_ASSERT(iValArraySize_t.Add(size_array, (size_t)7) == 1,
+                "size_t ValArray wrapper adds a value");
+    TEST_ASSERT(iValArrayShort.Add(short_array, (short)-7) == 1,
+                "short ValArray wrapper adds a value");
+    TEST_ASSERT(iValArrayDouble.Add(double_array, 1.25) == 1,
+                "double ValArray wrapper adds a value");
+    TEST_ASSERT(iValArrayLongDouble.Add(long_double_array, (long double)2.5) == 1,
+                "long double ValArray wrapper adds a value");
+    TEST_ASSERT(iValArrayLLong.Add(long_long_array, (long long)-9) == 1,
+                "long long ValArray wrapper adds a value");
+    TEST_ASSERT(iValArrayULLong.Add(unsigned_long_long_array, (unsigned long long)9) == 1,
+                "unsigned long long ValArray wrapper adds a value");
+    TEST_ASSERT(iValArrayFloat.Add(float_array, 3.5f) == 1,
+                "float ValArray wrapper adds a value");
+    TEST_ASSERT(iValArrayUInt.Add(unsigned_array, 11U) == 1,
+                "unsigned ValArray wrapper adds a value");
+
+    TEST_ASSERT(iValArraySize_t.GetElement(size_array, 0) == (size_t)7,
+                "size_t ValArray wrapper preserves its value");
+    TEST_ASSERT(iValArrayShort.GetElement(short_array, 0) == (short)-7,
+                "short ValArray wrapper preserves its value");
+    TEST_ASSERT(iValArrayDouble.GetElement(double_array, 0) == 1.25,
+                "double ValArray wrapper preserves its value");
+    TEST_ASSERT(iValArrayLongDouble.GetElement(long_double_array, 0) == (long double)2.5,
+                "long double ValArray wrapper preserves its value");
+    TEST_ASSERT(iValArrayLLong.GetElement(long_long_array, 0) == (long long)-9,
+                "long long ValArray wrapper preserves its value");
+    TEST_ASSERT(iValArrayULLong.GetElement(unsigned_long_long_array, 0) ==
+                    (unsigned long long)9,
+                "unsigned long long ValArray wrapper preserves its value");
+    TEST_ASSERT(iValArrayFloat.GetElement(float_array, 0) == 3.5f,
+                "float ValArray wrapper preserves its value");
+    TEST_ASSERT(iValArrayUInt.GetElement(unsigned_array, 0) == 11U,
+                "unsigned ValArray wrapper preserves its value");
+
+    /* Exercise the unsigned-only bitwise specialization. */
+    ValArrayUInt *unsigned_other = iValArrayUInt.Create(2);
+    TEST_ASSERT(unsigned_other != NULL, "Second unsigned ValArray is created");
+    TEST_ASSERT(iValArrayUInt.Clear(unsigned_array) == 1,
+                "Unsigned ValArray can reset its smoke-test value");
+    TEST_ASSERT(iValArrayUInt.Add(unsigned_array, 0x0FU) == 1 &&
+                    iValArrayUInt.Add(unsigned_array, 0xF0U) == 1,
+                "Unsigned ValArray accepts bitwise operands");
+    TEST_ASSERT(iValArrayUInt.Add(unsigned_other, 0xF0U) == 1 &&
+                    iValArrayUInt.Add(unsigned_other, 0x0FU) == 1,
+                "Second unsigned ValArray accepts bitwise operands");
+    TEST_ASSERT(iValArrayUInt.Or(unsigned_array, unsigned_other) == 1,
+                "Unsigned ValArray Or succeeds");
+    TEST_ASSERT(iValArrayUInt.And(unsigned_array, unsigned_other) == 1,
+                "Unsigned ValArray And succeeds");
+    TEST_ASSERT(iValArrayUInt.Xor(unsigned_array, unsigned_other) == 1,
+                "Unsigned ValArray Xor succeeds");
+    TEST_ASSERT(iValArrayUInt.OrScalar(unsigned_array, 1U) == 1,
+                "Unsigned ValArray OrScalar succeeds");
+    TEST_ASSERT(iValArrayUInt.AndScalar(unsigned_array, 3U) == 1,
+                "Unsigned ValArray AndScalar succeeds");
+    TEST_ASSERT(iValArrayUInt.XorScalar(unsigned_array, 1U) == 1,
+                "Unsigned ValArray XorScalar succeeds");
+    TEST_ASSERT(iValArrayUInt.Not(unsigned_array) == 1,
+                "Unsigned ValArray Not succeeds");
+    TEST_ASSERT(iValArrayUInt.BitLeftShift(unsigned_array, 1) == 1,
+                "Unsigned ValArray left shift succeeds");
+    TEST_ASSERT(iValArrayUInt.BitRightShift(unsigned_array, 1) == 1,
+                "Unsigned ValArray right shift succeeds");
+    TEST_ASSERT(iValArrayUInt.BitLeftShift(unsigned_array, -1) == 1,
+                "Unsigned ValArray negative left shift delegates right");
+    TEST_ASSERT(iValArrayUInt.BitRightShift(unsigned_array, -1) == 1,
+                "Unsigned ValArray negative right shift delegates left");
+
+    /* Floating-point specializations expose tolerance comparison and inverse. */
+    ValArrayDouble *double_other = iValArrayDouble.Create(2);
+    Mask *float_mask = iMask.Create(2);
+    TEST_ASSERT(double_other != NULL && float_mask != NULL,
+                "Floating-point comparison fixtures are created");
+    TEST_ASSERT(iValArrayDouble.Add(double_array, -2.0) == 1 &&
+                    iValArrayDouble.Add(double_array, 4.0) == 1,
+                "Double ValArray accepts comparison values");
+    TEST_ASSERT(iValArrayDouble.Add(double_other, 1.25) == 1 &&
+                    iValArrayDouble.Add(double_other, -2.0) == 1 &&
+                    iValArrayDouble.Add(double_other, 5.0) == 1,
+                "Second double ValArray accepts comparison values");
+    TEST_ASSERT(iValArrayDouble.Abs(double_array) == 1,
+                "Double ValArray Abs succeeds");
+    TEST_ASSERT(iValArrayDouble.FCompare(double_array, double_other, float_mask, 0.01) != NULL,
+                "Double ValArray FCompare succeeds");
+    TEST_ASSERT(iValArrayDouble.Inverse(double_array) == 1,
+                "Double ValArray Inverse succeeds");
+    TEST_ASSERT(iValArrayDouble.GetElement(double_array, 1) == 0.5,
+                "Double ValArray Inverse updates values");
+
+    iValArraySize_t.Finalize(size_array);
+    iValArrayShort.Finalize(short_array);
+    iValArrayDouble.Finalize(double_array);
+    iValArrayLongDouble.Finalize(long_double_array);
+    iValArrayLLong.Finalize(long_long_array);
+    iValArrayULLong.Finalize(unsigned_long_long_array);
+    iValArrayFloat.Finalize(float_array);
+    iValArrayUInt.Finalize(unsigned_array);
+    iValArrayUInt.Finalize(unsigned_other);
+    iValArrayDouble.Finalize(double_other);
+    iMask.Finalize(float_mask);
+    return 0;
+}
+
+/* Exercise the comparison, iterator, and boundary paths that are shared by
+ * every generator instantiation. */
+static int test_valarray_edge_paths(void)
+{
+    ValArrayInt *left = iValArrayInt.Create(3);
+    ValArrayInt *right = iValArrayInt.Create(3);
+    ValArrayInt *empty = iValArrayInt.Create(0);
+    ValArraySize_t *indices = iValArraySize_t.Create(2);
+    ValArrayInt *indexed = NULL;
+    ValArrayInt *observed = iValArrayInt.Create(2);
+    ValArrayInt *observed_other = iValArrayInt.Create(2);
+    ValArrayInt *observed_copy = NULL;
+    ValArrayInt *slice_range = iValArrayInt.Create(8);
+    ValArrayInt *sort_slice = iValArrayInt.Create(5);
+    ValArrayInt *capacity_array = iValArrayInt.Create(5);
+    ValArrayInt *arithmetic_left = iValArrayInt.Create(2);
+    ValArrayInt *arithmetic_right = iValArrayInt.Create(2);
+    ValArrayInt *slice_compare_left = iValArrayInt.Create(4);
+    ValArrayInt *slice_compare_right = iValArrayInt.Create(4);
+    ValArrayInt *raw_array = NULL;
+    ValArrayInt *created_with_allocator = NULL;
+    ValArrayInt *slice_remove = iValArrayInt.Create(5);
+    FILE *slice_output = NULL;
+    unsigned char invalid_guid[32] = {0};
+    int range_values[] = {7, 8};
+    size_t capacity_before = 0;
+    Mask *equal_mask = NULL;
+    Mask *slice_mask = NULL;
+    Mask *short_mask = NULL;
+    char *ordering = NULL;
+    char *scalar_ordering = NULL;
+    Iterator *iterator = NULL;
+    Iterator *stack_iterator = NULL;
+    void *iterator_buffer = NULL;
+    FILE *bad_file = NULL;
+    int replacement = 99;
+    int copied = 0;
+    size_t index = 0;
+
+    TEST_ASSERT(left != NULL && right != NULL && empty != NULL &&
+                    observed != NULL && observed_other != NULL &&
+                    slice_range != NULL && sort_slice != NULL &&
+                    capacity_array != NULL && arithmetic_left != NULL &&
+                    arithmetic_right != NULL && slice_compare_left != NULL &&
+                    slice_compare_right != NULL && slice_remove != NULL,
+                "Edge-path arrays are created");
+    TEST_ASSERT(iValArrayInt.Add(left, 10) == 1, "Add left[0]");
+    TEST_ASSERT(iValArrayInt.Add(left, 20) == 1, "Add left[1]");
+    TEST_ASSERT(iValArrayInt.Add(left, 30) == 1, "Add left[2]");
+    TEST_ASSERT(iValArrayInt.Add(right, 10) == 1, "Add right[0]");
+    TEST_ASSERT(iValArrayInt.Add(right, 25) == 1, "Add right[1]");
+    TEST_ASSERT(iValArrayInt.Add(right, 30) == 1, "Add right[2]");
+
+    TEST_ASSERT(iValArrayInt.Equal(left, left) == 1, "Equal accepts identical arrays");
+    TEST_ASSERT(iValArrayInt.Equal(left, NULL) == 0, "Equal rejects a null array");
+    TEST_ASSERT(iValArrayInt.Equal(left, empty) == 0, "Equal rejects different sizes");
+    equal_mask = iValArrayInt.CompareEqual(left, right, NULL);
+    TEST_ASSERT(equal_mask != NULL, "CompareEqual creates a mask");
+    TEST_ASSERT(iMask.Size(equal_mask) == 3, "CompareEqual mask has array length");
+    TEST_ASSERT(iMask.GetElement(equal_mask, 0) == 1 &&
+                    iMask.GetElement(equal_mask, 1) == 0 &&
+                    iMask.GetElement(equal_mask, 2) == 1,
+                "CompareEqual reports matching values");
+    ordering = iValArrayInt.Compare(left, right, NULL);
+    TEST_ASSERT(ordering != NULL, "Compare creates an ordering buffer");
+    TEST_ASSERT(ordering[0] == 0 && ordering[1] < 0 && ordering[2] == 0,
+                "Compare reports ordering values");
+    scalar_ordering = iValArrayInt.CompareScalar(left, 20, NULL);
+    TEST_ASSERT(scalar_ordering != NULL, "CompareScalar creates an ordering buffer");
+    TEST_ASSERT(scalar_ordering[0] < 0 && scalar_ordering[1] == 0 &&
+                    scalar_ordering[2] > 0,
+                "CompareScalar reports ordering values");
+
+    TEST_ASSERT(iValArrayInt.CopyElement(left, 99, &copied) < 0,
+                "CopyElement rejects an out-of-range index");
+    TEST_ASSERT(iValArrayInt.GetElement(left, 99) == INT_MIN,
+                "GetElement returns the integer minimum for an invalid index");
+    TEST_ASSERT(iValArrayInt.IndexOf(left, 999, &index) < 0,
+                "IndexOf reports a missing value");
+    TEST_ASSERT(iValArrayInt.Erase(left, 999) < 0,
+                "Erase reports a missing value");
+    TEST_ASSERT(iValArrayInt.ReplaceAt(left, 99, 0) < 0,
+                "ReplaceAt rejects an out-of-range index");
+    TEST_ASSERT(iValArrayInt.InsertAt(left, 99, 0) < 0,
+                "InsertAt rejects an out-of-range index");
+    TEST_ASSERT(iValArrayInt.InsertIn(left, 99, right) < 0,
+                "InsertIn rejects an out-of-range index");
+    TEST_ASSERT(iValArrayInt.GetRange(empty, 0, 1) == NULL,
+                "GetRange returns null for an empty array");
+    TEST_ASSERT(iValArrayInt.GetRange(left, 99, 100) == NULL,
+                "GetRange returns null for an inverted range");
+    TEST_ASSERT(iValArrayInt.RemoveRange(empty, 0, 1) == 0,
+                "RemoveRange handles an empty array");
+    TEST_ASSERT(iValArrayInt.PopBack(empty, NULL) == 0,
+                "PopBack handles an empty array");
+    TEST_ASSERT(iValArrayInt.AddRange(left, 0, NULL) == 1,
+                "AddRange accepts an empty range");
+
+    TEST_ASSERT(iValArrayInt.GetAllocator(left) == CurrentAllocator,
+                "GetAllocator returns the array allocator");
+    TEST_ASSERT(iValArrayInt.GetAllocator(NULL) == NULL,
+                "GetAllocator handles null");
+    TEST_ASSERT(iValArrayInt.Sizeof(NULL) > 0,
+                "Sizeof reports a positive header size for null");
+    TEST_ASSERT(iValArrayInt.GetElementSize(left) == sizeof(int),
+                "GetElementSize reports int size");
+    TEST_ASSERT(iValArrayInt.SetCompareFunction(left, NULL) == NULL,
+                "SetCompareFunction has no default comparator");
+    TEST_ASSERT(iValArrayInt.SetDestructor(left, NULL) == NULL,
+                "SetDestructor has no default destructor");
+    TEST_ASSERT(iValArrayInt.SetErrorFunction(NULL, NULL) != NULL,
+                "SetErrorFunction returns the current error handler");
+    TEST_ASSERT(iValArrayInt.ResetSlice(left) == 0,
+                "ResetSlice handles an unsliced array");
+    TEST_ASSERT(iValArrayInt.GetSlice(left, NULL, NULL, NULL) == 0,
+                "GetSlice handles an unsliced array");
+    TEST_ASSERT(iValArrayInt.SetSlice(left, iValArrayInt.Size(left), 1, 1) < 0,
+                "SetSlice rejects a start beyond the array");
+    TEST_ASSERT(iValArrayInt.SetSlice(left, 0, 0, 1) < 0,
+                "SetSlice rejects an empty slice");
+    TEST_ASSERT(iValArrayInt.SetSlice(left, 0, 1, 0) < 0,
+                "SetSlice rejects a zero increment");
+
+    for (index = 0; index < 5; ++index) {
+        TEST_ASSERT(iValArrayInt.Add(slice_range, (int)index) == 1,
+                    "Slice AddRange fixture is populated");
+        TEST_ASSERT(iValArrayInt.Add(sort_slice, (int)(5 - index)) == 1,
+                    "Slice Sort fixture is populated");
+        TEST_ASSERT(iValArrayInt.Add(capacity_array, (int)index) == 1,
+                    "Capacity fixture is populated");
+        TEST_ASSERT(iValArrayInt.Add(slice_remove, (int)index) == 1,
+                    "Slice RemoveRange fixture is populated");
+    }
+    TEST_ASSERT(iValArrayInt.SetSlice(slice_range, 0, 2, 2) == 1,
+                "SetSlice selects a strided AddRange view");
+    TEST_ASSERT(iValArrayInt.AddRange(slice_range, 2, range_values) == 1,
+                "AddRange handles a strided slice");
+    TEST_ASSERT(iValArrayInt.ResetSlice(slice_range) == 1,
+                "Strided AddRange slice resets");
+    TEST_ASSERT(iValArrayInt.SetSlice(sort_slice, 0, 3, 1) == 1 &&
+                    iValArrayInt.Sort(sort_slice) == 1,
+                "Sort handles a slice view");
+    capacity_before = iValArrayInt.GetCapacity(capacity_array);
+    TEST_ASSERT(iValArrayInt.SetCapacity(capacity_array, 2) == 1 &&
+                    iValArrayInt.Size(capacity_array) == 2,
+                "SetCapacity shrinks the array and count");
+    TEST_ASSERT(iValArrayInt.SetCapacity(capacity_array, capacity_before + 2) == 1,
+                "SetCapacity grows the array again");
+    TEST_ASSERT(iValArrayInt.SetSlice(slice_remove, 0, 3, 1) == 1 &&
+                    iValArrayInt.RemoveRange(slice_remove, 1, 2) == 1,
+                "RemoveRange handles a sliced view");
+    TEST_ASSERT(iValArrayInt.ResetSlice(slice_remove) == 1,
+                "Sliced RemoveRange view resets");
+
+    TEST_ASSERT(iValArrayInt.Add(arithmetic_left, 10) == 1 &&
+                    iValArrayInt.Add(arithmetic_left, 20) == 1 &&
+                    iValArrayInt.Add(arithmetic_right, 1) == 1 &&
+                    iValArrayInt.Add(arithmetic_right, 2) == 1,
+                "Slice arithmetic fixtures are populated");
+    TEST_ASSERT(iValArrayInt.SetSlice(arithmetic_left, 0, 2, 1) == 1 &&
+                    iValArrayInt.SetSlice(arithmetic_right, 0, 2, 1) == 1,
+                "Slice arithmetic views are configured");
+    TEST_ASSERT(iValArrayInt.SumTo(arithmetic_left, arithmetic_right) == 1 &&
+                    iValArrayInt.SumScalarTo(arithmetic_left, 1) == 1 &&
+                    iValArrayInt.SubtractFrom(arithmetic_left, arithmetic_right) == 1 &&
+                    iValArrayInt.SubtractScalarFrom(arithmetic_left, 1) == 1 &&
+                    iValArrayInt.SubtractFromScalar(10, arithmetic_left) == 1,
+                "Arithmetic operations handle slice views");
+    TEST_ASSERT(iValArrayInt.ResetSlice(arithmetic_left) == 1 &&
+                    iValArrayInt.ResetSlice(arithmetic_right) == 1,
+                "Slice arithmetic views reset");
+    TEST_ASSERT(iValArrayInt.DivideScalarBy(arithmetic_left, 0) == 1,
+                "DivideScalarBy handles a zero numerator");
+
+    TEST_ASSERT(iValArrayInt.Add(slice_compare_left, 3) == 1 &&
+                    iValArrayInt.Add(slice_compare_left, 4) == 1 &&
+                    iValArrayInt.Add(slice_compare_right, 3) == 1 &&
+                    iValArrayInt.Add(slice_compare_right, 5) == 1,
+                "Slice comparison fixtures are populated");
+    TEST_ASSERT(iValArrayInt.SetSlice(slice_compare_left, 0, 2, 1) == 1 &&
+                    iValArrayInt.SetSlice(slice_compare_right, 0, 2, 1) == 1,
+                "Slice comparison views are configured");
+    slice_mask = iValArrayInt.CompareEqual(slice_compare_left, slice_compare_right, NULL);
+    TEST_ASSERT(slice_mask != NULL,
+                "CompareEqual handles slices");
+    iMask.Finalize(slice_mask);
+    slice_mask = NULL;
+    ordering = iValArrayInt.Compare(slice_compare_left, slice_compare_right, ordering);
+    TEST_ASSERT(ordering != NULL, "Compare handles slices");
+    scalar_ordering = iValArrayInt.CompareScalar(slice_compare_left, 3, scalar_ordering);
+    TEST_ASSERT(scalar_ordering != NULL, "CompareScalar handles slices");
+    TEST_ASSERT(iValArrayInt.ResetSlice(slice_compare_left) == 1 &&
+                    iValArrayInt.ResetSlice(slice_compare_right) == 1,
+                "Slice comparison views reset");
+
+    slice_output = ccl_test_tmpfile();
+    TEST_ASSERT(slice_output != NULL && iValArrayInt.SetSlice(left, 0, 2, 1) == 1,
+                "Fprintf slice fixture is configured");
+    TEST_ASSERT(iValArrayInt.Fprintf(left, slice_output, "%d") > 0,
+                "Fprintf handles a slice view");
+    TEST_ASSERT(iValArrayInt.ResetSlice(left) == 1, "Fprintf slice view resets");
+    short_mask = iMask.Create(1);
+    TEST_ASSERT(short_mask != NULL && iValArrayInt.Select(left, short_mask) < 0,
+                "Select rejects a mask with the wrong length");
+    iMask.Finalize(short_mask);
+    TEST_ASSERT(iValArrayInt.GetData(NULL) == NULL,
+                "GetData handles null");
+
+    created_with_allocator = iValArrayInt.CreateWithAllocator(0, CurrentAllocator);
+    TEST_ASSERT(created_with_allocator != NULL,
+                "CreateWithAllocator handles a zero start size");
+    raw_array = (ValArrayInt *)calloc(1, iValArrayInt.Sizeof(NULL));
+    TEST_ASSERT(raw_array != NULL && iValArrayInt.Init(raw_array, 2) == raw_array,
+                "Init initializes caller storage");
+    iValArrayInt.Finalize(raw_array);
+    raw_array = NULL;
+
+    /* A complete, wrong GUID reaches Load's validation branch. */
+    bad_file = ccl_test_tmpfile();
+    TEST_ASSERT(bad_file != NULL, "Temporary file is created for GUID validation");
+    fwrite(invalid_guid, 1, sizeof(invalid_guid), bad_file);
+    rewind(bad_file);
+    TEST_ASSERT(iValArrayInt.Load(bad_file) == NULL,
+                "Load rejects a complete file with an invalid GUID");
+    fclose(bad_file);
+    bad_file = NULL;
+
+    /* Subscribe to every event to exercise the generator's observer hooks. */
+    valarray_observer_events = 0;
+    TEST_ASSERT(iObserver.Subscribe(observed, valarray_observer_callback, ~0U) == 1,
+                "ValArray observer subscribes");
+    TEST_ASSERT(iValArrayInt.Add(observed, 1) == 1, "Observed Add succeeds");
+    TEST_ASSERT(iValArrayInt.AddRange(observed, 1, NULL) == 1,
+                "Observed AddRange succeeds");
+    TEST_ASSERT(iValArrayInt.Add(observed_other, 3) == 1 &&
+                    iValArrayInt.Add(observed_other, 4) == 1,
+                "Observer append fixture is populated");
+    observed_copy = iValArrayInt.Copy(observed);
+    TEST_ASSERT(observed_copy != NULL, "Observed Copy succeeds");
+    TEST_ASSERT(iValArrayInt.SetCapacity(observed, 8) == 1,
+                "Observed InsertAt fixture has spare capacity");
+    TEST_ASSERT(iValArrayInt.InsertAt(observed, 0, 9) == 1,
+                "Observed InsertAt succeeds");
+    TEST_ASSERT(iValArrayInt.InsertIn(observed, 1, empty) == 1,
+                "Observed InsertIn succeeds");
+    TEST_ASSERT(iValArrayInt.ReplaceAt(observed, 0, 8) == 1,
+                "Observed ReplaceAt succeeds");
+    TEST_ASSERT(iValArrayInt.EraseAt(observed, 0) == 1,
+                "Observed EraseAt succeeds");
+    TEST_ASSERT(iValArrayInt.Append(observed, observed_other) == 1,
+                "Observed Append succeeds");
+    TEST_ASSERT(iValArrayInt.Clear(observed) == 1, "Observed Clear succeeds");
+    iValArrayInt.SetFlags(observed, CONTAINER_HAS_OBSERVER);
+    TEST_ASSERT(valarray_observer_events >= 9,
+                "Observer receives ValArray mutation events");
+    iValArrayInt.Finalize(observed);
+    TEST_ASSERT(iObserver.Unsubscribe(observed, valarray_observer_callback) == 1,
+                "ValArray observer unsubscribes");
+    observed = NULL;
+
+    iterator = iValArrayInt.NewIterator(left);
+    TEST_ASSERT(iterator != NULL, "NewIterator creates an iterator");
+    TEST_ASSERT(iterator->GetCurrent(iterator) == NULL,
+                "NewIterator starts without a current value");
+    TEST_ASSERT(iterator->GetPrevious(iterator) == NULL,
+                "GetPrevious handles the initial iterator position");
+    TEST_ASSERT(iterator->Seek(iterator, 1) != NULL &&
+                    *(int *)iterator->GetCurrent(iterator) == 20,
+                "Seek and GetCurrent select an element");
+    TEST_ASSERT(iterator->GetPrevious(iterator) != NULL &&
+                    *(int *)iterator->GetCurrent(iterator) == 10,
+                "GetPrevious moves to the prior element");
+    TEST_ASSERT(iterator->Replace(iterator, &replacement, 1) == 1,
+                "Iterator Replace updates an element");
+    TEST_ASSERT(iValArrayInt.GetElement(left, 0) == replacement,
+                "Iterator Replace stores the replacement");
+    TEST_ASSERT(iterator->Seek(iterator, 99) == NULL,
+                "Seek rejects an out-of-range index");
+    iValArrayInt.DeleteIterator(iterator);
+    iterator = NULL;
+
+    iterator_buffer = calloc(1, iValArrayInt.SizeofIterator(left));
+    TEST_ASSERT(iterator_buffer != NULL, "Iterator buffer is allocated");
+    stack_iterator = (Iterator *)iterator_buffer;
+    TEST_ASSERT(iValArrayInt.InitIterator(left, iterator_buffer) == 1,
+                "InitIterator initializes caller storage");
+    TEST_ASSERT(stack_iterator->GetFirst(stack_iterator) != NULL,
+                "Initialized iterator can read the first element");
+    iValArrayInt.DeleteIterator(stack_iterator);
+    iterator_buffer = NULL;
+
+    TEST_ASSERT(iValArraySize_t.Add(indices, (size_t)2) == 1, "Add first index");
+    TEST_ASSERT(iValArraySize_t.Add(indices, (size_t)0) == 1, "Add second index");
+    indexed = iValArrayInt.IndexIn(left, indices);
+    TEST_ASSERT(indexed != NULL && iValArrayInt.Size(indexed) == 2,
+                "IndexIn creates an indexed array");
+    TEST_ASSERT(iValArrayInt.GetElement(indexed, 0) == 30 &&
+                    iValArrayInt.GetElement(indexed, 1) == replacement,
+                "IndexIn follows size_t indices");
+
+    bad_file = ccl_test_tmpfile();
+    TEST_ASSERT(bad_file != NULL, "Temporary file is created");
+    fputs("not a ValArray", bad_file);
+    rewind(bad_file);
+    TEST_ASSERT(iValArrayInt.Load(bad_file) == NULL,
+                "Load rejects a file with an invalid GUID");
+
+    iValArrayInt.Finalize(left);
+    iValArrayInt.Finalize(right);
+    iValArrayInt.Finalize(empty);
+    iValArraySize_t.Finalize(indices);
+    iValArrayInt.Finalize(indexed);
+    iValArrayInt.Finalize(observed_other);
+    iValArrayInt.Finalize(observed_copy);
+    iValArrayInt.Finalize(slice_range);
+    iValArrayInt.Finalize(sort_slice);
+    iValArrayInt.Finalize(capacity_array);
+    iValArrayInt.Finalize(arithmetic_left);
+    iValArrayInt.Finalize(arithmetic_right);
+    iValArrayInt.Finalize(slice_compare_left);
+    iValArrayInt.Finalize(slice_compare_right);
+    iValArrayInt.Finalize(slice_remove);
+    iValArrayInt.Finalize(created_with_allocator);
+    iMask.Finalize(equal_mask);
+    if (ordering != NULL) CurrentAllocator->free(ordering);
+    if (scalar_ordering != NULL) CurrentAllocator->free(scalar_ordering);
+    if (slice_output != NULL) fclose(slice_output);
+    if (bad_file != NULL) fclose(bad_file);
     return 0;
 }
 
@@ -1423,6 +1874,8 @@ static int test_front_back_readonly(void)
     int front2 = iValArrayInt.Front(v);
     int back2 = iValArrayInt.Back(v);
     /* Front and Back should still work but may report error */
+    (void)front2;
+    (void)back2;
 
     iValArrayInt.Finalize(v);
     return 0;
@@ -1499,7 +1952,6 @@ static int test_init(void)
 static int test_save(void)
 {
     ValArrayInt *v = iValArrayInt.Create(5);
-    const char *filename = "test_valarray.bin";
 
     /* Add test data */
     iValArrayInt.Add(v, 42);
@@ -1507,27 +1959,20 @@ static int test_save(void)
     iValArrayInt.Add(v, 999);
 
     /* Open file for writing in binary mode */
-    FILE *file = fopen(filename, "wb");
+    FILE *file = ccl_test_tmpfile();
     TEST_ASSERT(file != NULL, "File opened for writing");
 
     /* Save array to file */
     int result = iValArrayInt.Save(v, file);
     TEST_ASSERT(result == 1, "Save returns success");
 
+    /* Check file size is non-zero */
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    TEST_ASSERT(file_size > 0, "Saved file has content");
     fclose(file);
 
-    /* Verify file was created and has content */
-    FILE *check = fopen(filename, "rb");
-    TEST_ASSERT(check != NULL, "Saved file exists");
-
-    /* Check file size is non-zero */
-    fseek(check, 0, SEEK_END);
-    long file_size = ftell(check);
-    TEST_ASSERT(file_size > 0, "Saved file has content");
-    fclose(check);
-
     /* Clean up */
-    remove(filename);
     iValArrayInt.Finalize(v);
     return 0;
 }
@@ -1536,7 +1981,6 @@ static int test_save(void)
 static int test_load(void)
 {
     ValArrayInt *v_original = iValArrayInt.Create(5);
-    const char *filename = "test_load_valarray.bin";
 
     /* Create and save original array */
     iValArrayInt.Add(v_original, 10);
@@ -1545,19 +1989,16 @@ static int test_load(void)
     iValArrayInt.Add(v_original, 40);
     iValArrayInt.Add(v_original, 50);
 
-    FILE *save_file = fopen(filename, "wb");
+    FILE *save_file = ccl_test_tmpfile();
     TEST_ASSERT(save_file != NULL, "File opened for saving");
 
     int save_result = iValArrayInt.Save(v_original, save_file);
     TEST_ASSERT(save_result == 1, "Original array saved successfully");
-    fclose(save_file);
-
     /* Load from file */
-    FILE *load_file = fopen(filename, "rb");
-    TEST_ASSERT(load_file != NULL, "File opened for loading");
-    ValArrayInt *v_loaded = iValArrayInt.Load(load_file);
+    rewind(save_file);
+    ValArrayInt *v_loaded = iValArrayInt.Load(save_file);
     TEST_ASSERT(v_loaded != NULL, "Array loaded");
-    fclose(load_file);
+    fclose(save_file);
 
     /* Verify all elements match */
     TEST_ASSERT(iValArrayInt.Size(v_loaded) == 5, "Loaded array has correct number of elements");
@@ -1573,7 +2014,6 @@ static int test_load(void)
     TEST_ASSERT(iValArrayInt.GetElement(v_loaded, 1) == 80, "Second element after subtracting scalar: 100 - 20 = 80");
 
     /* Clean up */
-    remove(filename);
     iValArrayInt.Finalize(v_original);
     iValArrayInt.Finalize(v_loaded);
     return 0;
@@ -1583,7 +2023,6 @@ static int test_load(void)
 static int test_save_load_roundtrip(void)
 {
     ValArrayInt *v_original = iValArrayInt.Create(10);
-    const char *filename = "test_roundtrip.bin";
 
     /* Create array with various values */
     int test_values[] = {-100, -1, 0, 1, 50, 100, 500, 1000, 9999, -9999,};
@@ -1592,17 +2031,14 @@ static int test_save_load_roundtrip(void)
     }
 
     /* Save to file */
-    FILE *save_file = fopen(filename, "wb");
+    FILE *save_file = ccl_test_tmpfile();
     TEST_ASSERT(save_file != NULL, "File opened for save");
     TEST_ASSERT(iValArrayInt.Save(v_original, save_file) == 1, "Array saved");
-    fclose(save_file);
-
     /* Load from file */
-    FILE *load_file = fopen(filename, "rb");
-    TEST_ASSERT(load_file != NULL, "File opened for load");
-    ValArrayInt *v_loaded = iValArrayInt.Load(load_file);
+    rewind(save_file);
+    ValArrayInt *v_loaded = iValArrayInt.Load(save_file);
     TEST_ASSERT(v_loaded != NULL, "Array loaded");
-    fclose(load_file);
+    fclose(save_file);
 
     /* Verify all elements match */
     TEST_ASSERT(iValArrayInt.Size(v_loaded) == sizeof(test_values)/sizeof(test_values[0]), "Loaded array has correct number of elements");
@@ -1611,7 +2047,6 @@ static int test_save_load_roundtrip(void)
     }
 
     /* Clean up */
-    remove(filename);
     iValArrayInt.Finalize(v_original);
     iValArrayInt.Finalize(v_loaded);
     return 0;
@@ -1621,27 +2056,22 @@ static int test_save_load_roundtrip(void)
 static int test_save_empty_array(void)
 {
     ValArrayInt *v = iValArrayInt.Create(5);
-    const char *filename = "test_empty.bin";
 
     /* Don't add any elements - array is empty */
     TEST_ASSERT(iValArrayInt.Size(v) == 0, "Array is empty");
 
     /* Save empty array */
-    FILE *file = fopen(filename, "wb");
+    FILE *file = ccl_test_tmpfile();
     TEST_ASSERT(file != NULL, "File opened");
     TEST_ASSERT(iValArrayInt.Save(v, file) == 1, "Empty array saved successfully");
-    fclose(file);
-
     /* Load empty array back */
-    FILE *load_file = fopen(filename, "rb");
-    TEST_ASSERT(load_file != NULL, "File opened for loading");
-    ValArrayInt *v_loaded = iValArrayInt.Load(load_file);
+    rewind(file);
+    ValArrayInt *v_loaded = iValArrayInt.Load(file);
     TEST_ASSERT(v_loaded != NULL, "Empty array loaded");
     TEST_ASSERT(iValArrayInt.Size(v_loaded) == 0, "Loaded array is empty");
-    fclose(load_file);
+    fclose(file);
 
     /* Clean up */
-    remove(filename);
     iValArrayInt.Finalize(v);
     iValArrayInt.Finalize(v_loaded);
     return 0;
@@ -1651,30 +2081,25 @@ static int test_save_empty_array(void)
 static int test_save_single_element(void)
 {
     ValArrayInt *v = iValArrayInt.Create(5);
-    const char *filename = "test_single.bin";
 
     /* Add single element */
     iValArrayInt.Add(v, 12345);
     TEST_ASSERT(iValArrayInt.Size(v) == 1, "Array has single element");
 
     /* Save and load */
-    FILE *save_file = fopen(filename, "wb");
+    FILE *save_file = ccl_test_tmpfile();
     TEST_ASSERT(save_file != NULL, "File opened for save");
     TEST_ASSERT(iValArrayInt.Save(v, save_file) == 1, "Saved successfully");
-    fclose(save_file);
-
-    FILE *load_file = fopen(filename, "rb");
-    TEST_ASSERT(load_file != NULL, "File opened for load");
-    ValArrayInt *v_loaded = iValArrayInt.Load(load_file);
+    rewind(save_file);
+    ValArrayInt *v_loaded = iValArrayInt.Load(save_file);
     TEST_ASSERT(v_loaded != NULL, "Loaded successfully");
-    fclose(load_file);
+    fclose(save_file);
 
     /* Verify single element */
     TEST_ASSERT(iValArrayInt.Size(v_loaded) == 1, "Loaded array has single element");
     TEST_ASSERT(iValArrayInt.GetElement(v_loaded, 0) == 12345, "Single element preserved");
 
     /* Clean up */
-    remove(filename);
     iValArrayInt.Finalize(v);
     iValArrayInt.Finalize(v_loaded);
     return 0;
@@ -1757,7 +2182,6 @@ static int test_copy_with_slice(void)
 static int test_apply_with_slice(void)
 {
     ValArrayInt *v = iValArrayInt.Create(10);
-    int count = 0;
 
     for (int i = 0; i < 10; i++) {
         iValArrayInt.Add(v, i * 10);
@@ -1993,27 +2417,21 @@ static int test_select_copy(void)
 static int test_fprintf(void)
 {
     ValArrayInt *v = iValArrayInt.Create(5);
-    const char *filename = "test_fprintf.txt";
 
     iValArrayInt.Add(v, 100);
     iValArrayInt.Add(v, 200);
     iValArrayInt.Add(v, 300);
 
     /* Open file for writing */
-    FILE *file = fopen(filename, "w");
+    FILE *file = ccl_test_tmpfile();
     TEST_ASSERT(file != NULL, "File opened for writing");
 
     /* Write array to file using Fprintf */
     int result = iValArrayInt.Fprintf(v, file, "%d ");
     TEST_ASSERT(result > 0, "Fprintf returns positive value");
 
-    fclose(file);
-
-    /* Verify file was created and has content */
-    file = fopen(filename, "r");
-    TEST_ASSERT(file != NULL, "File exists after Fprintf");
-
     /* Read back and verify */
+    rewind(file);
     int val1, val2, val3;
     int items_read = fscanf(file, "%d %d %d", &val1, &val2, &val3);
     TEST_ASSERT(items_read == 3, "File contains 3 values");
@@ -2022,7 +2440,6 @@ static int test_fprintf(void)
     TEST_ASSERT(val3 == 300, "Third value is 300");
 
     fclose(file);
-    remove(filename);
     iValArrayInt.Finalize(v);
     return 0;
 }
@@ -2074,7 +2491,7 @@ static int test_contains_with_slice(void)
 }
 
 /* Test Suite Definition */
-static TestCase valarray_int_tests[] = {
+static const TestCase valarray_int_tests[] = {
     {"test_create_finalize", test_create_finalize},
     {"test_add", test_add},
     {"test_add_with_slice", test_add_with_slice},
@@ -2110,6 +2527,8 @@ static TestCase valarray_int_tests[] = {
     {"test_multiply_with", test_multiply_with},
     {"test_multiply_with_scalar", test_multiply_with_scalar},
     {"test_compare_equal_scalar", test_compare_equal_scalar},
+    {"test_valarray_specializations", test_valarray_specializations},
+    {"test_valarray_edge_paths", test_valarray_edge_paths},
     {"test_min_max", test_min_max},
     {"test_rotate_left", test_rotate_left},
     {"test_mod_scalar", test_mod_scalar},
@@ -2160,8 +2579,13 @@ static TestCase valarray_int_tests[] = {
 };
 
 /* Export test suite */
-TestSuite ValArrayInt_Tests = {
+static const TestSuite valarray_int_suite = {
     "ValArrayInt_Tests",
     valarray_int_tests,
     sizeof(valarray_int_tests) / sizeof(valarray_int_tests[0])
 };
+
+const TestSuite *ccl_get_test_suite(void)
+{
+    return &valarray_int_suite;
+}

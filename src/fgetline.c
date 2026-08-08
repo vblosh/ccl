@@ -1,22 +1,52 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <stdint.h>
 #include "containers.h"
 #include "ccl_internal.h"
 /* This code was adapted from the public domain version of fgetline by C.B. Falconer */
+
+static int ValidateGetLineArgs(const void *line_pointer, const void *line_data,
+                               const int *n,
+                               FILE *stream, ContainerAllocator *mm)
+{
+	if (stream == NULL || line_pointer == NULL || n == NULL || mm == NULL ||
+		*n < 0 ||
+		(line_data != NULL && *n == 0)) {
+		iError.RaiseError("GetLine",CONTAINER_ERROR_BADARG);
+		return CONTAINER_ERROR_BADARG;
+	}
+	return 0;
+}
+
+static int GrowCapacity(int capacity, int *new_capacity)
+{
+	if (capacity <= 0 || capacity > INT_MAX / 2)
+		return 0;
+	*new_capacity = capacity * 2;
+	return 1;
+}
+
+static int WideAllocationSize(int capacity, size_t *bytes)
+{
+	if (capacity < 0 || (size_t)capacity > SIZE_MAX / sizeof(wchar_t))
+		return 0;
+	*bytes = (size_t)capacity * sizeof(wchar_t);
+	return 1;
+}
 
 static int GetDelim(char **LinePointer, int *n, int delimiter, FILE *stream, ContainerAllocator *mm )
 {
 	char *p,*newp;
 	size_t d;
+	size_t allocation_size;
 	int c;
 	int len = 0;
+	int new_capacity;
 
-	if (stream == NULL || LinePointer == NULL || n == NULL || 
-		(*LinePointer && *n == 0)) {
-		iError.RaiseError("GetLine",CONTAINER_ERROR_BADARG);
+	if (ValidateGetLineArgs(LinePointer, LinePointer ? *LinePointer : NULL,
+			n, stream, mm) != 0)
 		return CONTAINER_ERROR_BADARG;
-	}
 
 	if (!*LinePointer || !*n) {
 		p = mm->realloc(*LinePointer, BUFSIZ );
@@ -34,12 +64,14 @@ static int GetDelim(char **LinePointer, int *n, int delimiter, FILE *stream, Con
 	while ((c = fgetc( stream )) != EOF) {
 		if (len >= *n) {
 			d = p - *LinePointer;
-			newp = mm->realloc(*LinePointer, *n * 2 );
+			if (!GrowCapacity(*n, &new_capacity))
+				goto NoMem;
+			newp = mm->realloc(*LinePointer, (size_t)new_capacity );
 			if (!newp) 
 				goto NoMem;
 			p = newp + d;
 			*LinePointer = newp;
-			*n *= 2;
+			*n = new_capacity;
 		}
 		if (delimiter == c)
 			break;
@@ -54,8 +86,11 @@ static int GetDelim(char **LinePointer, int *n, int delimiter, FILE *stream, Con
 		return EOF;
 
 	if (len >= *n) {
-		c = (int)(p - *LinePointer);
-		newp = mm->realloc( *LinePointer, *n + 1 );
+		d = (size_t)(p - *LinePointer);
+		if (*n == INT_MAX)
+			goto NoMem;
+		allocation_size = (size_t)*n + 1;
+		newp = mm->realloc( *LinePointer, allocation_size );
 		if (!newp) {
 NoMem:
 			mm->free(*LinePointer);
@@ -63,7 +98,7 @@ NoMem:
 			iError.RaiseError("Getline",CONTAINER_ERROR_NOMEMORY);
 			return CONTAINER_ERROR_NOMEMORY;
 		}
-		p = newp + c;
+		p = newp + d;
 		*LinePointer = newp;
 		*n += 1;
 	}
@@ -76,21 +111,23 @@ int GetLine(char **LinePointer,int *n, FILE *stream,ContainerAllocator *mm)
 	return GetDelim(LinePointer,n,'\n',stream,mm);
 }
 
-static int WGetDelim(wchar_t **LinePointer, int *n, int delimiter, FILE *stream, ContainerAllocator *mm )
+static int WGetDelim(wchar_t **LinePointer, int *n, wint_t delimiter, FILE *stream, ContainerAllocator *mm )
 {
 	wchar_t *p,*newp;
 	size_t d;
-	int c;
+	size_t allocation_size;
+	wint_t c;
 	int len = 0;
+	int new_capacity;
 	
-	if (stream == NULL || LinePointer == NULL || n == NULL || 
-		(*LinePointer && *n == 0)) {
-		iError.RaiseError("GetLine",CONTAINER_ERROR_BADARG);
+	if (ValidateGetLineArgs(LinePointer, LinePointer ? *LinePointer : NULL,
+			n, stream, mm) != 0)
 		return CONTAINER_ERROR_BADARG;
-	}
 	
 	if (!*LinePointer || !*n) {
-		p = mm->realloc(*LinePointer, BUFSIZ*sizeof(wchar_t) );
+		if (!WideAllocationSize(BUFSIZ, &allocation_size))
+			goto NoMem;
+		p = mm->realloc(*LinePointer, allocation_size );
 		if (!p) {
 			iError.RaiseError("GetLine",CONTAINER_ERROR_NOMEMORY);
 			return CONTAINER_ERROR_NOMEMORY;
@@ -102,15 +139,18 @@ static int WGetDelim(wchar_t **LinePointer, int *n, int delimiter, FILE *stream,
 	else p = *LinePointer;
 	
 	/* read until delimiter or EOF */
-	while ((c = getwc( stream )) != EOF) {
+	while ((c = getwc( stream )) != WEOF) {
 		if (len >= *n) {
 			d = p - *LinePointer;
-			newp = mm->realloc(*LinePointer, *n * 2 *sizeof(wchar_t) );
+			if (!GrowCapacity(*n, &new_capacity) ||
+				!WideAllocationSize(new_capacity, &allocation_size))
+				goto NoMem;
+			newp = mm->realloc(*LinePointer, allocation_size );
 			if (!newp) 
 				goto NoMem;
 			p = newp + d;
 			*LinePointer = newp;
-			*n *= 2;
+			*n = new_capacity;
 		}
 		if (delimiter == c)
 			break;
@@ -121,12 +161,14 @@ static int WGetDelim(wchar_t **LinePointer, int *n, int delimiter, FILE *stream,
 	}
 	
 	/* Look for EOF without any bytes read condition */
-	if ((c == EOF) && (len == 0))
+	if ((c == WEOF) && (len == 0))
 		return EOF;
 	
 	if (len >= *n) {
-		c = (int)(p - *LinePointer);
-		newp = mm->realloc( *LinePointer, *n + 1 );
+		d = (size_t)(p - *LinePointer);
+		if (*n == INT_MAX || !WideAllocationSize(*n + 1, &allocation_size))
+			goto NoMem;
+		newp = mm->realloc( *LinePointer, allocation_size );
 		if (!newp) {
 		NoMem:
 			mm->free(*LinePointer);
@@ -134,7 +176,7 @@ static int WGetDelim(wchar_t **LinePointer, int *n, int delimiter, FILE *stream,
 			iError.RaiseError("Getline",CONTAINER_ERROR_NOMEMORY);
 			return CONTAINER_ERROR_NOMEMORY;
 		}
-		p = newp + c;
+		p = newp + d;
 		*LinePointer = newp;
 		*n += 1;
 	}

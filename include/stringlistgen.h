@@ -1,6 +1,9 @@
 #ifndef __containers_h__
 #include "containers.h"
 #endif
+#ifdef __cplusplus
+extern "C" {
+#endif
 #undef CONCAT
 #undef CONCAT3
 #undef EVAL
@@ -54,6 +57,8 @@ typedef struct LIST_STRUCT_INTERNAL_NAME(DATA_TYPE) {
     ContainerHeap *Heap;
     const ContainerAllocator *Allocator;
     DestructorFunction DestructorFn;
+    /* Create* returns an owned header; Init* initializes caller storage. */
+    unsigned ownsStorage;
 } LIST_TYPE(DATA_TYPE);
 
 #define STRINGLIST_MAGIC_NUMBER 98765432123456789LL
@@ -66,6 +71,7 @@ struct ITERATOR(DATA_TYPE) {
     LIST_ELEMENT(DATA_TYPE) *Previous;
     unsigned timestamp;
     CHARTYPE *ElementBuffer;
+    unsigned ownsStorage;
 };
 
 struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
@@ -146,4 +152,6 @@ struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
 };
 
 extern INTERFACE(DATA_TYPE) iSTRINGLIST(DATA_TYPE);
-
+#ifdef __cplusplus
+}
+#endif

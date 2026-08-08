@@ -19,6 +19,28 @@ static LIST_TYPE *CreateWithAllocator(size_t elementsize, const ContainerAllocat
 #define CONTAINER_LIST_SMALL    2
 #define CHUNK_SIZE    1000
 
+/* Numeric ordering is useful for typed sorting, while the bytewise tie-break
+ * preserves the generic dlist's representation-sensitive equality (notably
+ * +0/-0 and distinct NaN encodings). */
+static int TypedDefaultCompare(const void *left, const void *right,
+                               CompareInfo *info)
+{
+    DATA_TYPE a = *(const DATA_TYPE *)left;
+    DATA_TYPE b = *(const DATA_TYPE *)right;
+    (void)info;
+    if (a < b)
+        return -1;
+    if (a > b)
+        return 1;
+    return memcmp(left, right, sizeof(DATA_TYPE));
+}
+
+static void SetTypedDefaultCompare(LIST_TYPE *result)
+{
+    if (result != NULL)
+        result->Compare = TypedDefaultCompare;
+}
+
 /*------------------------------------------------------------------------
  Procedure:     Contains ID:1
  Purpose:       Determines if the given data is in the container
@@ -30,7 +52,12 @@ static LIST_TYPE *CreateWithAllocator(size_t elementsize, const ContainerAllocat
 static int Contains(const LIST_TYPE * l, const DATA_TYPE data)
 {
     size_t idx;
-    return (iDlist.IndexOf((Dlist *)l, &data, NULL, &idx) < 0) ? 0 : 1;
+    int result = iDlist.IndexOf((Dlist *)l, &data, NULL, &idx);
+    if (result == CONTAINER_ERROR_NOTFOUND)
+        return 0;
+    if (result < 0)
+        return result;
+    return 1;
 }
 
 static int Add(LIST_TYPE * l, const DATA_TYPE elem)
@@ -99,245 +126,49 @@ static size_t Sizeof(const LIST_TYPE * l)
 
 static size_t SizeofIterator(const LIST_TYPE * l)
 {
-    return sizeof(struct ITERATOR(DATA_TYPE));
+    return iDlist.SizeofIterator((const Dlist *)l);
 }
 
 static LIST_TYPE *Load(FILE * stream, ReadFunction loadFn, void *arg)
 {
     LIST_TYPE *result = (LIST_TYPE *)iDlist.Load(stream,loadFn,arg);
+    if (result != NULL && result->ElementSize != sizeof(DATA_TYPE)) {
+        iError.RaiseError("typedDlist.Load", CONTAINER_ERROR_INCOMPATIBLE);
+        iDlist.Finalize((Dlist *)result);
+        return NULL;
+    }
+    SetTypedDefaultCompare(result);
     return SetVTable(result);
-}
-
-/*
- * ---------------------------------------------------------------------------
- *
- *                           Iterators
- *
- * ---------------------------------------------------------------------------
- */
-static int ReplaceWithIterator(Iterator * it, DATA_TYPE data, int direction)
-{
-    struct ITERATOR(DATA_TYPE) *iter = (struct ITERATOR(DATA_TYPE) *)it;
-    return iter->DlistReplace(it,&data,direction);
-}
-
-static Iterator *SetupIteratorVTable(struct ITERATOR(DATA_TYPE) *result)
-{
-    if (result == NULL) return NULL;
-    result->DlistReplace = result->it.Replace;
-    result->it.Replace = (int (*)(Iterator * , void * , int ))ReplaceWithIterator;
-    return &result->it;
 }
 
 static Iterator *NewIterator(LIST_TYPE * L)
 {
-    return SetupIteratorVTable((struct ITERATOR(DATA_TYPE) *)iDlist.NewIterator((Dlist *)L));
+    return iDlist.NewIterator((Dlist *)L);
 }
 static int InitIterator(LIST_TYPE * L, void *r)
 {
-    iDlist.InitIterator((Dlist *)L,r);
-    SetupIteratorVTable(r);
-    return 1;
+    return iDlist.InitIterator((Dlist *)L,r);
 }
 static size_t GetElementSize(const LIST_TYPE * l)
 {
+    (void)l;
     return sizeof(DATA_TYPE);
 }
 
 static int Finalize(LIST_TYPE *l)
 {
-    iDlist.Finalize((Dlist *)l);
-    return 1;
-}
-
-static LIST_TYPE  *Copy(const LIST_TYPE * l)
-{
-    LIST_TYPE *result = (LIST_TYPE *)iDlist.Copy((Dlist *)l);
-    return SetVTable(result);
-}
-
-
-static LIST_TYPE *SelectCopy(const LIST_TYPE *l,const Mask *m)
-{
-    LIST_TYPE *result = (LIST_TYPE *)iDlist.SelectCopy((const Dlist *)l,m);
-    return SetVTable(result);
-}
-
-/*---------------------------------------------------------------------------*/
-/* qsort() - perform a quicksort on an array                                 */
-/*---------------------------------------------------------------------------*/
-#define CUTOFF 8
-
-static void shortsort(LIST_ELEMENT **lo, LIST_ELEMENT **hi);
-#define swap(a,b) { LIST_ELEMENT *tmp = *a; *a = *b; *b = tmp; }
-
-#ifndef COMPARE_EXPRESSION
-#error foo
-#define COMPARE_EXPRESSION(l,lo) comp(l, lo)
-//COMPAR(A, B) (B > A ? -1 : B != A)
-#endif
-
-static void QSORT(LIST_ELEMENT **base, size_t num)
-{
-  LIST_ELEMENT **lo, **hi, **mid;
-  LIST_ELEMENT **loguy, **higuy;
-  size_t size;
-  LIST_ELEMENT **lostk[30], **histk[30];
-  int stkptr;
-
-  if (num < 2) return;
-  stkptr = 0;
-
-  lo = base;
-  hi = base + (num - 1);
-
-recurse:
-  size = (hi - lo) + 1;
-
-  if (size <= CUTOFF) {
-    shortsort(lo, hi);
-  }
-  else {
-    mid = lo + (size / 2);
-    swap(mid, lo);
-
-    loguy = lo;
-    higuy = hi + 1;
-
-    for (;;) {
-      do { loguy++; } while (loguy <= hi && COMPARE_EXPRESSION(loguy,lo) < 0);
-      do { higuy--; } while (higuy > lo && COMPARE_EXPRESSION(higuy,lo) > 0);
-      if (higuy < loguy) break;
-      swap(loguy, higuy);
-    }
-
-    swap(lo, higuy);
-
-    if (higuy - 1 - lo >= hi - loguy) {
-      if (lo + 1 < higuy) {
-        lostk[stkptr] = lo;
-        histk[stkptr] = (higuy - 1);
-        ++stkptr;
-      }
-
-      if (loguy < hi) {
-        lo = loguy;
-        goto recurse;
-      }
-    }
-    else {
-      if (loguy < hi) {
-        lostk[stkptr] = loguy;
-        histk[stkptr] = hi;
-        ++stkptr;
-      }
-
-      if (lo + 1 < higuy) {
-        hi = higuy - 1;
-        goto recurse;
-      }
-    }
-  }
-
-  --stkptr;
-  if (stkptr >= 0) {
-    lo = lostk[stkptr];
-    hi = histk[stkptr];
-    goto recurse;
-  }
-}
-
-static void shortsort(LIST_ELEMENT **lo, LIST_ELEMENT **hi)
-{
-  LIST_ELEMENT **p, **max;
-
-  while (hi > lo) 
-  {
-    max = lo;
-    for (p = (lo+1); p <= hi; p++) if (COMPARE_EXPRESSION(p,max) > 0) max = p;
-    swap(max, hi);
-    hi--;
-  }
+    return iDlist.Finalize((Dlist *)l);
 }
 
 static int Sort(LIST_TYPE * l)
 {
-    LIST_ELEMENT   **tab;
-    size_t          i;
-    LIST_ELEMENT    *rvp;
-
-    if (l == NULL)
-        return iError.NullPtrError("Sort");
-
-    if (l->count < 2)
-        return 1;
-    if (l->Flags & CONTAINER_READONLY) {
-        l->RaiseError("iDlist.Sort", CONTAINER_ERROR_READONLY,l);
-        return CONTAINER_ERROR_READONLY;
-    }
-    tab = l->Allocator->malloc(l->count * sizeof(LIST_ELEMENT *));
-    if (tab == NULL) {
-        l->RaiseError("iDlist.Sort", CONTAINER_ERROR_NOMEMORY);
-        return CONTAINER_ERROR_NOMEMORY;
-    }
-    rvp = l->First;
-    for (i = 0; i < l->count; i++) {
-        tab[i] = rvp;
-        rvp = rvp->Next;
-    }
-    QSORT(tab, l->count );
-    for (i = 0; i < l->count - 1; i++) {
-        tab[i]->Next = tab[i + 1];
-    }
-    tab[l->count - 1]->Next = NULL;
-    l->Last = tab[l->count - 1];
-    l->First = tab[0];
-    l->Allocator->free(tab);
-    return 1;
-
+    return iDlist.Sort((Dlist *)l);
 }
 static LIST_TYPE *SetVTable(LIST_TYPE *result)
 {
-    static int Initialized;
-    INTERFACE(DATA_TYPE) *intface = &INTERFACE_NAME(DATA_TYPE);
-    
-    result->VTable = intface;
-    if (Initialized) return result;
-    Initialized = 1;
-    intface->FirstElement = (LIST_ELEMENT *(*)(LIST_TYPE *))iDlist.FirstElement;
-    intface->LastElement = (LIST_ELEMENT *(*)(LIST_TYPE *))iDlist.LastElement;
-    intface->GetElement = (DATA_TYPE *(*)(const LIST_TYPE *,size_t))iDlist.GetElement;
-    intface->Clear = (int (*)(LIST_TYPE *))iDlist.Clear;
-    intface->EraseAt = (int (*)(LIST_TYPE *,size_t))iDlist.EraseAt;
-    intface->Select = (int (*)(LIST_TYPE *,const Mask *))iDlist.Select;
-    intface->SetFlags = (unsigned (*)(LIST_TYPE *,unsigned))iDlist.SetFlags;
-    intface->GetFlags = (unsigned (*)(const LIST_TYPE *))iDlist.GetFlags;
-    intface->SetDestructor = (DestructorFunction (*)(LIST_TYPE *, DestructorFunction))iDlist.SetDestructor;
-    intface->Apply = (int (*)(LIST_TYPE *, int (Applyfn) (DATA_TYPE *, void * ), void *))iDlist.Apply;
-    intface->Reverse = (int (*)(LIST_TYPE *))iDlist.Reverse;
-    intface->SetCompareFunction = (CompareFunction (*)(LIST_TYPE *, CompareFunction ))iDlist.SetCompareFunction;
-    intface->GetRange = (LIST_TYPE *(*)(const LIST_TYPE * , size_t, size_t))iDlist.GetRange;
-    intface->Skip = (LIST_ELEMENT *(*)(LIST_ELEMENT *, size_t))iDlist.Skip;
-    intface->MoveBack = (void *(*)(LIST_ELEMENT **pLIST_ELEMENT))iDlist.MoveBack;
-    intface->Append = (int (*)(LIST_TYPE *, LIST_TYPE *))iDlist.Append;
-    intface->Equal = (int (*)(const LIST_TYPE *, const LIST_TYPE *))iDlist.Equal;
-    intface->InsertIn = (int (*)(LIST_TYPE *, size_t, LIST_TYPE *))iDlist.InsertIn;
-    intface->AddRange = (int (*)(LIST_TYPE *, size_t, const DATA_TYPE *))iDlist.AddRange;
-    intface->SetErrorFunction = (ErrorFunction (*)(LIST_TYPE *, ErrorFunction))iDlist.SetErrorFunction;
-    intface->SetFlags = (unsigned (*)(LIST_TYPE * l, unsigned newval))iDlist.SetFlags;
-    intface->RemoveRange = (int (*)(LIST_TYPE *, size_t, size_t))iDlist.RemoveRange;
-    intface->UseHeap = (int (*)(LIST_TYPE *, const ContainerAllocator *))iDlist.UseHeap;
-    intface->RotateLeft = (int (*)(LIST_TYPE *, size_t))iDlist.RotateLeft;
-    intface->RotateRight = (int (*)(LIST_TYPE *, size_t))iDlist.RotateRight;
-    intface->Save = (int (*)(const LIST_TYPE *, FILE *, SaveFunction, void *))iDlist.Save;
-    intface->Size = (size_t (*)(const LIST_TYPE *))iDlist.Size;
-    intface->DeleteIterator = (int (*)(Iterator *))iDlist.DeleteIterator;
-    intface->SplitAfter = (LIST_TYPE *(*)(LIST_TYPE *, LIST_ELEMENT *))iDlist.SplitAfter;
-    intface->Splice = (LIST_TYPE *(*)(LIST_TYPE *list, void *ppos, LIST_TYPE *toInsert, int dir ))iDlist.Splice;
-    intface->Back = (DATA_TYPE *(*)(const LIST_TYPE *))iDlist.Back;
-    intface->Front = (DATA_TYPE *(*)(const LIST_TYPE *))iDlist.Front;
-    intface->GetElementData = (DATA_TYPE *(*)(LIST_ELEMENT *))iDlist.GetElementData;
-    intface->Advance = (DATA_TYPE *(*)(LIST_ELEMENT **))iDlist.Advance;
+    if (result == NULL)
+        return NULL;
+    result->VTable = &INTERFACE_NAME(DATA_TYPE);
     return result;
 }
 
@@ -354,26 +185,47 @@ static LIST_TYPE *SetVTable(LIST_TYPE *result)
  ------------------------------------------------------------------------*/
 static LIST_TYPE *CreateWithAllocator(size_t elementsize, const ContainerAllocator * allocator)
 {
+    if (elementsize != sizeof(DATA_TYPE) || allocator == NULL) {
+        iError.RaiseError("typedDlist.CreateWithAllocator", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
     LIST_TYPE *result =  (LIST_TYPE *)iDlist.CreateWithAllocator(sizeof(DATA_TYPE), allocator);
+    SetTypedDefaultCompare(result);
     return SetVTable(result);
 }
 
 static LIST_TYPE * Create(size_t elementsize)
 {
+    if (elementsize != sizeof(DATA_TYPE)) {
+        iError.RaiseError("typedDlist.Create", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
     LIST_TYPE *result =  (LIST_TYPE *)iDlist.CreateWithAllocator(sizeof(DATA_TYPE), CurrentAllocator);
+    SetTypedDefaultCompare(result);
     return SetVTable(result);
 }
 
 static LIST_TYPE *InitializeWith(size_t elementSize, size_t n, const DATA_TYPE *Data)
 {
+    if (elementSize != sizeof(DATA_TYPE) || (n != 0 && Data == NULL)) {
+        iError.RaiseError("typedDlist.InitializeWith", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
     LIST_TYPE *result = (LIST_TYPE *)iDlist.InitializeWith(sizeof(DATA_TYPE),n,Data);
+    SetTypedDefaultCompare(result);
     return SetVTable(result);
 }
 
 static LIST_TYPE *InitWithAllocator(LIST_TYPE * result, size_t elementsize,
           const ContainerAllocator * allocator)
 {
-    iDlist.InitWithAllocator((Dlist *)result,sizeof(DATA_TYPE),allocator);
+    if (result == NULL || elementsize != sizeof(DATA_TYPE) || allocator == NULL) {
+        iError.RaiseError("typedDlist.InitWithAllocator", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    if (iDlist.InitWithAllocator((Dlist *)result,sizeof(DATA_TYPE),allocator) == NULL)
+        return NULL;
+    SetTypedDefaultCompare(result);
     return SetVTable(result);
 }
 
@@ -400,72 +252,317 @@ static int SetElementData(LIST_TYPE *l,LIST_ELEMENT *le,DATA_TYPE data)
     return iDlist.SetElementData((Dlist *)l,(DlistElement *)le,&data);
 }
 
+struct TypedApplyContext {
+    int (*fn)(DATA_TYPE *, void *);
+    void *arg;
+};
+
+static int ApplyThunk(void *element, void *context)
+{
+    struct TypedApplyContext *ctx = (struct TypedApplyContext *)context;
+    return ctx->fn((DATA_TYPE *)element, ctx->arg);
+}
+
+static int ApplyTyped(LIST_TYPE *l, int (*fn)(DATA_TYPE *, void *), void *arg)
+{
+    struct TypedApplyContext context;
+    if (fn == NULL)
+        return iDlist.Apply((Dlist *)l, NULL, arg);
+    context.fn = fn;
+    context.arg = arg;
+    return iDlist.Apply((Dlist *)l, ApplyThunk, &context);
+}
+
+static LIST_TYPE *GetRangeTyped(const LIST_TYPE *l, size_t start, size_t end)
+{
+    LIST_TYPE *result = (LIST_TYPE *)iDlist.GetRange((Dlist *)l, start, end);
+    if (result != NULL && l != NULL)
+        result->Compare = l->Compare;
+    else
+        SetTypedDefaultCompare(result);
+    return SetVTable(result);
+}
+
+static LIST_TYPE *SplitAfterTyped(LIST_TYPE *l, LIST_ELEMENT *pos)
+{
+    LIST_TYPE *result = (LIST_TYPE *)iDlist.SplitAfter((Dlist *)l,
+                                                       (DlistElement *)pos);
+    if (result != NULL && l != NULL)
+        result->Compare = l->Compare;
+    else
+        SetTypedDefaultCompare(result);
+    return SetVTable(result);
+}
+
+static LIST_TYPE *SpliceTyped(LIST_TYPE *l, void *pos, LIST_TYPE *toInsert,
+                              int direction)
+{
+    LIST_TYPE *result;
+    if (l == NULL || toInsert == NULL) {
+        iError.NullPtrError("typedDlist.Splice");
+        return NULL;
+    }
+    if (l == toInsert) {
+        l->RaiseError("typedDlist.Splice", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    if (toInsert->count != 0 &&
+        (l->Allocator != toInsert->Allocator || l->Heap != toInsert->Heap)) {
+        l->RaiseError("typedDlist.Splice", CONTAINER_ERROR_INCOMPATIBLE);
+        return NULL;
+    }
+    result = (LIST_TYPE *)iDlist.Splice((Dlist *)l, pos,
+                                        (Dlist *)toInsert, direction);
+    if (result != NULL && toInsert->count != 0) {
+        toInsert->First = NULL;
+        toInsert->Last = NULL;
+        toInsert->count = 0;
+        toInsert->timestamp++;
+    }
+    return SetVTable(result);
+}
+
+static LIST_ELEMENT *FirstElementTyped(LIST_TYPE *l)
+{
+    return (LIST_ELEMENT *)iDlist.FirstElement((Dlist *)l);
+}
+
+static LIST_ELEMENT *LastElementTyped(LIST_TYPE *l)
+{
+    return (LIST_ELEMENT *)iDlist.LastElement((Dlist *)l);
+}
+
+static LIST_ELEMENT *PreviousElement(LIST_ELEMENT *le)
+{
+    return le == NULL ? NULL : le->Previous;
+}
+
+static DATA_TYPE *GetElementTyped(const LIST_TYPE *l, size_t idx)
+{
+    return (DATA_TYPE *)iDlist.GetElement((const Dlist *)l, idx);
+}
+
+static DATA_TYPE *GetElementDataTyped(LIST_ELEMENT *le)
+{
+    return le == NULL ? NULL : &le->Data;
+}
+
+static DATA_TYPE *AdvanceTyped(LIST_ELEMENT **ple)
+{
+    return (DATA_TYPE *)iDlist.Advance((DlistElement **)ple);
+}
+
+static LIST_ELEMENT *SkipTyped(LIST_ELEMENT *le, size_t n)
+{
+    return (LIST_ELEMENT *)iDlist.Skip((DlistElement *)le, n);
+}
+
+static void *MoveBackTyped(LIST_ELEMENT **ple)
+{
+    return iDlist.MoveBack((DlistElement **)ple);
+}
+
+static DATA_TYPE *BackTyped(const LIST_TYPE *l)
+{
+    return (DATA_TYPE *)iDlist.Back((const Dlist *)l);
+}
+
+static DATA_TYPE *FrontTyped(const LIST_TYPE *l)
+{
+    return (DATA_TYPE *)iDlist.Front((const Dlist *)l);
+}
+
+static LIST_TYPE *CopyTyped(const LIST_TYPE *l)
+{
+    return SetVTable((LIST_TYPE *)iDlist.Copy((const Dlist *)l));
+}
+
+static LIST_TYPE *SelectCopyTyped(const LIST_TYPE *l, const Mask *m)
+{
+    LIST_TYPE *result = (LIST_TYPE *)iDlist.SelectCopy((const Dlist *)l, m);
+    if (result != NULL && l != NULL)
+        result->Compare = l->Compare;
+    else
+        SetTypedDefaultCompare(result);
+    return SetVTable(result);
+}
+
+static int SaveTyped(const LIST_TYPE *l, FILE *stream, SaveFunction fn,
+                     void *arg)
+{
+    return iDlist.Save((const Dlist *)l, stream, fn, arg);
+}
+
+static unsigned GetFlagsTyped(const LIST_TYPE *l)
+{
+    return iDlist.GetFlags((const Dlist *)l);
+}
+
+static int ClearTyped(LIST_TYPE *l)
+{
+    return iDlist.Clear((Dlist *)l);
+}
+
+static int EqualTyped(const LIST_TYPE *left, const LIST_TYPE *right)
+{
+    return iDlist.Equal((const Dlist *)left, (const Dlist *)right);
+}
+
+static ErrorFunction SetErrorFunctionTyped(LIST_TYPE *l, ErrorFunction fn)
+{
+    return iDlist.SetErrorFunction((Dlist *)l, fn);
+}
+
+static CompareFunction SetCompareFunctionTyped(LIST_TYPE *l,
+                                                CompareFunction fn)
+{
+    return iDlist.SetCompareFunction((Dlist *)l, fn);
+}
+
+static DestructorFunction SetDestructorTyped(LIST_TYPE *l,
+                                              DestructorFunction fn)
+{
+    return iDlist.SetDestructor((Dlist *)l, fn);
+}
+
+static int AddRangeTyped(LIST_TYPE *l, size_t n, const DATA_TYPE *data)
+{
+    return iDlist.AddRange((Dlist *)l, n, data);
+}
+
+static int InsertInTyped(LIST_TYPE *l, size_t idx, LIST_TYPE *data)
+{
+    return iDlist.InsertIn((Dlist *)l, idx, (Dlist *)data);
+}
+
+static int AppendTyped(LIST_TYPE *l, LIST_TYPE *data)
+{
+    if (l == data || l == NULL || data == NULL)
+        return CONTAINER_ERROR_BADARG;
+    if (data->count != 0 &&
+        (l->Allocator != data->Allocator || l->Heap != data->Heap)) {
+        l->RaiseError("typedDlist.Append", CONTAINER_ERROR_INCOMPATIBLE);
+        return CONTAINER_ERROR_INCOMPATIBLE;
+    }
+    return iDlist.Append((Dlist *)l, (Dlist *)data);
+}
+
+static int UseHeapTyped(LIST_TYPE *l, const ContainerAllocator *allocator)
+{
+    return iDlist.UseHeap((Dlist *)l, allocator);
+}
+
+static int SelectTyped(LIST_TYPE *l, const Mask *m)
+{
+    return iDlist.Select((Dlist *)l, m);
+}
+
+static size_t SizeTyped(const LIST_TYPE *l)
+{
+    return iDlist.Size((const Dlist *)l);
+}
+
+static unsigned SetFlagsTyped(LIST_TYPE *l, unsigned flags)
+{
+    return iDlist.SetFlags((Dlist *)l, flags);
+}
+
+static int EraseAtTyped(LIST_TYPE *l, size_t position)
+{
+    return iDlist.EraseAt((Dlist *)l, position);
+}
+
+static int ReverseTyped(LIST_TYPE *l)
+{
+    return iDlist.Reverse((Dlist *)l);
+}
+
+static int RemoveRangeTyped(LIST_TYPE *l, size_t start, size_t end)
+{
+    return iDlist.RemoveRange((Dlist *)l, start, end);
+}
+
+static int RotateLeftTyped(LIST_TYPE *l, size_t n)
+{
+    return iDlist.RotateLeft((Dlist *)l, n);
+}
+
+static int RotateRightTyped(LIST_TYPE *l, size_t n)
+{
+    return iDlist.RotateRight((Dlist *)l, n);
+}
+
+static int DeleteIteratorTyped(Iterator *it)
+{
+    return iDlist.DeleteIterator(it);
+}
+
 INTERFACE(DATA_TYPE)   INTERFACE_NAME(DATA_TYPE) = {
-    NULL,         /* Size, */
-    NULL,         /* GetFlags, */
-    NULL,         /* SetFlags, */
-    NULL,         /* Clear, */
+    SizeTyped,
+    GetFlagsTyped,
+    SetFlagsTyped,
+    ClearTyped,
     Contains,
     Erase,
     EraseAll,
     Finalize,
-    NULL,         /* Apply */
-    NULL,         /* Equal */
-    Copy,
-    NULL,         /* SetErrorFunction, */
+    ApplyTyped,
+    EqualTyped,
+    CopyTyped,
+    SetErrorFunctionTyped,
     Sizeof,
     NewIterator,
     InitIterator,
-    NULL,         /* DeleteIterator, */
+    DeleteIteratorTyped,
     SizeofIterator,
-    NULL,          /* Save, */
+    SaveTyped,
     Load,
     GetElementSize,
     /* end of generic part */
     Add,
-    NULL,         /* GetElement, */
+    GetElementTyped,
     PushFront,
     PopFront,
     InsertAt,
-    NULL,         /* EraseAt */
+    EraseAtTyped,
     ReplaceAt,
     IndexOf,
     /* End of sequential container part */
     PushBack,
     PopBack,
-    NULL,         /* Splice */
+    SpliceTyped,
     Sort,
-    NULL,         /* Reverse */
-    NULL,         /* GetRange */
-    NULL,         /* Append, */
-    NULL,         /* SetCompareFunction, */
-    NULL,         /* UseHeap, */
-    NULL,         /* AddRange, */
+    ReverseTyped,
+    GetRangeTyped,
+    AppendTyped,
+    SetCompareFunctionTyped,
+    UseHeapTyped,
+    AddRangeTyped,
     Create,
     CreateWithAllocator,
     Init,
     InitWithAllocator,
     CopyElement,
-    NULL,          /* InsertIn, */
-    NULL,          /* SetDestructor, */
+    InsertInTyped,
+    SetDestructorTyped,
     InitializeWith,
     GetAllocator,
-    NULL,          /* Back, */
-    NULL,          /* Front, */
-    NULL,          /* RemoveRange, */
-    NULL,          /* RotateLeft, */
-    NULL,          /* RotateRight, */
-    NULL,          /* Select, */
-    SelectCopy,
-    NULL,          /* FirstElement, */
-    NULL,          /* LastElement, */
+    BackTyped,
+    FrontTyped,
+    RemoveRangeTyped,
+    RotateLeftTyped,
+    RotateRightTyped,
+    SelectTyped,
+    SelectCopyTyped,
+    FirstElementTyped,
+    LastElementTyped,
     NextElement,
-    NULL,          /* PreviousElement, */
-    NULL,          /* ElementData, */
+    PreviousElement,
+    GetElementDataTyped,
     SetElementData,
-    NULL,           /* Advance, */
-    NULL,           /* Skip, */
-    NULL,           /* MoveBack, */
-    NULL,           /* SplitAfter, */
+    AdvanceTyped,
+    SkipTyped,
+    MoveBackTyped,
+    SplitAfterTyped,
 
 };

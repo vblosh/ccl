@@ -1620,21 +1620,23 @@ static Mask *CompareEqual(const ValArray *left,const ValArray *right,Mask *bytea
 
 static Mask *CompareEqualScalar(const ValArray *left, const ElementType right,Mask *bytearray)
 {
-	size_t len = left->count,i,siz;
-	
-	siz = 1 + len/CHAR_BIT;
-	if (bytearray == NULL)
-		bytearray = left->Allocator->malloc(siz);
+	size_t len = left->count,i;
+
+	/* A Mask owns one byte per logical element.  Allocate it through the
+	 * Mask interface so the header and allocator bookkeeping are included. */
+	if (bytearray == NULL || bytearray->length < len) {
+		if (bytearray) iMask.Finalize(bytearray);
+		bytearray = iMask.Create(len);
+	}
 	if (bytearray == NULL) {
 		NoMemory("Compare");
 		return NULL;
 	}
-	memset(bytearray,0,siz);
+	memset(bytearray->data,0,len);
 	for (i=0; i<len;i++) {
-		bytearray->data[i/CHAR_BIT] |= (left->contents[i] == right);
-		if ((CHAR_BIT-1) != (i&(CHAR_BIT-1)))
-			bytearray->data[i] <<= 1;
+		bytearray->data[i] = (left->contents[i] == right);
 	}
+	bytearray->length = len;
 	return bytearray;
 }
 
@@ -1642,7 +1644,7 @@ static char *Compare(const ValArray *left,const ValArray *right, char *bytearray
 {
 	size_t left_len = left->count,left_incr = 1,left_start=0;
 	size_t right_len = right->count,right_incr=1,right_start = 0;
-	size_t siz,i,j,k;
+	size_t i,j,k;
 	
 	if (left->Slice) {
 		left_start = left->Slice->start;
@@ -1658,7 +1660,6 @@ static char *Compare(const ValArray *left,const ValArray *right, char *bytearray
 		ErrorIncompatible("Compare");
 		return NULL;
 	}
-	siz = left_len * sizeof(ElementType);
 	if (bytearray == NULL)
 		bytearray = left->Allocator->malloc(left_len);
 	if (bytearray == NULL) {
@@ -2326,7 +2327,6 @@ ValArrayInterface iValArrayInterface = {
 	RemoveRange,
 	Resize,
 };
-
 
 
 

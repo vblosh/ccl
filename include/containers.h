@@ -8,6 +8,10 @@
 #include <stdint.h>
 #include <limits.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*-------------------------------------------------------------
    Default settings: NO_C99
 ---------------------------------------------------------------*/
@@ -234,6 +238,13 @@ typedef struct tagSequentialContainerInterface {
     int (*DeleteIterator)(Iterator *);
     size_t (*SizeofIterator)(const SequentialContainer *Gen);
     int (*Save)(const SequentialContainer *Gen,FILE *stream, SaveFunction saveFn,void *arg);
+
+    /* Concrete sequential containers retain these two generic-prefix
+       extensions between Save and their mutating operations.  They are not
+       exposed as adapter operations, but reserving the slots keeps a
+       SequentialContainer view ABI-compatible with List, Dlist, and Vector. */
+    SequentialContainer *(*Load)(FILE *stream, ReadFunction readFn, void *arg);
+    size_t (*GetElementSize)(const SequentialContainer *Gen);
 
     int (*Add)(SequentialContainer *SC,const void *Element);
     void *(*GetElement)(const SequentialContainer *SC,size_t idx);
@@ -1184,4 +1195,7 @@ typedef struct tagObserverInterface {
     size_t (*Unsubscribe)(void *ObservedObject,ObserverFunction callback);
 } ObserverInterface;
 extern ObserverInterface iObserver;
+#ifdef __cplusplus
+}
+#endif
 #endif

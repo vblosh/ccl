@@ -1,20 +1,8 @@
-#ifndef TEST_SUITE_H
-#define TEST_SUITE_H
+#ifndef CCL_TEST_SUITE_H
+#define CCL_TEST_SUITE_H
 
-#include <stdio.h>
+/* Kept as a compatibility include for existing suites.  New suites should
+ * include test_support.h directly. */
+#include "test_support.h"
 
-typedef struct {
-    const char *name;
-    int (*test_fn)(void);
-} TestCase;
-
-typedef struct {
-    const char *name;
-    TestCase *tests;
-    int num_tests;
-} TestSuite;
-
-/* Declare test suites */
-extern TestSuite ValArrayInt_Tests;
-
-#endif /* TEST_SUITE_H */
+#endif /* CCL_TEST_SUITE_H */

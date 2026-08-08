@@ -1,6 +1,11 @@
 #include "containers.h"
 #include "ccl_internal.h"
 
+/* The concrete sequential interfaces put Load and GetElementSize between the
+ * generic Save entry and Add.  The two reserved fields in
+ * SequentialContainerInterface mirror that layout; generic operations are
+ * delegated to iGeneric so NULL handling and iterator ownership stay in one
+ * implementation. */
 struct SequentialContainer {
 	SequentialContainerInterface *vTable;
 	size_t Size;
@@ -8,206 +13,312 @@ struct SequentialContainer {
 	size_t ElementSize;
 };
 
-static size_t Size(const SequentialContainer *gen)
+static int BadArg(const char *name)
 {
-	if (gen == NULL) {
-		iError.RaiseError("iGeneric.Size",CONTAINER_ERROR_BADARG);
+	iError.RaiseError(name, CONTAINER_ERROR_BADARG);
+	return CONTAINER_ERROR_BADARG;
+}
+
+static int Unsupported(const char *name)
+{
+	iError.RaiseError(name, CONTAINER_ERROR_INCOMPATIBLE);
+	return CONTAINER_ERROR_INCOMPATIBLE;
+}
+
+static int IsStringTable(const SequentialContainer *sc)
+{
+	const void *table;
+	if (sc == NULL || sc->vTable == NULL)
+		return 0;
+	table = (const void *)sc->vTable;
+	return table == (const void *)&istrCollection ||
+	       table == (const void *)&iWstrCollection;
+}
+
+static size_t Size(const SequentialContainer *sc)
+{
+	if (sc == NULL || sc->vTable == NULL) {
+		BadArg("iSequentialContainer.Size");
 		return 0;
 	}
-	return gen->Size;
+	return iGeneric.Size((const GenericContainer *)sc);
 }
 
-static unsigned GetFlags(const SequentialContainer  *gen)
+static unsigned GetFlags(const SequentialContainer *sc)
 {
-	if (gen == NULL) {
-		iError.RaiseError("iGneric.GetFlags",CONTAINER_ERROR_BADARG);
+	if (sc == NULL || sc->vTable == NULL) {
+		BadArg("iSequentialContainer.GetFlags");
 		return 0;
 	}
-	return gen->Flags;
+	return iGeneric.GetFlags((const GenericContainer *)sc);
 }
 
-static unsigned SetFlags(SequentialContainer *gen,unsigned newFlags)
+static unsigned SetFlags(SequentialContainer *sc, unsigned flags)
 {
-	unsigned result;
-	if (gen == NULL) {
-		iError.RaiseError("iGeneric.SetFlags",CONTAINER_ERROR_BADARG);
+	if (sc == NULL || sc->vTable == NULL) {
+		BadArg("iSequentialContainer.SetFlags");
 		return 0;
 	}
-	result = gen->Flags;
-	gen->Flags = newFlags;
-	return result;
+	return iGeneric.SetFlags((GenericContainer *)sc, flags);
 }
 
-static int Clear(SequentialContainer *gen)
+static int Clear(SequentialContainer *sc)
 {
-	return gen->vTable->Clear(gen);
+	if (sc == NULL || sc->vTable == NULL) return BadArg("iSequentialContainer.Clear");
+	return iGeneric.Clear((GenericContainer *)sc);
 }
 
-static int Contains(const SequentialContainer *gen,const void *value)
+static int Contains(const SequentialContainer *sc, const void *value)
 {
-	return gen->vTable->Contains(gen,value);
+	if (sc == NULL || sc->vTable == NULL) return BadArg("iSequentialContainer.Contains");
+	return iGeneric.Contains((const GenericContainer *)sc, value);
 }
 
-static int Erase(SequentialContainer *gen,const void *elem)
+static int Erase(SequentialContainer *sc, const void *value)
 {
-	return gen->vTable->Erase(gen,elem);
+	if (sc == NULL || sc->vTable == NULL) return BadArg("iSequentialContainer.Erase");
+	return iGeneric.Erase((GenericContainer *)sc, value);
 }
 
-static int EraseAll(SequentialContainer *gen,const void *elem)
+static int EraseAll(SequentialContainer *sc, const void *value)
 {
-        return gen->vTable->EraseAll(gen,elem);
+	if (sc == NULL || sc->vTable == NULL) return BadArg("iSequentialContainer.EraseAll");
+	return iGeneric.EraseAll((GenericContainer *)sc, value);
 }
 
-static int Finalize(SequentialContainer *gen)
+static int Finalize(SequentialContainer *sc)
 {
-	return gen->vTable->Finalize(gen);
+	if (sc == NULL || sc->vTable == NULL) return BadArg("iSequentialContainer.Finalize");
+	return iGeneric.Finalize((GenericContainer *)sc);
 }
 
-static void Apply(SequentialContainer *Gen,int (*Applyfn)(void *,void * arg),void *arg)
+static void Apply(SequentialContainer *sc, int (*fn)(void *, void *), void *arg)
 {
-	Gen->vTable->Apply(Gen,Applyfn,arg);
+	if (sc == NULL || sc->vTable == NULL) {
+		iError.RaiseError("iSequentialContainer.Apply", CONTAINER_ERROR_BADARG);
+		return;
+	}
+	iGeneric.Apply((GenericContainer *)sc, fn, arg);
 }
 
-static int Equal(const SequentialContainer *Gen1,const SequentialContainer *Gen2)
+static int Equal(const SequentialContainer *left, const SequentialContainer *right)
 {
-	return Gen1->vTable->Equal(Gen1,Gen2);
+	if (left == NULL || left->vTable == NULL || right == NULL)
+		return BadArg("iSequentialContainer.Equal");
+	return iGeneric.Equal((const GenericContainer *)left,
+	                      (const GenericContainer *)right);
 }
 
-static SequentialContainer *Copy(const SequentialContainer *src)
+static SequentialContainer *Copy(const SequentialContainer *sc)
 {
-	return src->vTable->Copy(src);
+	if (sc == NULL || sc->vTable == NULL) {
+		BadArg("iSequentialContainer.Copy");
+		return NULL;
+	}
+	return (SequentialContainer *)iGeneric.Copy((const GenericContainer *)sc);
 }
 
-static ErrorFunction SetErrorFunction(SequentialContainer *Gen,ErrorFunction fn)
+static ErrorFunction SetErrorFunction(SequentialContainer *sc, ErrorFunction fn)
 {
-	return Gen->vTable->SetErrorFunction(Gen,fn);
+	if (sc == NULL || sc->vTable == NULL) {
+		BadArg("iSequentialContainer.SetErrorFunction");
+		return iError.RaiseError;
+	}
+	return iGeneric.SetErrorFunction((GenericContainer *)sc, fn);
 }
 
-static size_t Sizeof(const SequentialContainer *gen)
+static size_t Sizeof(const SequentialContainer *sc)
 {
-	return gen->vTable->Sizeof(gen);
+	if (sc == NULL || sc->vTable == NULL) {
+		BadArg("iSequentialContainer.Sizeof");
+		return 0;
+	}
+	return iGeneric.Sizeof((const GenericContainer *)sc);
 }
 
-static Iterator *NewIterator(SequentialContainer *gen)
+static Iterator *NewIterator(SequentialContainer *sc)
 {
-	return gen->vTable->NewIterator(gen);
-}
-static int InitIterator(SequentialContainer *gen,void *buf)
-{
-        return gen->vTable->InitIterator(gen,buf);
-}
-
-static int DeleteIterator(Iterator *git)
-{
-	SequentialIterator *GenIt = (SequentialIterator *)git;
-	SequentialContainer *gen = GenIt->Gen;
-	return gen->vTable->DeleteIterator(git);
+	if (sc == NULL || sc->vTable == NULL) {
+		BadArg("iSequentialContainer.NewIterator");
+		return NULL;
+	}
+	return iGeneric.NewIterator((GenericContainer *)sc);
 }
 
-static size_t SizeofIterator(const SequentialContainer *git)
+static int InitIterator(SequentialContainer *sc, void *buf)
 {
-	SequentialIterator *GenIt = (SequentialIterator *)git;
-        SequentialContainer *gen = GenIt->Gen;
-        return gen->vTable->SizeofIterator(git);
+	if (sc == NULL || sc->vTable == NULL || buf == NULL)
+		return BadArg("iSequentialContainer.InitIterator");
+	return iGeneric.InitIterator((GenericContainer *)sc, buf);
 }
 
-static int Save(const SequentialContainer *gen, FILE *stream,SaveFunction saveFn,void *arg)
+static int DeleteIterator(Iterator *iterator)
 {
-	return gen->vTable->Save(gen,stream,saveFn,arg);
-}
-/*-----------------------------------------------------------------------------------*/
-/*                                                                                   */
-/*                             Sequential containers                                 */
-/*                                                                                   */
-/*-----------------------------------------------------------------------------------*/
-
-static int Add(SequentialContainer *sc, const void *Element)
-{
-	return sc->vTable->Add(sc,Element);
+	return iGeneric.DeleteIterator(iterator);
 }
 
-static void *GetElement(const SequentialContainer *sc,size_t idx)
+static size_t SizeofIterator(const SequentialContainer *sc)
 {
-	return sc->vTable->GetElement(sc,idx);
+	if (sc == NULL || sc->vTable == NULL) {
+		BadArg("iSequentialContainer.SizeofIterator");
+		return 0;
+	}
+	return iGeneric.SizeofIterator((const GenericContainer *)sc);
 }
 
-static int Push(SequentialContainer *gen,void *Element)
+static int Save(const SequentialContainer *sc, FILE *stream,
+			SaveFunction saveFn, void *arg)
 {
-	return gen->vTable->Push(gen,Element);
+	if (sc == NULL || sc->vTable == NULL) return BadArg("iSequentialContainer.Save");
+	return iGeneric.Save((const GenericContainer *)sc, stream, saveFn, arg);
 }
 
-static int Pop(SequentialContainer *g,void *Element)
+/*-------------------------------------------------------------------------*/
+/* Sequential operations                                                   */
+
+static int Add(SequentialContainer *sc, const void *element)
 {
-	return g->vTable->Pop(g,Element);
+	if (sc == NULL || sc->vTable == NULL || element == NULL)
+		return BadArg("iSequentialContainer.Add");
+	if (IsStringTable(sc)) {
+		/* A string collection has variable-sized values; this adapter's Pop
+		 * contract is fixed-size and therefore cannot represent it safely. */
+		return Unsupported("iSequentialContainer.Add");
+	}
+	return sc->vTable->Add(sc, element);
 }
 
-static int InsertAt(SequentialContainer *gen,size_t idx,const void *newval)
+static void *GetElement(const SequentialContainer *sc, size_t idx)
 {
-	return gen->vTable->InsertAt(gen,idx,newval);
+	if (sc == NULL || sc->vTable == NULL) {
+		BadArg("iSequentialContainer.GetElement");
+		return NULL;
+	}
+	if (IsStringTable(sc))
+		return NULL; /* variable-sized string values are not this ABI */
+	return sc->vTable->GetElement(sc, idx);
 }
 
-static int EraseAt(SequentialContainer *g,size_t idx)
+static int Push(SequentialContainer *sc, void *element)
 {
-	return g->vTable->EraseAt(g,idx);
+	if (sc == NULL || sc->vTable == NULL || element == NULL)
+		return BadArg("iSequentialContainer.Push");
+	if (IsStringTable(sc))
+		return Unsupported("iSequentialContainer.Push");
+	return sc->vTable->Push(sc, element);
 }
 
-static int ReplaceAt(SequentialContainer *s,size_t idx,const void *newelem)
+static int Pop(SequentialContainer *sc, void *result)
 {
-	return s->vTable->ReplaceAt(s,idx,newelem);
+	if (sc == NULL || sc->vTable == NULL || result == NULL)
+		return BadArg("iSequentialContainer.Pop");
+	if (IsStringTable(sc))
+		return Unsupported("iSequentialContainer.Pop");
+	return sc->vTable->Pop(sc, result);
 }
 
-static int IndexOf(const SequentialContainer *g,const void *elemToFind,
-                   void *args,size_t *result)
+static int InsertAt(SequentialContainer *sc, size_t idx, const void *value)
 {
-	return g->vTable->IndexOf(g,elemToFind,args,result);
+	if (sc == NULL || sc->vTable == NULL || value == NULL)
+		return BadArg("iSequentialContainer.InsertAt");
+	if (IsStringTable(sc))
+		return Unsupported("iSequentialContainer.InsertAt");
+	return sc->vTable->InsertAt(sc, idx, value);
 }
 
-
-static int Append(SequentialContainer *g1,SequentialContainer *g2)
+static int EraseAt(SequentialContainer *sc, size_t idx)
 {
-	int r;
+	if (sc == NULL || sc->vTable == NULL) return BadArg("iSequentialContainer.EraseAt");
+	if (IsStringTable(sc)) return Unsupported("iSequentialContainer.EraseAt");
+	return sc->vTable->EraseAt(sc, idx);
+}
+
+static int ReplaceAt(SequentialContainer *sc, size_t idx, const void *value)
+{
+	if (sc == NULL || sc->vTable == NULL || value == NULL)
+		return BadArg("iSequentialContainer.ReplaceAt");
+	if (IsStringTable(sc)) return Unsupported("iSequentialContainer.ReplaceAt");
+	return sc->vTable->ReplaceAt(sc, idx, value);
+}
+
+static int IndexOf(const SequentialContainer *sc, const void *value,
+			  void *args, size_t *result)
+{
+	if (sc == NULL || sc->vTable == NULL || value == NULL || result == NULL)
+		return BadArg("iSequentialContainer.IndexOf");
+	if (IsStringTable(sc)) return Unsupported("iSequentialContainer.IndexOf");
+	return sc->vTable->IndexOf(sc, value, args, result);
+}
+
+static int Append(SequentialContainer *destination, SequentialContainer *source)
+{
+	Iterator *iterator = NULL;
 	void *element;
-	Iterator *it1 = NewIterator((SequentialContainer *)
-		g2);
-	for (element = it1->GetFirst(it1);
-                   element != NULL;
-                   element = it1->GetNext(it1)) {
-		r = Add(g1,element);
-		if (r <=0) {
-			return r;
-		}
-		
+	int result = 1;
+
+	if (destination == NULL || source == NULL ||
+	    destination->vTable == NULL || source->vTable == NULL)
+		return BadArg("iSequentialContainer.Append");
+	if (destination == source)
+		return BadArg("iSequentialContainer.Append");
+	if (IsStringTable(destination) || IsStringTable(source))
+		return Unsupported("iSequentialContainer.Append");
+	if (destination->ElementSize != source->ElementSize) {
+		iError.RaiseError("iSequentialContainer.Append", CONTAINER_ERROR_INCOMPATIBLE);
+		return CONTAINER_ERROR_INCOMPATIBLE;
 	}
-	return 1;
+
+	iterator = NewIterator(source);
+	if (iterator == NULL)
+		return CONTAINER_ERROR_NOMEMORY;
+	if (iterator->GetFirst == NULL || iterator->GetNext == NULL) {
+		result = CONTAINER_ERROR_WRONG_ITERATOR;
+		goto cleanup;
+	}
+	for (element = iterator->GetFirst(iterator);
+	     element != NULL;
+	     element = iterator->GetNext(iterator)) {
+		result = Add(destination, element);
+		if (result <= 0)
+			break;
+	}
+
+cleanup:
+	/* DeleteIterator is deliberately reached for success and every Add/error
+	 * exit; the generic registry also handles placement and string iterators. */
+	if (DeleteIterator(iterator) < 0 && result > 0)
+		result = CONTAINER_ERROR_WRONG_ITERATOR;
+	return result > 0 ? 1 : result;
 }
-	
 
 SequentialContainerInterface iSequentialContainer = {
-Size,
-GetFlags,
-SetFlags,
-Clear,
-Contains,
-Erase,
-EraseAll,
-Finalize,
-Apply,
-Equal,
-Copy,
-SetErrorFunction,
-Sizeof,
-NewIterator,
-InitIterator,
-DeleteIterator,
-SizeofIterator,
-Save,	
-Add,
-GetElement,
-Push,
-Pop,
-InsertAt,
-EraseAt,
-ReplaceAt,
-IndexOf,
-Append,
+	Size,
+	GetFlags,
+	SetFlags,
+	Clear,
+	Contains,
+	Erase,
+	EraseAll,
+	Finalize,
+	Apply,
+	Equal,
+	Copy,
+	SetErrorFunction,
+	Sizeof,
+	NewIterator,
+	InitIterator,
+	DeleteIterator,
+	SizeofIterator,
+	Save,
+	NULL, /* Load: reserved for concrete-prefix alignment */
+	NULL, /* GetElementSize: reserved for concrete-prefix alignment */
+	Add,
+	GetElement,
+	Push,
+	Pop,
+	InsertAt,
+	EraseAt,
+	ReplaceAt,
+	IndexOf,
+	Append,
 };

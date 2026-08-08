@@ -19,5 +19,9 @@
 #define STRLEN wcslen
 #define iSTRCOLLECTION iWstrCollection
 #define STRCOLLECTION WstrCollection
+#define DICT_ERROR_PREFIX "iWDictionary"
+#define DICT_MAGIC_NUMBER WDICTIONARY_MAGIC_NUMBER
+#define HASHCHAR(ch) (scatter[(unsigned)(ch) & 255u] ^ \
+                      ((size_t)(unsigned long)(ch) * (size_t)16777619u))
 
 #include "dictionarygen.c"

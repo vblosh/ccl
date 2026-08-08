@@ -1,11 +1,20 @@
+#ifndef CCL_VALARRAY_H
+#define CCL_VALARRAY_H
+
+#include "containers.h"
+
 /****************************************************************************
  *          ValArraySize_t                                                *
  ****************************************************************************/
+#ifdef __cplusplus
+extern "C" {
+#endif
 #undef ElementType
 #undef ValArrayInterface
 #undef ElementType
 #undef ValArray
 #undef _ValArray
+
 #define _ValArray _ValArraySize_t
 #define ElementType size_t
 #define ValArrayInterface ValArraySize_tInterface
@@ -25,6 +34,7 @@ extern ValArraySize_tInterface iValArraySize_t;
 #undef ElementType
 #undef ValArray
 #undef _ValArray
+
 #define _ValArray _ValArrayShort
 #define ElementType short
 #define ValArrayInterface ValArrayShortInterface
@@ -178,3 +188,8 @@ extern ValArrayInterface iValArrayUInt;
 #undef ValArray
 #undef _ValArray
 
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* CCL_VALARRAY_H */

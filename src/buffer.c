@@ -19,7 +19,11 @@ static int Finalize(StreamBuffer *b);
 static StreamBuffer *CreateWithAllocator(size_t size,const ContainerAllocator *Allocator)
 {
 	StreamBuffer *result;
-	
+	if (Allocator == NULL || Allocator->malloc == NULL ||
+		Allocator->free == NULL || Allocator->realloc == NULL) {
+		iError.RaiseError("iStreamBuffer.CreateWithAllocator",CONTAINER_ERROR_BADARG);
+		return NULL;
+	}
 	if (size == 0) 
 		size = 1024;
 	result = Allocator->malloc(sizeof(StreamBuffer));
@@ -32,6 +36,7 @@ static StreamBuffer *CreateWithAllocator(size_t size,const ContainerAllocator *A
 	result->Data = Allocator->malloc(size);
 	if (result->Data == NULL) {
 		Allocator->free(result);
+		iError.RaiseError("iStreamBuffer.Create",CONTAINER_ERROR_NOMEMORY);
 		return NULL;
 	}
 	result->Size = size;
@@ -46,19 +51,34 @@ static StreamBuffer *Create(size_t size)
 
 static StreamBuffer *CreateFromFile(const char *FileName)
 {
-	FILE *f = fopen(FileName,"rb");
+	FILE *f;
 	StreamBuffer *result = NULL;
 	size_t siz;
+	long offset;
+
+	if (FileName == NULL) {
+		iError.RaiseError("iBuffer.CreateFromFile",CONTAINER_ERROR_BADARG);
+		return NULL;
+	}
+	f = fopen(FileName,"rb");
 	if (f == NULL) {
 		iError.RaiseError("iBuffer.CreateFromFile",CONTAINER_ERROR_NOENT,FileName);
 		return NULL;
 	}
 	else if (fseek(f, 0, SEEK_END)) {
+		iError.RaiseError("iBuffer.CreateFromFile",CONTAINER_ERROR_FILE_READ);
 		goto err;
 	}
-	siz = ftell(f);
-	if ((int)siz < 0) goto err;
-	fseek(f,0,SEEK_SET);
+	offset = ftell(f);
+	if (offset < 0 || (uintmax_t)offset > (uintmax_t)(SIZE_MAX - 1)) {
+		iError.RaiseError("iBuffer.CreateFromFile",CONTAINER_ERROR_FILE_READ);
+		goto err;
+	}
+	if (fseek(f,0,SEEK_SET)) {
+		iError.RaiseError("iBuffer.CreateFromFile",CONTAINER_ERROR_FILE_READ);
+		goto err;
+	}
+	siz = (size_t)offset;
 	result = Create(siz+1);
 	if (result == NULL) goto err;
 	if (siz != fread(result->Data,1,siz,f)) {
@@ -75,31 +95,54 @@ static int enlargeBuffer(StreamBuffer *b,size_t chunkSize)
 {
 	char *p;
 	size_t newSiz;
-	
-	if (chunkSize < b->Size/2)
-		newSiz = b->Size/2;
-	else newSiz = chunkSize;
-	p = b->Allocator->realloc(b->Data,b->Size+newSiz);
+	size_t growth;
+
+	/* chunkSize is the required capacity, not an additive increment. */
+	if (chunkSize <= b->Size)
+		return 1;
+	growth = b->Size / 2;
+	if (growth == 0)
+		growth = 1;
+	if (b->Size > SIZE_MAX - growth)
+		newSiz = SIZE_MAX;
+	else
+		newSiz = b->Size + growth;
+	if (newSiz < chunkSize)
+		newSiz = chunkSize;
+	p = b->Allocator->realloc(b->Data,newSiz);
 	if (p == NULL)
 		return CONTAINER_ERROR_NOMEMORY;
 	b->Data = p;
-	b->Size += newSiz;
+	b->Size = newSiz;
 	return 1;
 }
 
 static size_t Write(StreamBuffer *b,void *data, size_t siz)
 {
+	size_t required;
 	if (b == NULL) {
 		iError.RaiseError("iStreamBuffer.Write",CONTAINER_ERROR_BADARG);
 		return 0;
 	}
-	if ((b->Cursor + siz) >= b->Size) {
-		int r = enlargeBuffer(b,b->Size+siz);
+	if (siz != 0 && data == NULL) {
+		iError.RaiseError("iStreamBuffer.Write",CONTAINER_ERROR_BADARG);
+		return 0;
+	}
+	if (siz > SIZE_MAX - b->Cursor) {
+		iError.RaiseError("iStreamBuffer.Write",CONTAINER_ERROR_BUFFEROVERFLOW);
+		return 0;
+	}
+	required = b->Cursor + siz;
+	if (required > b->Size) {
+		int r = enlargeBuffer(b,required);
+		if (r < 0)
+			iError.RaiseError("iStreamBuffer.Write",r);
 		if (r < 0)
 			return 0;
 	}
-	memcpy(b->Data+b->Cursor,data,siz);
-	b->Cursor += siz;
+	if (siz != 0)
+		memcpy(b->Data+b->Cursor,data,siz);
+	b->Cursor = required;
 	return siz;
 }
 
@@ -152,7 +195,8 @@ static int Clear(StreamBuffer *b)
 		iError.RaiseError("iStreamBuffer.Clear",CONTAINER_ERROR_BADARG);
 		return CONTAINER_ERROR_BADARG;
 	}
-	memset(b->Data,0,b->Size);
+	if (b->Data != NULL && b->Size != 0)
+		memset(b->Data,0,b->Size);
 	b->Cursor = 0;
 	return 1;
 }
@@ -171,7 +215,7 @@ static int Finalize(StreamBuffer *b)
 static char *GetData(const StreamBuffer *b)
 {
 	if (b == NULL) {
-		iError.RaiseError("iStreamBuffer.Finalize",CONTAINER_ERROR_BADARG);
+		iError.RaiseError("iStreamBuffer.GetData",CONTAINER_ERROR_BADARG);
 		return NULL;
 	}
 	return b->Data;
@@ -187,6 +231,13 @@ static int Resize(StreamBuffer *b,size_t newSize)
 	}
 	if (newSize == b->Size)
 		return 0;
+	if (newSize == 0) {
+		b->Allocator->free(b->Data);
+		b->Data = NULL;
+		b->Size = 0;
+		b->Cursor = 0;
+		return 1;
+	}
 	tmp = b->Allocator->realloc(b->Data,newSize);
 	if (tmp == NULL) {
 		iError.RaiseError("iStreamBuffer.Resize",CONTAINER_ERROR_NOMEMORY);
@@ -194,26 +245,32 @@ static int Resize(StreamBuffer *b,size_t newSize)
 	}
 	b->Data = tmp;
 	b->Size = newSize;
+	if (b->Cursor > newSize)
+		b->Cursor = newSize;
 	return 1;
 }
 
 static int ReadFromFile(StreamBuffer *b,FILE *infile)
 {
-	if (b == NULL) {
+	if (b == NULL || infile == NULL) {
 		iError.RaiseError("iStreamBuffer.ReadFromFile",CONTAINER_ERROR_BADARG);
 		return CONTAINER_ERROR_BADARG;
 	}
 	b->Cursor = 0;
+	if (b->Size == 0)
+		return 0;
 	return fread(b->Data,1,b->Size,infile);
 }
 
 static int WriteToFile(StreamBuffer *b,FILE *outfile)
 {
-	if (b == NULL) {
+	if (b == NULL || outfile == NULL) {
 		iError.RaiseError("iStreamBuffer.WriteToFile",CONTAINER_ERROR_BADARG);
 		return CONTAINER_ERROR_BADARG;
 	}
 	b->Cursor = 0;
+	if (b->Size == 0)
+		return 0;
 	return fwrite(b->Data,1,b->Size,outfile);
 }
 
@@ -253,8 +310,7 @@ static DestructorFunction SetDestructor(CircularBuffer *cb,DestructorFunction fn
 	if (cb == NULL)
 		return NULL;
 	oldfn = cb->DestructorFn;
-	if (fn)
-		cb->DestructorFn = fn;
+	cb->DestructorFn = fn;
 	return oldfn;
 }
 	
@@ -267,21 +323,27 @@ static size_t Size(const CircularBuffer *cb)
 
 static int Add( CircularBuffer * b,const void *data_element)
 {
-    unsigned char *ring_data = NULL;
+	unsigned char *ring_data;
 	int result = 1;
+	size_t count;
 
-    if (b == NULL || data_element == NULL) {
+	if (b == NULL || data_element == NULL) {
         iError.RaiseError("iCircularBuffer.Add",CONTAINER_ERROR_BADARG);
         return CONTAINER_ERROR_BADARG;
     }
-    if (b->maxCount == (b->head - b->tail)) {
-        b->head = 0;
+	count = b->head - b->tail;
+	if (count == b->maxCount) {
+		ring_data = b->data + ((b->head % b->maxCount) * b->ElementSize);
+		if (b->DestructorFn)
+			b->DestructorFn(ring_data);
+		b->tail++;
 		result = 0;
-    }
-    ring_data = b->data + ((b->head % b->maxCount) * b->ElementSize);
-    memcpy(ring_data,data_element,b->ElementSize);
-    b->head++;
-    return result;
+	} else {
+		ring_data = b->data + ((b->head % b->maxCount) * b->ElementSize);
+	}
+	memcpy(ring_data,data_element,b->ElementSize);
+	b->head++;
+	return result;
 }
 
 static int PopFront(CircularBuffer *b,void *result)
@@ -295,9 +357,12 @@ static int PopFront(CircularBuffer *b,void *result)
 	if (b->head == b->tail)
 		return 0;
     data = &(b->data[(b->tail % b->maxCount) * b->ElementSize]);
-	b->tail++;
 	if (result)
 		memcpy(result,data,b->ElementSize);
+	if (b->DestructorFn)
+		b->DestructorFn(data);
+	memset(data,0,b->ElementSize);
+	b->tail++;
 	return 1;
 }
 
@@ -324,6 +389,14 @@ static CircularBuffer *CreateCBWithAllocator(size_t sizElement,size_t sizeBuffer
 		iError.RaiseError("iCircularBuffer.Create",CONTAINER_ERROR_BADARG);
 		return NULL;
 	}
+	if (allocator->malloc == NULL || allocator->free == NULL) {
+		iError.RaiseError("iCircularBuffer.Create",CONTAINER_ERROR_BADARG);
+		return NULL;
+	}
+	if (sizElement > SIZE_MAX / sizeBuffer) {
+		iError.RaiseError("iCircularBuffer.Create",CONTAINER_ERROR_BUFFEROVERFLOW);
+		return NULL;
+	}
 	result = allocator->malloc(sizeof(CircularBuffer));
 	if (result == NULL) {
 		iError.RaiseError("iCircularBuffer.Create",CONTAINER_ERROR_NOMEMORY);
@@ -333,13 +406,14 @@ static CircularBuffer *CreateCBWithAllocator(size_t sizElement,size_t sizeBuffer
 	result->maxCount = sizeBuffer;
 	result->ElementSize = sizElement;
 	result->Allocator = (ContainerAllocator *)allocator;
-	sizElement = sizElement*sizeBuffer; /* Here we should test for overflow */
+	sizElement = sizElement*sizeBuffer;
 	result->data = allocator->malloc(sizElement);
 	if (result->data == NULL) {
 		allocator->free(result);
 		iError.RaiseError("iCircularBuffer.Create",CONTAINER_ERROR_NOMEMORY);
 		return NULL;
 	}
+	memset(result->data,0,sizElement);
 	return result;
 }
 
@@ -350,22 +424,24 @@ static CircularBuffer *CreateCB(size_t sizElement,size_t sizeBuffer)
 
 static int CBClear(CircularBuffer *cb)
 {
-	unsigned char *p;
+	unsigned char *data;
 	size_t i;
+	size_t count;
 	if (cb == NULL) {
 		iError.RaiseError("iCircularBuffer.Clear",CONTAINER_ERROR_BADARG);
 		return CONTAINER_ERROR_BADARG;
 	}
-	if (cb->head == cb->tail)
+	count = cb->head - cb->tail;
+	if (count == 0)
 		return 0;
-	p = cb->data;
 	if (cb->DestructorFn) {
-		for (i=cb->tail; i<cb->head;i++) {
-			cb->DestructorFn(p);
-			p += cb->ElementSize;
+		for (i=0; i<count; i++) {
+			data = cb->data + (((cb->tail + i) % cb->maxCount) *
+				cb->ElementSize);
+			cb->DestructorFn(data);
 		}
 	}
-	memset(p,0,cb->ElementSize*(cb->head-cb->tail));
+	memset(cb->data,0,cb->maxCount * cb->ElementSize);
 	cb->head = cb->tail = 0;
 	return 1;
 }
@@ -384,11 +460,13 @@ static int CBFinalize(CircularBuffer *cb)
 
 static size_t Sizeof(const CircularBuffer *cb)
 {
-	size_t result = sizeof(CircularBuffer);
+	size_t storage;
 	if (cb == NULL)
-		return result;
-	result += (cb->head - cb->tail)*cb->ElementSize;
-	return result;
+		return sizeof(CircularBuffer);
+	storage = cb->maxCount * cb->ElementSize;
+	if (storage > SIZE_MAX - sizeof(CircularBuffer))
+		return SIZE_MAX;
+	return sizeof(CircularBuffer) + storage;
 }
 
 CircularBufferInterface iCircularBuffer = {

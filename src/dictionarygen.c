@@ -78,8 +78,20 @@ static const guid DictionaryGuid = {0xa334a9d, 0x897c, 0x4bed,
 {0x92,0xa3,0x2,0xbf,0x86,0xd5,0x2e,0xcf}
 };
 
+#ifndef DICT_ERROR_PREFIX
+#define DICT_ERROR_PREFIX "iDictionary"
+#endif
+#ifndef DICT_MAGIC_NUMBER
+#define DICT_MAGIC_NUMBER 0
+#endif
+#ifndef HASHCHAR
+#define HASHCHAR(ch) scatter[(unsigned)(ch) & 255u]
+#endif
+
 
 static DATA_TYPE *Create(size_t elementsize,size_t hint);
+static DATA_TYPE *CreateWithAllocator(size_t elementsize,size_t hint,
+                                      const ContainerAllocator *allocator);
 /*------------------------------------------------------------------------
  Procedure:     hash ID:1
  Purpose:       Returns the hash code for a given character string.
@@ -109,7 +121,7 @@ static int doerrorCall(ErrorFunction err,const char *fnName,int code)
 {
     char buf[256];
 
-    snprintf(buf,sizeof(buf),"iDictionary.%s",fnName);
+    snprintf(buf,sizeof(buf),"%s.%s",DICT_ERROR_PREFIX,fnName);
     err(buf,code);
     return code;
 }
@@ -117,7 +129,7 @@ static int ReadOnlyError(const DATA_TYPE *SC,const char *fnName)
 {
     char buf[256];
 
-    snprintf(buf,sizeof(buf),"iDictionary.%s",fnName);
+    snprintf(buf,sizeof(buf),"%s.%s",DICT_ERROR_PREFIX,fnName);
     SC->RaiseError(buf,CONTAINER_ERROR_READONLY,SC);
     return CONTAINER_ERROR_READONLY;
 }
@@ -183,10 +195,26 @@ static size_t hash(const CHARTYPE *key)
     */
 
     for (p = (const CHARTYPE *)key; *p; p++) {
-        Hash = Hash * 33 + scatter[(unsigned)(*p)&255];
+        Hash = Hash * 33 + HASHCHAR(*p);
     }
 
     return Hash;
+}
+
+static int size_add(size_t a,size_t b,size_t *result)
+{
+    if (a > (size_t)-1 - b)
+        return 0;
+    *result = a + b;
+    return 1;
+}
+
+static int size_mul(size_t a,size_t b,size_t *result)
+{
+    if (a != 0 && b > (size_t)-1 / a)
+        return 0;
+    *result = a * b;
+    return 1;
 }
 
 #if 0
@@ -282,17 +310,16 @@ static int Equal(const DATA_TYPE *d1,const DATA_TYPE *d2)
     if (d1->ElementSize != d2->ElementSize)
         return 0;
     for (i=0; i < d1->size;i++) {
-        p1 = d1->buckets[i]; p2 = d2->buckets[i];
-        while (p1 && p2) {
-            if (STRCMP((CHARTYPE *)p1->Key,(CHARTYPE *)p2->Key))
+        for (p1 = d1->buckets[i]; p1; p1 = p1->Next) {
+            p2 = d2->buckets[(*d2->hash)(p1->Key) % d2->size];
+            while (p2 && STRCMP(p1->Key,p2->Key) != 0)
+                p2 = p2->Next;
+            if (p2 == NULL)
                 return 0;
             if (d1->ElementSize &&
-                memcmp(p1->Value,p2->Value,d1->ElementSize))
+                memcmp(p1->Value,p2->Value,d1->ElementSize) != 0)
                 return 0;
-            p1 = p1->Next; p2 = p2->Next;
         }
-        if (p1 != p2)
-            return 0;
     }
     return 1;
 }
@@ -307,10 +334,13 @@ static int Equal(const DATA_TYPE *d1,const DATA_TYPE *d2)
 ------------------------------------------------------------------------*/
 static int add_nd(DATA_TYPE *Dict,const CHARTYPE *Key,const void *Value,int is_insert)
 {
-    size_t i;
+    size_t i,nodeSize,keyChars,keySize;
     struct DATALIST *p;
     CHARTYPE *tmp;
     int result = 1;
+
+    if (Key == NULL || (Dict->ElementSize > 0 && Value == NULL))
+        return BadArgError(Dict,"Add");
 
     i = (*Dict->hash)(Key)%Dict->size;
     for (p = Dict->buckets[i]; p; p = p->Next) {
@@ -318,35 +348,41 @@ static int add_nd(DATA_TYPE *Dict,const CHARTYPE *Key,const void *Value,int is_i
             break;
     }
     if (p && is_insert) return 0;
-    Dict->timestamp++;
     if (p == NULL) {
         /* Allocate both value and key to avoid leaving the
         container in an invalid state if a second allocation fails */
-        p = Dict->Allocator->malloc(sizeof(*p)+Dict->ElementSize);
-        tmp = Dict->Allocator->malloc(sizeof(CHARTYPE)*(1+STRLEN(Key)));
+        if (!size_add(sizeof(*p),Dict->ElementSize,&nodeSize) ||
+            !size_add(STRLEN(Key),1,&keyChars) ||
+            !size_mul(sizeof(CHARTYPE),keyChars,&keySize))
+            return NoMemoryError(Dict,"Add");
+        p = Dict->Allocator->malloc(nodeSize);
+        tmp = Dict->Allocator->malloc(keySize);
         if (p == NULL || tmp == NULL) {
             if (p) Dict->Allocator->free(p);
             if (tmp) Dict->Allocator->free(tmp);
             return NoMemoryError(Dict,"Add");
         }
-        if (Value && Dict->ElementSize) {
+        if (Dict->ElementSize) {
             p->Value = (void *)(p+1);
             memcpy((void *)p->Value,Value,Dict->ElementSize);
         }
-        else if (Dict->ElementSize == 0)
+        else
             p->Value = tmp;
-        else p->Value = NULL;
         STRCPY(tmp,Key);
         p->Key = tmp;
         p->Next = Dict->buckets[i];
         Dict->buckets[i] = p;
         Dict->count++;
+        Dict->timestamp++;
     }
     else {
         /* Overwrite the data for an existing element */
-        if (Value && Dict->ElementSize)
+        if (Dict->ElementSize) {
+            if (Dict->DestructorFn)
+                Dict->DestructorFn(p->Value);
             memcpy((void *)p->Value,Value,Dict->ElementSize);
-        else if (Dict->ElementSize) p->Value = NULL;
+            Dict->timestamp++;
+        }
         result = 0;
     }
 
@@ -360,11 +396,12 @@ static int Add(DATA_TYPE *Dict,const CHARTYPE *Key,const void *Value)
         return NullPtrError("Add");
     if (Dict->Flags & CONTAINER_READONLY)
         return ReadOnlyError(Dict,"Add");
-    if (Key == NULL)
+    if (Key == NULL || (Value == NULL && Dict->ElementSize > 0))
         return BadArgError(Dict,"Add");
 
     result = add_nd(Dict,Key,Value,0);
-    if (result >= 0 && (Dict->Flags & CONTAINER_HAS_OBSERVER))
+    if (result >= 0 && (Dict->Flags & CONTAINER_HAS_OBSERVER) &&
+        (result != 0 || Dict->ElementSize > 0))
         iObserver.Notify(Dict,CCL_ADD,Value,NULL);
     return result;
 }
@@ -380,7 +417,7 @@ static int Insert(DATA_TYPE *Dict,const CHARTYPE *Key,const void *Value)
         return BadArgError(Dict,"Insert");
 
     result = add_nd(Dict,Key,Value,1);
-    if (result >= 0 && (Dict->Flags & CONTAINER_HAS_OBSERVER))
+    if (result > 0 && (Dict->Flags & CONTAINER_HAS_OBSERVER))
         iObserver.Notify(Dict,CCL_INSERT,Value,NULL);
     return result;
 }
@@ -395,7 +432,7 @@ static int Replace(DATA_TYPE *Dict,const CHARTYPE *Key,const void *Value)
     if (Dict->Flags & CONTAINER_READONLY) {
         return ReadOnlyError(Dict,"Replace");
     }
-    if (Key == NULL || Value == NULL) {
+    if (Key == NULL || (Value == NULL && Dict->ElementSize > 0)) {
         return BadArgError(Dict,"Replace");
     }
 
@@ -411,12 +448,11 @@ static int Replace(DATA_TYPE *Dict,const CHARTYPE *Key,const void *Value)
         return 1;
     if (Dict->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(Dict,CCL_REPLACE,p->Value,Value);
-    Dict->timestamp++;
     if (Dict->DestructorFn)
         Dict->DestructorFn(p->Value);
     /* Overwrite the data for an existing element */
-    if (Value)
-        memcpy((void *)p->Value,Value,Dict->ElementSize);
+    memcpy((void *)p->Value,Value,Dict->ElementSize);
+    Dict->timestamp++;
     return 1;
 }
 
@@ -454,10 +490,26 @@ static unsigned GetFlags(const DATA_TYPE *Dict)
 
 static size_t Sizeof(const DATA_TYPE *dict)
 {
+    size_t result,bytes,keyChars,keyBytes,nodeBytes,i;
+    struct DATALIST *p;
+
     if (dict == NULL) {
-        return sizeof(Dictionary);
+        return sizeof(DATA_TYPE);
     }
-    return dict->ElementSize * dict->count + sizeof(dict) + dict->count*sizeof(struct DATALIST);
+    if (!size_mul(dict->size,sizeof(dict->buckets[0]),&bytes) ||
+        !size_add(sizeof(DATA_TYPE),bytes,&result))
+        return 0;
+    for (i=0; i<dict->size; ++i) {
+        for (p=dict->buckets[i]; p; p=p->Next) {
+            if (!size_add(sizeof(*p),dict->ElementSize,&nodeBytes) ||
+                !size_add(STRLEN(p->Key),1,&keyChars) ||
+                !size_mul(keyChars,sizeof(CHARTYPE),&keyBytes) ||
+                !size_add(nodeBytes,keyBytes,&nodeBytes) ||
+                !size_add(result,nodeBytes,&result))
+                return 0;
+        }
+    }
+    return result;
 }
 
 
@@ -534,9 +586,11 @@ static int InsertIn(DATA_TYPE *dst,DATA_TYPE *src)
         return ReadOnlyError(dst,"InsertIn");
 
     if (src->ElementSize != dst->ElementSize) {
-        dst->RaiseError("iDictionary.InsertIn",CONTAINER_ERROR_INCOMPATIBLE);
+        dst->RaiseError(DICT_ERROR_PREFIX ".InsertIn",CONTAINER_ERROR_INCOMPATIBLE);
         return CONTAINER_ERROR_INCOMPATIBLE;
     }
+    if (dst == src)
+        return 1;
     stamp = src->timestamp;
     for (i = 0; i < src->size; i++) {
         for (p = src->buckets[i]; p; p = p->Next) {
@@ -604,6 +658,7 @@ static int Erase(DATA_TYPE *Dict,const CHARTYPE *Key)
 ------------------------------------------------------------------------*/
 static int Clear(DATA_TYPE *Dict)
 {
+    int changed;
 
     if (Dict == NULL) {
         return NullPtrError("Clear");
@@ -613,13 +668,14 @@ static int Clear(DATA_TYPE *Dict)
     }
     if (Dict->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(Dict,CCL_CLEAR,NULL,NULL);
-    if (Dict->count > 0) {
+    changed = Dict->count != 0;
+    if (changed) {
         size_t i;
         struct DATALIST *p, *q;
         for (i = 0; i < Dict->size; i++)
             for (p = Dict->buckets[i]; p; p = q) {
                 q = p->Next;
-                if (Dict->DestructorFn)
+                if (Dict->DestructorFn && Dict->ElementSize)
                     Dict->DestructorFn(p->Value);
                 Dict->Allocator->free(p->Key);
                 Dict->Allocator->free(p);
@@ -627,6 +683,8 @@ static int Clear(DATA_TYPE *Dict)
     }
     memset(Dict->buckets,0,Dict->size*sizeof(void *));
     Dict->count=0;
+    if (changed)
+        Dict->timestamp++;
     return 1;
 }
 
@@ -686,7 +744,10 @@ static STRCOLLECTION *GetKeys(const DATA_TYPE *Dict)
         return NULL;
     for (i=0; i<Dict->size;i++) {
         for (p = Dict->buckets[i]; p; p = p->Next) {
-            iSTRCOLLECTION.Add(result,p->Key);
+            if (iSTRCOLLECTION.Add(result,p->Key) <= 0) {
+                iSTRCOLLECTION.Finalize(result);
+                return NULL;
+            }
         }
     }
     return result;
@@ -694,155 +755,308 @@ static STRCOLLECTION *GetKeys(const DATA_TYPE *Dict)
 /* ------------------------------------------------------------------------------ */
 /*                                Iterators                                       */
 /* ------------------------------------------------------------------------------ */
+static int IteratorIsValid(Iterator *it,const char *name,struct ITERATOR **out)
+{
+    struct ITERATOR *d;
+    if (it == NULL) {
+        NullPtrError(name);
+        return 0;
+    }
+    d = (struct ITERATOR *)it;
+    if (d->Magic != DICT_MAGIC_NUMBER) {
+        iError.RaiseError(DICT_ERROR_PREFIX ".Iterator",CONTAINER_ERROR_WRONG_ITERATOR);
+        return 0;
+    }
+    *out = d;
+    return 1;
+}
+
 static size_t GetPosition(Iterator *it)
 {
-    struct ITERATOR *d = (struct ITERATOR *)it;
+    struct ITERATOR *d;
+    if (!IteratorIsValid(it,"GetPosition",&d))
+        return 0;
     return d->index;
+}
+
+static void *IteratorValue(struct ITERATOR *d,struct DATALIST *p)
+{
+    if (p == NULL)
+        return NULL;
+    return d->Dict->ElementSize ? p->Value : p->Key;
+}
+
+static struct DATALIST *IteratorNextNode(struct ITERATOR *d,size_t *bucket)
+{
+    DATA_TYPE *Dict = d->Dict;
+    struct DATALIST *p;
+    size_t i;
+    if (d->dl != NULL) {
+        if (d->dl->Next != NULL) {
+            *bucket = d->index;
+            return d->dl->Next;
+        }
+        i = d->index + 1;
+    } else {
+        i = d->index;
+    }
+    while (i < Dict->size) {
+        p = Dict->buckets[i];
+        if (p != NULL) {
+            *bucket = i;
+            return p;
+        }
+        ++i;
+    }
+    *bucket = Dict->size;
+    return NULL;
+}
+
+static struct DATALIST *IteratorPreviousNode(struct ITERATOR *d,size_t *bucket)
+{
+    DATA_TYPE *Dict = d->Dict;
+    struct DATALIST *p,*prev;
+    size_t i;
+    if (d->dl != NULL) {
+        prev = NULL;
+        for (p=Dict->buckets[d->index]; p && p != d->dl; p=p->Next)
+            prev = p;
+        if (prev != NULL) {
+            *bucket = d->index;
+            return prev;
+        }
+        i = d->index;
+    } else {
+        if (d->index == 0) {
+            *bucket = 0;
+            return NULL;
+        }
+        i = d->index;
+    }
+    while (i > 0) {
+        --i;
+        p = Dict->buckets[i];
+        if (p != NULL) {
+            while (p->Next != NULL)
+                p = p->Next;
+            *bucket = i;
+            return p;
+        }
+    }
+    *bucket = 0;
+    return NULL;
 }
 
 static void *GetNext(Iterator *it)
 {
-    struct ITERATOR *d = (struct ITERATOR *)it;
-    DATA_TYPE *Dict;
-    void *retval;
-
-    if (it == NULL) {
-        NullPtrError("GetNext");
+    struct ITERATOR *d;
+    size_t bucket;
+    struct DATALIST *p;
+    if (!IteratorIsValid(it,"GetNext",&d))
+        return NULL;
+    if (d->timestamp != d->Dict->timestamp) {
+        d->Dict->RaiseError(DICT_ERROR_PREFIX ".GetNext",CONTAINER_ERROR_OBJECT_CHANGED);
         return NULL;
     }
-    Dict = d->Dict;
-    if (d->timestamp != Dict->timestamp) {
-        Dict->RaiseError("iDictionary.GetNext",CONTAINER_ERROR_OBJECT_CHANGED);
-        return NULL;
-    }
-    if (d->index >= Dict->size)
-        return NULL;
-    while (Dict->buckets[d->index] == NULL) {
-        d->index++;
-        if (d->index >= Dict->size)
-            return NULL;
-    }
-    if (d->dl == NULL) {
-        d->dl = Dict->buckets[d->index];
-    }
-    if (d->Dict->ElementSize == 0)
-        retval = d->dl->Key;
-    else
-        retval = d->dl->Value;
-    d->dl = d->dl->Next;
-    if (d->dl == NULL) {
-        d->index++;
-    }
-    return retval;
+    p = IteratorNextNode(d,&bucket);
+    d->index = bucket;
+    d->dl = p;
+    return IteratorValue(d,p);
 }
 
 static void *GetFirst(Iterator *it)
 {
-    struct ITERATOR *Dicti = (struct ITERATOR *)it;
-
-    if (it == NULL) {
-        NullPtrError("GetFirt");
+    struct ITERATOR *d;
+    if (!IteratorIsValid(it,"GetFirst",&d))
+        return NULL;
+    if (d->timestamp != d->Dict->timestamp) {
+        d->Dict->RaiseError(DICT_ERROR_PREFIX ".GetFirst",CONTAINER_ERROR_OBJECT_CHANGED);
         return NULL;
     }
-    if (Dicti->Dict->count == 0)
+    if (d->Dict->count == 0)
         return NULL;
-    Dicti->index = 0;
-    Dicti->dl = NULL;
+    d->index = 0;
+    d->dl = NULL;
     return GetNext(it);
+}
+
+static void *GetPrevious(Iterator *it)
+{
+    struct ITERATOR *d;
+    size_t bucket;
+    struct DATALIST *p;
+    if (!IteratorIsValid(it,"GetPrevious",&d))
+        return NULL;
+    if (d->timestamp != d->Dict->timestamp) {
+        d->Dict->RaiseError(DICT_ERROR_PREFIX ".GetPrevious",CONTAINER_ERROR_OBJECT_CHANGED);
+        return NULL;
+    }
+    p = IteratorPreviousNode(d,&bucket);
+    d->index = bucket;
+    d->dl = p;
+    return IteratorValue(d,p);
+}
+
+static void *GetCurrent(Iterator *it)
+{
+    struct ITERATOR *d;
+    if (!IteratorIsValid(it,"GetCurrent",&d))
+        return NULL;
+    return IteratorValue(d,d->dl);
+}
+
+static void *GetLast(Iterator *it)
+{
+    struct ITERATOR *d;
+    size_t i;
+    struct DATALIST *p;
+    if (!IteratorIsValid(it,"GetLast",&d))
+        return NULL;
+    if (d->timestamp != d->Dict->timestamp) {
+        d->Dict->RaiseError(DICT_ERROR_PREFIX ".GetLast",CONTAINER_ERROR_OBJECT_CHANGED);
+        return NULL;
+    }
+    for (i=d->Dict->size; i>0; ) {
+        --i;
+        p = d->Dict->buckets[i];
+        if (p != NULL) {
+            while (p->Next != NULL)
+                p = p->Next;
+            d->index = i;
+            d->dl = p;
+            return IteratorValue(d,p);
+        }
+    }
+    d->index = 0;
+    d->dl = NULL;
+    return NULL;
 }
 
 static int ReplaceWithIterator(Iterator *it, void *data,int direction)
 {
-    struct ITERATOR *li = (struct ITERATOR *)it;
+    struct ITERATOR *d;
+    struct DATALIST *current,*next,*previous;
+    size_t nextBucket,previousBucket;
     int result=1;
-    struct DATALIST *dl;
-
-    if (it == NULL) {
-        return NullPtrError("Replace");
-    }
-    if (li->Dict->Flags & CONTAINER_READONLY) {
-        li->Dict->RaiseError("Replace",CONTAINER_ERROR_READONLY);
+    if (!IteratorIsValid(it,"Replace",&d))
+        return CONTAINER_ERROR_BADARG;
+    if (d->Dict->Flags & CONTAINER_READONLY) {
+        d->Dict->RaiseError(DICT_ERROR_PREFIX ".Replace",CONTAINER_ERROR_READONLY);
         return CONTAINER_ERROR_READONLY;
     }
-
-    if (li->Dict->count == 0)
+    if (d->Dict->count == 0 || d->dl == NULL)
         return 0;
-    if (li->timestamp != li->Dict->timestamp) {
-        li->Dict->RaiseError("Replace",CONTAINER_ERROR_OBJECT_CHANGED);
+    if (d->timestamp != d->Dict->timestamp) {
+        d->Dict->RaiseError(DICT_ERROR_PREFIX ".Replace",CONTAINER_ERROR_OBJECT_CHANGED);
         return CONTAINER_ERROR_OBJECT_CHANGED;
     }
-    dl = li->dl;
-    GetNext(it);
-    if (data == NULL)
-        result = Erase(li->Dict, dl->Key);
-    else if (li->Dict->ElementSize) {
-        memcpy(dl->Value,data,li->Dict->ElementSize);
-        result = 1;
+    current = d->dl;
+    next = IteratorNextNode(d,&nextBucket);
+    previous = IteratorPreviousNode(d,&previousBucket);
+    if (data == NULL) {
+        result = Erase(d->Dict,current->Key);
+    } else if (d->Dict->ElementSize) {
+        if (d->Dict->Flags & CONTAINER_HAS_OBSERVER)
+            iObserver.Notify(d->Dict,CCL_REPLACE,current->Value,data);
+        if (d->Dict->DestructorFn)
+            d->Dict->DestructorFn(current->Value);
+        memcpy(current->Value,data,d->Dict->ElementSize);
+        d->Dict->timestamp++;
     }
     if (result >= 0) {
-        li->timestamp = li->Dict->timestamp;
+        d->timestamp = d->Dict->timestamp;
+        if (direction) {
+            d->index = nextBucket;
+            d->dl = next;
+        } else {
+            d->index = previousBucket;
+            d->dl = previous;
+        }
     }
     return result;
 }
 
-static void *Seek(Iterator *it, size_t idx)
+static void *Seek(Iterator *it,size_t idx)
 {
+    struct ITERATOR *d;
+    size_t i,n=0;
+    struct DATALIST *p;
+    if (!IteratorIsValid(it,"Seek",&d))
+        return NULL;
+    if (d->timestamp != d->Dict->timestamp) {
+        d->Dict->RaiseError(DICT_ERROR_PREFIX ".Seek",CONTAINER_ERROR_OBJECT_CHANGED);
+        return NULL;
+    }
+    for (i=0; i<d->Dict->size; ++i) {
+        for (p=d->Dict->buckets[i]; p; p=p->Next) {
+            if (n == idx) {
+                d->index = i;
+                d->dl = p;
+                return IteratorValue(d,p);
+            }
+            ++n;
+        }
+    }
     return NULL;
+}
+
+static void InitIteratorState(DATA_TYPE *Dict,struct ITERATOR *result)
+{
+    memset(result,0,sizeof(*result));
+    result->it.GetNext = GetNext;
+    result->it.GetPrevious = GetPrevious;
+    result->it.GetFirst = GetFirst;
+    result->it.GetCurrent = GetCurrent;
+    result->it.GetLast = GetLast;
+    result->it.Seek = Seek;
+    result->it.GetPosition = GetPosition;
+    result->it.Replace = ReplaceWithIterator;
+    result->Magic = DICT_MAGIC_NUMBER;
+    result->Dict = Dict;
+    result->timestamp = Dict->timestamp;
 }
 
 static Iterator *NewIterator(DATA_TYPE *Dict)
 {
     struct ITERATOR *result;
-
     if (Dict == NULL) {
         NullPtrError("NewIterator");
         return NULL;
     }
-
     result = Dict->Allocator->malloc(sizeof(struct ITERATOR));
     if (result == NULL) {
         NoMemoryError(Dict,"NewIterator");
         return NULL;
     }
-    result->it.GetNext = GetNext;
-    result->it.GetPrevious = GetNext;
-    result->it.GetFirst = GetFirst;
-    result->Dict = Dict;
-    result->it.Replace = ReplaceWithIterator;
-    result->it.GetPosition = GetPosition;
-    result->it.Seek = Seek;
-    result->timestamp = Dict->timestamp;
+    InitIteratorState(Dict,result);
+    result->Flags = 1UL;
     return &result->it;
 }
 
 static int InitIterator(DATA_TYPE *Dict,void *buf)
 {
     struct ITERATOR *result = buf;
-
     if (Dict == NULL || buf == NULL) {
-        NullPtrError("NewIterator");
+        NullPtrError("InitIterator");
         return CONTAINER_ERROR_BADARG;
     }
-
-    result->it.GetNext = GetNext;
-    result->it.GetPrevious = GetNext;
-    result->it.GetFirst = GetFirst;
-    result->Dict = Dict;
-    result->it.Replace = ReplaceWithIterator;
-    result->timestamp = Dict->timestamp;
+    InitIteratorState(Dict,result);
     return 1;
 }
-
 
 static int DeleteIterator(Iterator *it)
 {
     struct ITERATOR *d = (struct ITERATOR *)it;
     DATA_TYPE *Dict;
-    if (d ==NULL) {
+    if (d == NULL)
         return NullPtrError("DeleteIterator");
+    if (d->Magic != DICT_MAGIC_NUMBER) {
+        iError.RaiseError(DICT_ERROR_PREFIX ".DeleteIterator",CONTAINER_ERROR_WRONG_ITERATOR);
+        return CONTAINER_ERROR_WRONG_ITERATOR;
     }
     Dict = d->Dict;
-    Dict->Allocator->free(it);
+    if (d->Flags & 1UL)
+        Dict->Allocator->free(it);
     return 1;
 }
 
@@ -859,10 +1073,15 @@ static Vector *CastToArray(const DATA_TYPE *Dict)
     if (Dict->ElementSize == 0)
         return NULL;
     result = iVector.Create(Dict->ElementSize,Dict->count);
+    if (result == NULL)
+        return NULL;
 
     for (i=0; i<Dict->size;i++) {
         for (p = Dict->buckets[i]; p; p = p->Next) {
-            iVector.Add(result,(char *)p->Value);
+            if (iVector.Add(result,(char *)p->Value) <= 0) {
+                iVector.Finalize(result);
+                return NULL;
+            }
         }
     }
     return result;
@@ -880,11 +1099,20 @@ static int Save(const DATA_TYPE *Dict,FILE *stream, SaveFunction saveFn,void *ar
     if (stream == NULL) {
         return BadArgError(Dict,"Save");
     }
-    if (fwrite(&DictionaryGuid,sizeof(guid),1,stream) == 0) {
-        return EOF;
-    }
+    if (Dict->ElementSize == 0)
+        return BadArgError(Dict,"Save");
     al = CastToArray(Dict);
     sc = GetKeys(Dict);
+    if (al == NULL || sc == NULL) {
+        if (sc) iSTRCOLLECTION.Finalize(sc);
+        if (al) iVector.Finalize(al);
+        return CONTAINER_ERROR_NOMEMORY;
+    }
+    if (fwrite(&DictionaryGuid,sizeof(guid),1,stream) == 0) {
+        iSTRCOLLECTION.Finalize(sc);
+        iVector.Finalize(al);
+        return EOF;
+    }
     if ((iSTRCOLLECTION.Save(sc,stream,NULL,NULL) < 0) ||
         (iVector.Save(al,stream,saveFn,arg) < 0))
         result = EOF;
@@ -897,26 +1125,31 @@ static DATA_TYPE *Copy(const DATA_TYPE *src)
     DATA_TYPE *result;
     size_t i;
     struct DATALIST *rvp;
+    int r;
 
     if (src == NULL) {
         NullPtrError("Copy");
         return NULL;
     }
-    result = Create(src->ElementSize, src->count);
+    result = CreateWithAllocator(src->ElementSize, src->size,src->Allocator);
     if (result == NULL) {
         NoMemoryError(src,"Copy");
         return NULL;
     }
-    result->Flags = (src->Flags&~CONTAINER_HAS_OBSERVER);
     result->hash = src->hash;
     result->RaiseError = src->RaiseError;
     for (i=0; i<src->size;i++) {
         rvp = src->buckets[i];
         while (rvp) {
-            result->VTable->Add(result,rvp->Key,rvp->Value);
+            r = add_nd(result,rvp->Key,rvp->Value,0);
+            if (r < 0) {
+                result->VTable->Finalize(result);
+                return NULL;
+            }
             rvp = rvp->Next;
         }
     }
+    result->Flags = (src->Flags&~CONTAINER_HAS_OBSERVER);
     if (src->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(src,CCL_COPY,result,NULL);
     return result;
@@ -928,6 +1161,7 @@ static DATA_TYPE *Load(FILE *stream, ReadFunction readFn, void *arg)
     Vector *al;
     DATA_TYPE *result;
     size_t i;
+    size_t keyCount,valueCount;
     guid Guid;
 
     if (stream == NULL) {
@@ -935,11 +1169,11 @@ static DATA_TYPE *Load(FILE *stream, ReadFunction readFn, void *arg)
         return NULL;
     }
     if (fread(&Guid,sizeof(guid),1,stream) == 0) {
-        iError.RaiseError("iDictionary.Load",CONTAINER_ERROR_FILE_READ);
+        iError.RaiseError(DICT_ERROR_PREFIX ".Load",CONTAINER_ERROR_FILE_READ);
         return NULL;
     }
     if (memcmp(&Guid,&DictionaryGuid,sizeof(guid))) {
-        iError.RaiseError("iDictionary.Load",CONTAINER_ERROR_WRONGFILE);
+        iError.RaiseError(DICT_ERROR_PREFIX ".Load",CONTAINER_ERROR_WRONGFILE);
         return NULL;
     }
     sc = iSTRCOLLECTION.Load(stream,NULL,NULL);
@@ -950,11 +1184,29 @@ static DATA_TYPE *Load(FILE *stream, ReadFunction readFn, void *arg)
         iSTRCOLLECTION.Finalize(sc);
         return NULL;
     }
-    result = Create(iVector.GetElementSize(al),iSTRCOLLECTION.Size(sc));
-    for (i=0; i<iSTRCOLLECTION.Size(sc);i++) {
+    keyCount = iSTRCOLLECTION.Size(sc);
+    valueCount = iVector.Size(al);
+    if (keyCount != valueCount || iVector.GetElementSize(al) == 0) {
+        iSTRCOLLECTION.Finalize(sc);
+        iVector.Finalize(al);
+        iError.RaiseError(DICT_ERROR_PREFIX ".Load",CONTAINER_ERROR_WRONGFILE);
+        return NULL;
+    }
+    result = Create(iVector.GetElementSize(al),keyCount);
+    if (result == NULL) {
+        iSTRCOLLECTION.Finalize(sc);
+        iVector.Finalize(al);
+        return NULL;
+    }
+    for (i=0; i<keyCount;i++) {
         CHARTYPE *key = (CHARTYPE *)iSTRCOLLECTION.GetElement(sc,i);
         void *data = iVector.GetElement(al,i);
-        result->VTable->Add(result,key,data);
+        if (key == NULL || data == NULL || add_nd(result,key,data,0) < 0) {
+            result->VTable->Finalize(result);
+            iSTRCOLLECTION.Finalize(sc);
+            iVector.Finalize(al);
+            return NULL;
+        }
     }
     iSTRCOLLECTION.Finalize(sc);
     iVector.Finalize(al);
@@ -991,19 +1243,29 @@ static const ContainerAllocator *GetAllocator(const DATA_TYPE *AL)
 static DATA_TYPE *InitWithAllocator(DATA_TYPE *Dict,size_t elementsize,size_t hint,const ContainerAllocator *allocator)
 {
     size_t i,allocSiz;
-    static size_t primes[] = { 509, 509, 1021, 2053, 4093, 8191, 16381,
+    static const size_t primes[] = { 509, 1021, 2053, 4093, 8191, 16381,
         32771, 65521, 131071, 262147, 524287, 1048573, 0 };
-    for (i = 1; primes[i] < hint && primes[i] > 0; i++)
+    if (Dict == NULL || allocator == NULL) {
+        NullPtrError("InitWithAllocator");
+        return NULL;
+    }
+    if (elementsize > (size_t)-1 - sizeof(struct DATALIST)) {
+        iError.RaiseError(DICT_ERROR_PREFIX ".InitWithAllocator",CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    for (i=0; primes[i] != 0 && primes[i] < hint; ++i)
         ;
-    allocSiz = sizeof (Dictionary);
-    memset(Dict,0,allocSiz);
-    allocSiz = primes[i-1]*sizeof (Dict->buckets[0]);
+    if (primes[i] == 0)
+        --i;
+    if (!size_mul(primes[i],sizeof(Dict->buckets[0]),&allocSiz))
+        return NULL;
+    memset(Dict,0,sizeof(DATA_TYPE));
     Dict->buckets = allocator->malloc(allocSiz);
     if (Dict->buckets == NULL) {
         return NULL;
     }
     memset(Dict->buckets,0,allocSiz);
-    Dict->size = primes[i-1];
+    Dict->size = primes[i];
     Dict->hash = hash;
     Dict->VTable = &EXTERNAL_NAME;
     Dict->ElementSize = elementsize;
@@ -1021,10 +1283,14 @@ static DATA_TYPE *CreateWithAllocator(size_t elementsize,size_t hint,const Conta
 {
     DATA_TYPE *Dict,*result;
 
-    size_t allocSiz = sizeof (Dictionary);
+    size_t allocSiz = sizeof(DATA_TYPE);
+    if (allocator == NULL) {
+        NullPtrError("CreateWithAllocator");
+        return NULL;
+    }
     Dict = allocator->malloc(allocSiz);
     if (Dict == NULL) {
-        iError.RaiseError("iDictionary.Create",CONTAINER_ERROR_NOMEMORY);
+        iError.RaiseError(DICT_ERROR_PREFIX ".Create",CONTAINER_ERROR_NOMEMORY);
         return NULL;
     }
     result = InitWithAllocator(Dict,elementsize,hint,allocator);
@@ -1039,16 +1305,32 @@ static DATA_TYPE *Create(size_t elementsize,size_t hint)
 
 static DATA_TYPE *InitializeWith(size_t elementSize,size_t n, const CHARTYPE **Keys,const void *Values)
 {
-    DATA_TYPE *result = Create(elementSize,n);
+    DATA_TYPE *result;
     size_t i;
-    const char *pValues = Values;
+    const unsigned char *pValues = (const unsigned char *)Values;
+
+    if (Keys == NULL && n != 0) {
+        iError.RaiseError(DICT_ERROR_PREFIX ".InitializeWith",CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    if (elementSize != 0 && Values == NULL) {
+        iError.RaiseError(DICT_ERROR_PREFIX ".InitializeWith",CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    if (elementSize != 0 && !size_mul(n,elementSize,&i)) {
+        iError.RaiseError(DICT_ERROR_PREFIX ".InitializeWith",CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    result = Create(elementSize,n);
 
     if (result) {
-        i=0;
-        while (n-- > 0) {
-            add_nd(result,Keys[i],pValues,0);
-            i++;
-            pValues += elementSize;
+        for (i=0; i<n; ++i) {
+            if (add_nd(result,Keys[i],pValues,0) < 0) {
+                result->VTable->Finalize(result);
+                return NULL;
+            }
+            if (elementSize != 0)
+                pValues += elementSize;
         }
     }
     return result;
@@ -1068,23 +1350,49 @@ static DestructorFunction SetDestructor(DATA_TYPE *cb,DestructorFunction fn)
 static HASHFUNCTION SetHashFunction(DATA_TYPE *d,HASHFUNCTION newFn)
 {
     HASHFUNCTION old;
+    struct DATALIST *all,*p,*next;
+    size_t i;
     if (d == NULL) {
         return hash;
     }
     if (newFn == NULL)
         return d->hash;
     old = d->hash;
+    if (old == newFn)
+        return old;
+    all = NULL;
+    for (i=0; i<d->size; ++i) {
+        p = d->buckets[i];
+        d->buckets[i] = NULL;
+        while (p != NULL) {
+            next = p->Next;
+            p->Next = all;
+            all = p;
+            p = next;
+        }
+    }
     d->hash = newFn;
+    while (all != NULL) {
+        next = all->Next;
+        i = newFn(all->Key) % d->size;
+        all->Next = d->buckets[i];
+        d->buckets[i] = all;
+        all = next;
+    }
+    d->timestamp++;
     return old;
 }
 
 static size_t SizeofIterator(const DATA_TYPE *b)
 {
+	(void)b;
 	return sizeof(struct ITERATOR);
 }
 
 static double GetLoadFactor(DATA_TYPE *d)
 {
+    if (d == NULL || d->size == 0)
+        return 0.0;
     return ((double)d->count)/d->size;
 }
 

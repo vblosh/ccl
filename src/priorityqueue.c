@@ -1,220 +1,144 @@
-/*-
- * Some implementation details here were taken from the software published by
-   John-Mark Gurney.
-
-The Fibonacci heap data structure invented by Fredman and Tarjan in 1984 gives 
-a very efficient implementation of the priority queues.  
-find a way to minimize the number of operations needed to compute the MST or SP, 
-the kind of operations that we are interested in are insert, decrease-key, link, 
-and delete-min
-
-The method to reduce the time used by this algorithm is laziness - do work only 
-when you must, and then use it to simplify the structure as much as possible so 
-that your future work is easy. This way, the user is forced to do many cheap 
-operations in order to make the data structure complicated.
-
-Fibonacci heaps make use of heap-ordered trees. A heap-ordered tree is one 
-that maintains the heap property, that is, where key(parent) ≤ key(child) 
-for all nodes in the tree.
-*/
+/*
+ * Fibonacci min-heap priority queue.
+ *
+ * The backing ContainerHeap is used only as an allocator for nodes.  The
+ * queue's logical membership is represented by the root/child rings below;
+ * this is important because a heap iterator describes allocation history,
+ * not the set of nodes currently in the queue.
+ */
 #include "containers.h"
 #include "ccl_internal.h"
-static PQueue *Create(size_t ElementSize);
-static int Add(PQueue *, intptr_t, const void *);
-static intptr_t Front(const PQueue *,void *result);
-static intptr_t Replace(PQueue *, PQueueElement *, intptr_t);
 
+static PQueue *Create(size_t ElementSize);
+static PQueue *CreateWithAllocator(size_t ElementSize,
+                                   ContainerAllocator *allocator);
+static int Add(PQueue *, intptr_t, const void *);
+static intptr_t Front(const PQueue *, void *result);
 static int Finalize(PQueue *);
 static PQueue *Union(PQueue *, PQueue *);
 
-/*
-A Fibonacci heap H is a collection of heap-ordered trees that have the 
-following properties:
-  1. The roots of these trees are kept in a doubly-linked list (the root list of H),
-  2. The root of each tree contains the minimum element in that tree 
-     (this follows from being a heap-ordered tree),
-  3. We access the heap by a pointer to the tree root with the 
-     overall minimum key,
-  4. For each node x, we keep track of the degree (also known as the 
-     order or rank) of x, which is just the number of children x has; 
-     we also keep track of the mark of x, which is a Boolean value.
-*/
 struct _PQueue {
     PQueueInterface *VTable;
     size_t count;
     unsigned Flags;
     size_t ElementSize;
-    int    Log2N;
-    struct    _PQueueElement **lognTable;
-    struct    _PQueueElement *Minimum;
-    struct    _PQueueElement *Root;
+    int Log2N;
+    struct _PQueueElement **lognTable;
+    struct _PQueueElement *Minimum;
+    struct _PQueueElement *Root;
     ContainerHeap *Heap;
     unsigned timestamp;
     ContainerAllocator *Allocator;
 };
 
-static void Cut(PQueue *, PQueueElement *, PQueueElement *);
-static PQueueElement *ExtractMin(PQueue *);
-static void DeleteElement(PQueue *h, PQueueElement *x);
-
 struct _PQueueElement {
-    int        degree;
-/*
-We say that x is marked if its mark is set to true, and that it is unmarked 
-if its mark is set to false. A root is always unmarked. We mark x if it is 
-not a root and it loses a child (i.e., one of its children is cut and put 
-into the root-list). We unmark x whenever it becomes a root.
-
-A node is marked if exactly one of its children has been promoted. 
-If some child of a marked node is promoted, we promote (and unmark) 
-that node as well. Whenever we promote a marked node, we
-unmark it; this is the only way to unmark a node (if splicing 
-nodes into the root list during a delete-min is not considered a promotion).
-*/
-    int        Mark;
+    int degree;
+    int Mark;
     PQueueElement *Parent;
     PQueueElement *Child;
     PQueueElement *Left;
     PQueueElement *Right;
-    intptr_t    Key;
+    intptr_t Key;
     char Data[1];
 };
 
-static PQueueElement *NewElement(PQueue *);
-
-#define swap(type, a, b)        \
-        do {            \
-            type c;        \
-            c = a;        \
-            a = b;        \
-            b = c;        \
-        } while (0)        \
-
-#if SLOW
-#define INT_BITS        (sizeof(int) * 8)
-static int ceillog2(unsigned int a)
+/* Return a portable ceiling(log2(value)); zero is treated as zero. */
+static int ceillog2(size_t value)
 {
-    int oa;
-    int i;
-    int b;
+    size_t power;
+    int result;
 
-    oa = a;
-    b = INT_BITS / 2;
-    i = 0;
-    while (b) {
-        i = (i << 1);
-        if (a >= (1 << b)) {
-            a /= (1 << b);
-            i = i | 1;
-        } else
-            a &= (1 << b) - 1;
-        b /= 2;
+    if (value <= 1)
+        return 0;
+    power = 1;
+    result = 0;
+    while (power < value) {
+        if (power > SIZE_MAX / 2)
+            return (int)(sizeof(size_t) * CHAR_BIT);
+        power <<= 1;
+        ++result;
     }
-    if ((1 << i) == oa)
-        return i;
-    else
-        return i + 1;
-}
-#else
-/* http://graphics.stanford.edu/~seander/bithacks.html */
-#define SYSTEM_LITTLE_ENDIAN 1
-static int ceillog2(unsigned v)
-{
-    union { unsigned int u[2]; double d; } t; /* temp */
-
-    t.u[SYSTEM_LITTLE_ENDIAN] = 0x43300000;
-    t.u[!SYSTEM_LITTLE_ENDIAN] = v;
-    t.d -= 4503599627370496.0;
-    return  ((t.u[SYSTEM_LITTLE_ENDIAN] >> 20) - 0x3FF) + ((v&(v-1))!=0);
+    return result;
 }
 
-#endif
-static void DeleteElement(PQueue *h, PQueueElement *x)
+static int element_storage_size(size_t element_size, size_t *storage)
 {
-    Replace(h, x, INT_MIN);
-    if (ExtractMin(h) != x) {
-        iError.RaiseError("iPQueue.DeleteElement",CONTAINER_INTERNAL_ERROR);
+    if (element_size > SIZE_MAX - sizeof(PQueueElement))
+        return 0;
+    *storage = sizeof(PQueueElement) + element_size;
+    return 1;
+}
+
+static int compare(PQueueElement *a, PQueueElement *b)
+{
+    if (a->Key < b->Key)
+        return -1;
+    if (a->Key == b->Key)
+        return 0;
+    return 1;
+}
+
+static void release_storage(PQueue *h)
+{
+    if (h->lognTable != NULL) {
+        h->Allocator->free(h->lognTable);
+        h->lognTable = NULL;
     }
+    h->Log2N = -1;
+    if (h->Heap != NULL)
+        iHeap.Finalize(h->Heap);
+    h->Heap = NULL;
 }
 
-
-static void destroyheap(PQueue *h)
+static PQueue *CreateWithAllocator(size_t ElementSize,
+                                   ContainerAllocator *allocator)
 {
-    free(h->lognTable);
-    memset(h,0,sizeof(*h));
-    free(h);
-}
+    PQueue *result;
+    size_t storage;
 
-static PQueue *CreateWithAllocator(size_t ElementSize,ContainerAllocator *allocator)
-{
-    PQueue *n;
+    if (allocator == NULL)
+        allocator = CurrentAllocator;
+    if (allocator == NULL || allocator->calloc == NULL ||
+        allocator->malloc == NULL || allocator->free == NULL ||
+        allocator->realloc == NULL ||
+        !element_storage_size(ElementSize, &storage)) {
+        iError.RaiseError("iPQueue.CreateWithAllocator",
+                          CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
 
-    if ((n = allocator->calloc(1,sizeof *n)) == NULL)
+    result = allocator->calloc(1, sizeof(*result));
+    if (result == NULL)
         return NULL;
 
-    n->Log2N = -1;
-    n->ElementSize = ElementSize;
-    n->Heap = iHeap.Create(n->ElementSize + sizeof(PQueueElement), allocator);
-    n->Allocator = allocator;
-    n->VTable = &iPQueue;
-    return n;
+    result->VTable = &iPQueue;
+    result->ElementSize = ElementSize;
+    result->Log2N = -1;
+    result->Allocator = allocator;
+    result->Heap = iHeap.Create(storage, allocator);
+    if (result->Heap == NULL) {
+        allocator->free(result);
+        return NULL;
+    }
+    return result;
 }
 
 static PQueue *Create(size_t ElementSize)
 {
     return CreateWithAllocator(ElementSize, CurrentAllocator);
 }
-static int compare(PQueue *h, PQueueElement *a, PQueueElement *b)
+
+static PQueueElement *NewElement(PQueue *h)
 {
-        if (a->Key < b->Key)
-            return -1;
-        if (a->Key == b->Key)
-            return 0;
-        return 1;
-}
-static int comparedata(PQueue *h, int key, void *data, PQueueElement *b)
-{
-    PQueueElement a;
+    PQueueElement *element;
 
-    a.Key = key;
-
-    return compare(h, &a, b);
-}
-
-static PQueue *Union(PQueue *ha, PQueue *hb)
-{
-    PQueueElement *x;
-
-    if (ha->Root == NULL || hb->Root == NULL) {
-        /* either one or both are empty */
-        if (ha->Root == NULL) {
-            destroyheap(ha);
-            return hb;
-        } else goto done;
-    }
-    ha->Root->Left->Right = hb->Root;
-    hb->Root->Left->Right = ha->Root;
-    x = ha->Root->Left;
-    ha->Root->Left = hb->Root->Left;
-    hb->Root->Left = x;
-    ha->count += hb->count;
-    /*
-     * we probably should also keep stats on number of unions
-     */
-
-    /* set Minimum if necessary */
-    if (compare(ha, hb->Minimum, ha->Minimum) < 0)
-        ha->Minimum = hb->Minimum;
-done:
-    destroyheap(hb);
-    return ha;
-}
-
-static int Finalize(PQueue *h)
-{
-    iHeap.Finalize(h->Heap);
-    h->Allocator->free(h);
-    return 1;
+    element = iHeap.NewObject(h->Heap);
+    if (element == NULL)
+        return NULL;
+    memset(element, 0, sizeof(*element));
+    element->Left = element;
+    element->Right = element;
+    return element;
 }
 
 static void insertafter(PQueueElement *a, PQueueElement *b)
@@ -234,427 +158,485 @@ static void insertafter(PQueueElement *a, PQueueElement *b)
 
 static void insertrootlist(PQueue *h, PQueueElement *x)
 {
+    x->Parent = NULL;
+    x->Mark = 0;
     if (h->Root == NULL) {
         h->Root = x;
         x->Left = x;
         x->Right = x;
-        return;
+    } else {
+        insertafter(h->Root, x);
     }
-
-    insertafter(h->Root, x);
 }
+
 static void insertel(PQueue *h, PQueueElement *x)
 {
     insertrootlist(h, x);
-
-    if (h->Minimum == NULL || (x->Key < h->Minimum->Key))
+    if (h->Minimum == NULL || x->Key < h->Minimum->Key)
         h->Minimum = x;
-
-    h->count++;
-    h->timestamp++;
+    ++h->count;
+    ++h->timestamp;
 }
+
 static int Add(PQueue *h, intptr_t key, const void *data)
 {
     PQueueElement *x;
 
-    if ((x = NewElement(h)) == NULL) {
+    if (h == NULL)
         return iError.NullPtrError("iPQueue.Add");
+    x = NewElement(h);
+    if (x == NULL) {
+        iError.RaiseError("iPQueue.Add", CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
     }
 
-    /* just insert on root list, and make sure it's not the new min */
-    if (data) memcpy(x->Data , data,h->ElementSize);
-    if (key < CCL_PRIORITY_MIN) key = CCL_PRIORITY_MIN;
-    if (key > CCL_PRIORITY_MAX) key = CCL_PRIORITY_MAX;
+    if (h->ElementSize != 0) {
+        if (data != NULL)
+            memcpy(x->Data, data, h->ElementSize);
+        else
+            memset(x->Data, 0, h->ElementSize);
+    }
+    if (key < (intptr_t)CCL_PRIORITY_MIN)
+        key = (intptr_t)CCL_PRIORITY_MIN;
+    else if (key > (intptr_t)CCL_PRIORITY_MAX)
+        key = (intptr_t)CCL_PRIORITY_MAX;
     x->Key = key;
-
     insertel(h, x);
-
     return 1;
 }
 
-static intptr_t Front(const PQueue *h,void *result)
+static intptr_t Front(const PQueue *h, void *result)
 {
+    if (h == NULL)
+        return iError.NullPtrError("iPQueue.Front");
     if (h->Minimum == NULL)
         return INT_MIN;
-    memcpy(result,h->Minimum->Data,h->ElementSize);
+    if (result == NULL && h->ElementSize != 0)
+        return iError.NullPtrError("iPQueue.Front");
+    if (h->ElementSize != 0)
+        memcpy(result, h->Minimum->Data, h->ElementSize);
     return h->Minimum->Key;
 }
 
-static void CascadingCut(PQueue *h, PQueueElement *y)
-{
-    PQueueElement *z;
-
-    while ((z = y->Parent) != NULL) {
-        if (y->Mark == 0) {
-            y->Mark = 1;
-            return;
-        } else {
-            Cut(h, y, z);
-            y = z;
-        }
-    }
-}
-static void * ReplaceKeyData(PQueue *h, PQueueElement *x, intptr_t key, void *data)
-{
-    void *odata;
-    int okey;
-    PQueueElement *y;
-    int r;
-
-    odata = x->Data;
-    okey = x->Key;
-
-    /*
-     * we can increase a key by deleting and reinserting, that
-     * requires O(lgn) time.
-     */
-    if ((r = comparedata(h, key, data, x)) > 0) {
-
-        /* XXX - bad code! */
-        abort();
-        DeleteElement(h, x);
-
-        if (data) memcpy(x->Data , data,h->ElementSize);
-        x->Key = key;
-
-        insertel(h, x);
-
-        return odata;
-    }
-
-    if (data) memcpy(x->Data , data, h->ElementSize);
-    x->Key = key;
-
-    /* because they are equal, we don't have to do anything */
-    if (r == 0)
-        return odata;
-
-    y = x->Parent;
-
-    if (okey == key)
-        return odata;
-
-    if (y != NULL && compare(h, x, y) <= 0) {
-        Cut(h, x, y);
-        CascadingCut(h, y);
-    }
-
-    /*
-     * the = is so that the call from delete will delete the proper
-     * element.
-     */
-    if (compare(h, x, h->Minimum) <= 0)
-        h->Minimum = x;
-
-    return odata;
-}
-
-static intptr_t Replace(PQueue *h, PQueueElement *x, intptr_t key)
-{
-    intptr_t ret;
-
-    ret = x->Key;
-    (void)ReplaceKeyData(h, x, key, x->Data);
-
-    return ret;
-}
+/* Remove x from whichever circular sibling ring contains it. */
 static PQueueElement *removeNode(PQueueElement *x)
 {
     PQueueElement *ret;
 
-    if (x == x->Left)
-        ret = NULL;
-    else
-        ret = x->Left;
-
-    /* fix the parent pointer */
+    ret = (x->Left == x) ? NULL : x->Left;
     if (x->Parent != NULL && x->Parent->Child == x)
         x->Parent->Child = ret;
-
     x->Right->Left = x->Left;
     x->Left->Right = x->Right;
-
-    /* clear out hanging pointers */
     x->Parent = NULL;
     x->Left = x;
     x->Right = x;
-
     return ret;
 }
 
 static void removerootlist(PQueue *h, PQueueElement *x)
 {
-    if (x->Left == x)
-        h->Root = NULL;
-    else {
-        h->Root = removeNode(x);
-        x->Key = INT_MIN;
-    }
+    h->Root = removeNode(x);
 }
 
-/* This could be declared inline in C99 implementations */
 static void insertbefore(PQueueElement *a, PQueueElement *b)
 {
     insertafter(a->Left, b);
 }
 
-static void heaplink(PQueue *h, PQueueElement *y, PQueueElement *x)
+static void heaplink(PQueueElement *y, PQueueElement *x)
 {
-    /* make y a child of x */
     if (x->Child == NULL)
         x->Child = y;
     else
         insertbefore(x->Child, y);
     y->Parent = x;
-    x->degree++;
+    ++x->degree;
     y->Mark = 0;
 }
 
 static int checkcons(PQueue *h)
 {
-    int oDl;
+    int new_log2;
+    int old_log2;
+    size_t entries;
+    PQueueElement **table;
 
-    /* make sure we have enough memory allocated to "reorganize" */
-    if (h->Log2N == -1 || h->count > (1 << h->Log2N)) {
-        oDl = h->Log2N;
-        if ((h->Log2N = ceillog2(h->count) + 1) < 8)
-            h->Log2N = 8;
-        if (oDl != h->Log2N)
-            h->lognTable = (PQueueElement **)realloc(h->lognTable,
-                sizeof *h->lognTable * (h->Log2N + 1));
-        if (h->lognTable == NULL) {
-            iError.RaiseError("iPriorityQueue.Add",CONTAINER_ERROR_NOMEMORY);
-            return CONTAINER_ERROR_NOMEMORY;
-        }
+    new_log2 = ceillog2(h->count) + 1;
+    if (new_log2 < 8)
+        new_log2 = 8;
+    if (h->Log2N >= new_log2 && h->lognTable != NULL)
+        return 1;
+    if ((size_t)new_log2 > (SIZE_MAX / sizeof(*h->lognTable)) - 1)
+        return CONTAINER_ERROR_NOMEMORY;
+    entries = (size_t)new_log2 + 1;
+    old_log2 = h->Log2N;
+    table = (PQueueElement **)h->Allocator->realloc(
+        h->lognTable, entries * sizeof(*h->lognTable));
+    if (table == NULL) {
+        iError.RaiseError("iPQueue.ExtractMin", CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
     }
+    h->lognTable = table;
+    h->Log2N = new_log2;
+    (void)old_log2;
     return 1;
 }
-/*
-This algorithm maintains a global array B[1...⌊logn⌋], where B[i] is a 
-pointer to some previously-visited root node of degree i, or Null if 
-there is no such previously- visited root node. 
 
-Notice, the Cleanup algorithm simultaneously resets the parent pointers 
-of all the new roots and updates the pointer to the minimum key. The 
-part of the algorithm that links possible nodes of equal degree is given 
-in a separate subroutine LinkDupes. The subroutine
-ensures that no earlier root node has the same degree as the current. 
-By the possible swapping of the nodes v and w, we maintain the heap 
-property.
-*/
 static int consolidate(PQueue *h)
 {
-    PQueueElement **B;
+    PQueueElement **table;
     PQueueElement *w;
-    PQueueElement *y;
     PQueueElement *x;
-    int i;
+    PQueueElement *y;
     int degree;
-    int D;
+    int i;
+    int entries;
 
-    i = checkcons(h);
-    if (i < 0) return i;
-
-    D = h->Log2N + 1;
-    B = h->lognTable;
-
-    for (i = 0; i < D; i++)
-        B[i] = NULL;
+    if (checkcons(h) < 0)
+        return CONTAINER_ERROR_NOMEMORY;
+    table = h->lognTable;
+    entries = h->Log2N + 1;
+    for (i = 0; i < entries; ++i)
+        table[i] = NULL;
 
     while ((w = h->Root) != NULL) {
         x = w;
         removerootlist(h, w);
         degree = x->degree;
-        /* Assert(degree < D); */
-        while(B[degree] != NULL) {
-            y = B[degree];
-            if (compare(h, x, y) > 0)
-                swap(PQueueElement *, x, y);
-            heaplink(h, y, x);
-            B[degree] = NULL;
-            degree++;
+        if (degree < 0 || degree >= entries)
+            return CONTAINER_INTERNAL_ERROR;
+        while (table[degree] != NULL) {
+            y = table[degree];
+            if (compare(x, y) > 0) {
+                PQueueElement *tmp = x;
+                x = y;
+                y = tmp;
+            }
+            table[degree] = NULL;
+            heaplink(y, x);
+            ++degree;
+            if (degree >= entries)
+                return CONTAINER_INTERNAL_ERROR;
         }
-        B[degree] = x;
+        table[degree] = x;
     }
+
+    h->Root = NULL;
     h->Minimum = NULL;
-    for (i = 0; i < D; i++)
-        if (B[i] != NULL) {
-            insertrootlist(h, B[i]);
-            if (h->Minimum == NULL || compare(h, B[i], h->Minimum) < 0)
-                h->Minimum = B[i];
+    for (i = 0; i < entries; ++i) {
+        if (table[i] != NULL) {
+            insertrootlist(h, table[i]);
+            if (h->Minimum == NULL || compare(table[i], h->Minimum) < 0)
+                h->Minimum = table[i];
         }
+    }
     return 1;
 }
+
 /*
-First, we remove the minimum key from the root list and splice its 
-children into the root list. Except for updating the parent pointers, 
-this takes O(1) time. Then we scan through the root list to find the 
-new smallest key and update the parent pointers of the new roots. 
-This scan could take O(n) time in the worst case. To bring down the 
-amortized deletion time (see further on), we apply a Cleanup 
-algorithm, which links trees of equal degree until there is only one 
-root node of any particular degree.
-*/
-static PQueueElement * ExtractMin(PQueue *h)
+ * Remove the minimum without returning its storage to iHeap.  Pop copies the
+ * value and then recycles the node, so no pointer is used after FreeObject.
+ */
+static PQueueElement *ExtractMin(PQueue *h)
 {
     PQueueElement *ret;
-    PQueueElement *x, *y, *orig;
+    PQueueElement *child;
+    PQueueElement *next;
+    PQueueElement *head;
+
+    if (h == NULL || h->Minimum == NULL || h->count == 0)
+        return NULL;
+    if (h->count > 1 && checkcons(h) < 0)
+        return NULL;
 
     ret = h->Minimum;
-
-    orig = NULL;
-    /* put all the children on the root list */
-    /* for true consistancy, we should use remove */
-    for(x = ret->Child; x != orig && x != NULL;) {
-        if (orig == NULL)
-            orig = x;
-        y = x->Right;
-        x->Parent = NULL;
-        insertrootlist(h, x);
-        x = y;
+    head = ret->Child;
+    ret->Child = NULL;
+    ret->degree = 0;
+    if (head != NULL) {
+        child = head;
+        do {
+            next = child->Right;
+            child->Left = child;
+            child->Right = child;
+            child->Parent = NULL;
+            child->Mark = 0;
+            insertrootlist(h, child);
+            child = next;
+        } while (child != head);
     }
-    /* remove minimum from root list */
+
     removerootlist(h, ret);
-    h->count--;
-
-    /* if we aren't empty, consolidate the heap */
-    if (h->count == 0)
+    --h->count;
+    ret->Left = ret;
+    ret->Right = ret;
+    ret->Parent = NULL;
+    if (h->count == 0) {
+        h->Root = NULL;
         h->Minimum = NULL;
-    else {
-        h->Minimum = ret->Right;
-        consolidate(h);
+    } else {
+        h->Minimum = h->Root;
+        if (consolidate(h) < 0) {
+            /* checkcons was performed before mutation; this is defensive. */
+            h->Minimum = h->Root;
+        }
     }
-
-    h->timestamp++;
-
+    ++h->timestamp;
     return ret;
 }
 
-
-static void Cut(PQueue *h, PQueueElement *x, PQueueElement *y)
+static size_t Size(const PQueue *h)
 {
-    removeNode(x);
-    y->degree--;
-    insertrootlist(h, x);
-    x->Parent = NULL;
-    x->Mark = 0;
-}
-
-static PQueueElement * NewElement(PQueue *h)
-{
-    PQueueElement *e;
-
-    e = iHeap.NewObject(h->Heap);
-    if (e == NULL) 
-        return NULL;
-
-    memset(e,0,sizeof(*e));
-    e->Left = e;
-    e->Right = e;
-    return e;
-}
-
-
-static size_t Size(const PQueue *p)
-{
-    if (p == NULL)
+    if (h == NULL) {
+        iError.NullPtrError("iPQueue.Size");
         return 0;
-    return p->count;
+    }
+    return h->count;
 }
 
-static size_t Sizeof(const PQueue *p)
+static size_t Sizeof(const PQueue *h)
 {
     size_t result = sizeof(PQueue);
+    size_t extra;
 
-    if (p) {
-        result += p->count * sizeof(PQueue);
+    if (h == NULL)
+        return result;
+    if (h->Heap != NULL) {
+        extra = iHeap.Sizeof(h->Heap);
+        if (SIZE_MAX - result < extra)
+            return SIZE_MAX;
+        result += extra;
+    }
+    if (h->lognTable != NULL && h->Log2N >= 0) {
+        extra = ((size_t)h->Log2N + 1) * sizeof(*h->lognTable);
+        if (SIZE_MAX - result < extra)
+            return SIZE_MAX;
+        result += extra;
     }
     return result;
 }
 
-static int Clear(PQueue *p)
+static int Clear(PQueue *h)
 {
-    if (p == NULL) return 0;
-    p->count = 0;
+    if (h == NULL)
+        return iError.NullPtrError("iPQueue.Clear");
+    if (h->lognTable != NULL) {
+        h->Allocator->free(h->lognTable);
+        h->lognTable = NULL;
+    }
+    h->Log2N = -1;
+    iHeap.Clear(h->Heap);
+    h->Root = NULL;
+    h->Minimum = NULL;
+    h->count = 0;
+    ++h->timestamp;
     return 1;
 }
 
-static intptr_t Pop(PQueue *p,void *result)
+static intptr_t Pop(PQueue *h, void *result)
 {
-    PQueueElement *x = ExtractMin(p);
+    PQueueElement *x;
+    intptr_t key;
 
-    if (x == NULL) return INT_MAX;
-    if (result) memcpy(result,x->Data,p->ElementSize);
-    return x->Key;
+    if (h == NULL)
+        return iError.NullPtrError("iPQueue.Pop");
+    if (h->Minimum == NULL || h->count == 0)
+        return INT_MAX;
+    if (result == NULL && h->ElementSize != 0)
+        return iError.NullPtrError("iPQueue.Pop");
+
+    x = ExtractMin(h);
+    if (x == NULL)
+        return INT_MAX;
+    key = x->Key;
+    if (result != NULL && h->ElementSize != 0)
+        memcpy(result, x->Data, h->ElementSize);
+    iHeap.FreeObject(h->Heap, x);
+    return key;
+}
+
+/* Visit every node in one sibling ring and all of its child rings. */
+static int copy_ring(PQueue *dst, PQueueElement *head)
+{
+    PQueueElement *x;
+
+    if (head == NULL)
+        return 1;
+    x = head;
+    do {
+        if (Add(dst, x->Key, x->Data) < 0)
+            return 0;
+        if (!copy_ring(dst, x->Child))
+            return 0;
+        x = x->Right;
+    } while (x != head);
+    return 1;
+}
+
+static int copy_contents(PQueue *dst, const PQueue *src)
+{
+    return copy_ring(dst, src->Root);
 }
 
 static PQueue *Copy(const PQueue *src)
 {
     PQueue *result;
-    Iterator *it;
-    int r;
-    PQueueElement *obj;
 
-    if (src == NULL) return NULL;
-    result = CreateWithAllocator(src->ElementSize,src->Allocator);
-    if (result == NULL) return NULL;
-    it = iHeap.NewIterator(src->Heap);
-    for (obj = it->GetFirst(it); obj != NULL; obj = it->GetNext(it)) {
-        if (obj->Key != INT_MIN) {
-            r = Add(result,obj->Key,obj->Data);
-            if (r < 0) {
-                Finalize(result);
-                return NULL;
-            }
-        }
+    if (src == NULL)
+        return NULL;
+    result = CreateWithAllocator(src->ElementSize, src->Allocator);
+    if (result == NULL)
+        return NULL;
+    if (!copy_contents(result, src)) {
+        Finalize(result);
+        return NULL;
     }
-    iHeap.DeleteIterator(it);
     return result;
 }
 
-static int Equal(const PQueue *src1, const PQueue *src2)
+static int collect_ring(PQueueElement *head, PQueueElement **nodes,
+                        size_t *index)
 {
-    Iterator *it1,*it2;
-    PQueueElement *obj1,*obj2;
+    PQueueElement *x;
 
-    if (src1 == NULL && src2 == NULL) return 1;
-    if (src1 == NULL || src2 == NULL) return 0;
-    if ((src1->ElementSize != src2->ElementSize) ||
-        (src1->count != src2->count)) return 0;
-    it1 = iHeap.NewIterator(src1->Heap);
-    it2 = iHeap.NewIterator(src2->Heap);
-    for (obj1 = it1->GetFirst(it1),obj2 = it2->GetFirst(it2); obj1 != NULL; obj1 = it1->GetNext(it1),obj2 = it2->GetNext(it2)) {
-        if (obj1->Key != obj2->Key) return 0;
-        if (memcmp(obj1->Data,obj2->Data,src1->ElementSize)) return 0;
-    }
-    iHeap.DeleteIterator(it1);
-    iHeap.DeleteIterator(it2);
+    if (head == NULL)
+        return 1;
+    x = head;
+    do {
+        nodes[(*index)++] = x;
+        if (!collect_ring(x->Child, nodes, index))
+            return 0;
+        x = x->Right;
+    } while (x != head);
     return 1;
 }
 
-#if 0
-static PQueueElement *FindInLevel(PQueueElement *root,intptr_t key)
+static int Equal(const PQueue *left, const PQueue *right)
 {
-    PQueueElement *x;
-    
-    if (root == NULL) return NULL;
-    x = root->Right;
-    while (x != root) {
-        if (x->Key == key) return x;
-        x = x->Right;
+    PQueueElement **left_nodes;
+    PQueueElement **right_nodes;
+    unsigned char *used;
+    size_t i;
+    size_t j;
+    int found;
+
+    if (left == NULL && right == NULL)
+        return 1;
+    if (left == NULL || right == NULL)
+        return 0;
+    if (left->ElementSize != right->ElementSize ||
+        left->count != right->count)
+        return 0;
+    if (left->count == 0)
+        return 1;
+    if (left->count > SIZE_MAX / sizeof(*left_nodes) ||
+        right->count > SIZE_MAX / sizeof(*right_nodes))
+        return 0;
+
+    left_nodes = (PQueueElement **)left->Allocator->malloc(
+        left->count * sizeof(*left_nodes));
+    right_nodes = (PQueueElement **)right->Allocator->malloc(
+        right->count * sizeof(*right_nodes));
+    used = (unsigned char *)right->Allocator->calloc(right->count, 1);
+    if (left_nodes == NULL || right_nodes == NULL || used == NULL) {
+        if (left_nodes != NULL)
+            left->Allocator->free(left_nodes);
+        if (right_nodes != NULL)
+            right->Allocator->free(right_nodes);
+        if (used != NULL)
+            right->Allocator->free(used);
+        return 0;
     }
-    return FindInLevel(x->Child, key);
+
+    i = 0;
+    j = 0;
+    if (!collect_ring(left->Root, left_nodes, &i) ||
+        !collect_ring(right->Root, right_nodes, &j)) {
+        left->Allocator->free(left_nodes);
+        right->Allocator->free(right_nodes);
+        right->Allocator->free(used);
+        return 0;
+    }
+    found = 1;
+    for (i = 0; i < left->count && found; ++i) {
+        size_t k;
+        found = 0;
+        for (k = 0; k < right->count; ++k) {
+            if (!used[k] && left_nodes[i]->Key == right_nodes[k]->Key &&
+                (left->ElementSize == 0 ||
+                 memcmp(left_nodes[i]->Data, right_nodes[k]->Data,
+                        left->ElementSize) == 0)) {
+                used[k] = 1;
+                found = 1;
+                break;
+            }
+        }
+    }
+    left->Allocator->free(left_nodes);
+    right->Allocator->free(right_nodes);
+    right->Allocator->free(used);
+    return found;
 }
 
-
-static void *Find(PQueue *p,intptr_t key)
+static PQueue *Union(PQueue *left, PQueue *right)
 {
-    PQueueElement *x;
-    
-    x = FindInLevel(p->Root,key);
-    return x;
+    PQueue *merged;
+    PQueue state;
+    ContainerAllocator *allocator;
+
+    if (left == NULL || right == NULL) {
+        iError.RaiseError("iPQueue.Union", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    if (left == right)
+        return left;
+    if (left->ElementSize != right->ElementSize) {
+        iError.RaiseError("iPQueue.Union", CONTAINER_ERROR_INCOMPATIBLE);
+        return NULL;
+    }
+    if (left->Root == NULL) {
+        Finalize(left);
+        return right;
+    }
+    if (right->Root == NULL) {
+        Finalize(right);
+        return left;
+    }
+
+    /* Build first, so an allocator failure leaves both input queues intact. */
+    merged = CreateWithAllocator(left->ElementSize, left->Allocator);
+    if (merged == NULL || !copy_contents(merged, left) ||
+        !copy_contents(merged, right)) {
+        if (merged != NULL)
+            Finalize(merged);
+        return NULL;
+    }
+
+    /* Transfer the completed storage into left, retaining its public address. */
+    allocator = left->Allocator;
+    state = *merged;
+    release_storage(left);
+    *left = state;
+    left->VTable = &iPQueue;
+    left->Allocator = allocator;
+    allocator->free(merged);
+    Finalize(right);
+    return left;
 }
-#endif
+
+static int Finalize(PQueue *h)
+{
+    ContainerAllocator *allocator;
+
+    if (h == NULL)
+        return iError.NullPtrError("iPQueue.Finalize");
+    allocator = h->Allocator;
+    release_storage(h);
+    allocator->free(h);
+    return 1;
+}
+
 PQueueInterface iPQueue = {
     Add,
     Size,
@@ -669,5 +651,4 @@ PQueueInterface iPQueue = {
     Front,
     Copy,
     Union,
-/*  ReplaceKeyData, */
 };

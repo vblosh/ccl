@@ -40,12 +40,12 @@ typedef struct {
      * @note Initialized to 0,
      * which means to never give back blocks.
      */
-    uint32_t        max_free_index;
+    size_t          max_free_index;
     /**
      * Memory size (in BOUNDARY_SIZE multiples) that currently must be freed
      * before blocks are given back. Range: 0..max_free_index
      */
-    uint32_t        current_free_index;
+    size_t          current_free_index;
     /**
      * Lists of free nodes. Slot 0 is used for oversized nodes,
      * and the slots 1..MAX_INDEX-1 contain nodes of sizes
@@ -129,12 +129,28 @@ void SetMaxFree(Allocator *allocator, size_t size);
 
 void SetMaxFree(Allocator *allocator,size_t in_size)
 {
-    uint32_t max_free_index;
-    uint32_t size = (uint32_t)in_size;
+    size_t max_free_index;
 
-    max_free_index = ALIGN(size, BOUNDARY_SIZE) >> BOUNDARY_INDEX;
-    allocator->current_free_index += max_free_index;
-    allocator->current_free_index -= allocator->max_free_index;
+    if (allocator == NULL)
+        return;
+
+    /* Divide before rounding so that SIZE_MAX and other large thresholds
+     * cannot wrap in the ALIGN macro.  The allocator stores the threshold in
+     * boundary units, and size_t is required here because the public
+     * parameter is size_t as well. */
+    max_free_index = in_size / BOUNDARY_SIZE;
+    if (in_size % BOUNDARY_SIZE != 0)
+        ++max_free_index;
+
+    if (max_free_index >= allocator->max_free_index)
+        allocator->current_free_index +=
+            max_free_index - allocator->max_free_index;
+    else if (allocator->current_free_index >=
+             allocator->max_free_index - max_free_index)
+        allocator->current_free_index -=
+            allocator->max_free_index - max_free_index;
+    else
+        allocator->current_free_index = 0;
     allocator->max_free_index = max_free_index;
     if (allocator->current_free_index > max_free_index)
        allocator->current_free_index = max_free_index;
@@ -371,6 +387,9 @@ void * PoolAlloc(Pool *pool, size_t in_size)
     void *mem;
     size_t size, free_index;
 
+    if (pool == NULL)
+        return NULL;
+
     size = roundup(in_size);
     if (size < in_size) {
         return NULL;
@@ -442,6 +461,9 @@ void PoolClear(Pool *pool)
 {
     MemoryNode_t *active;
 
+    if (pool == NULL)
+        return;
+
     /* Find the node attached to the pool structure, reset it, make
      * it the active node and free the rest of the nodes.
      */
@@ -461,6 +483,9 @@ void PoolDestroy(Pool *pool)
 {
     MemoryNode_t *active;
     Allocator *allocator;
+
+    if (pool == NULL)
+        return;
 
     /* Find the block attached to the pool structure.  Save a copy of the
      * allocator pointer, because the pool struct soon will be no more.
@@ -488,6 +513,7 @@ Pool *newPool(void)
         return NULL;
     }
     if ((node = newAllocator(pool_allocator, MIN_ALLOC - MEMORYNODE_SIZE)) == NULL) {
+        free(pool_allocator);
         return NULL;
     }
 

@@ -1,6 +1,9 @@
 #ifndef DATA_TYPE
 #error "The symbol DATA_TYPE MUST be defined"
 #else
+#ifdef __cplusplus
+extern "C" {
+#endif
 #ifndef DEFAULT_START_SIZE
 #define DEFAULT_START_SIZE 20
 #endif
@@ -12,6 +15,8 @@
 #undef INTERFACE
 #undef ITERATOR
 #undef ITERFACE_NAME
+#undef LIST_ELEMENT
+#undef LIST_ELEMENT_
 
 #define CONCAT(x,y) x ## y
 #define CONCAT3_(a,b,c) a##b##c
@@ -26,6 +31,8 @@
 #define INTERFACE_NAME(a) CONCAT3(i,EVAL(a),List)
 #define LIST_STRUCT_INTERNAL_NAME(a) CONCAT3(__,EVAL(a),List)
 #define INTERFACE_STRUCT_INTERNAL_NAME(a) CONCAT3(__,EVAL(a),ListInterface)
+#define LIST_ELEMENT_(t) CONCAT(t,ListElement)
+#define LIST_ELEMENT LIST_ELEMENT_(DATA_TYPE)
 
 typedef struct LIST_ELEMENT {
     struct LIST_ELEMENT *Next;
@@ -54,13 +61,13 @@ struct LIST_STRUCT_INTERNAL_NAME(DATA_TYPE) {
 
 struct ITERATOR(DATA_TYPE) {
     Iterator it;
+    long long Magic;
     LIST_TYPE *L;
     size_t index;
     LIST_ELEMENT *Current;
     LIST_ELEMENT *Previous;
     unsigned  timestamp;
     DATA_TYPE ElementBuffer;
-    int   (*ListReplace)(struct _Iterator *,void *data,int direction);
 };
 extern INTERFACE(DATA_TYPE) INTERFACE_NAME(DATA_TYPE);
 
@@ -105,6 +112,7 @@ struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
     CompareFunction (*SetCompareFunction)(LIST_TYPE *l,CompareFunction fn);
     CompareFunction Compare;
     int (*UseHeap)(LIST_TYPE *L, const ContainerAllocator *m);
+    ContainerHeap *(*GetHeap)(const LIST_TYPE *l);
     int (*AddRange)(LIST_TYPE *L, size_t n,const DATA_TYPE *data);
     LIST_TYPE *(*Create)(void);
     LIST_TYPE *(*CreateWithAllocator)(const ContainerAllocator *mm);
@@ -129,4 +137,7 @@ struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
     LIST_ELEMENT *(*Skip)(LIST_ELEMENT *l,size_t n);
     LIST_TYPE *(*SplitAfter)(LIST_TYPE *l, LIST_ELEMENT *pt);
 };
+#ifdef __cplusplus
+}
+#endif
 #endif

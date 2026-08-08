@@ -1,0 +1,185 @@
+{
+  "units": {
+    "SuffixTree": {
+      "test": "suffixtree",
+      "physical_sources": ["src/SuffixTree.c"],
+      "coverage_sources": ["src/SuffixTree.c"]
+    },
+    "bitstrings": {
+      "physical_sources": ["src/bitstrings.c"],
+      "coverage_sources": ["src/bitstrings.c"]
+    },
+    "bloom": {
+      "physical_sources": ["src/bloom.c"],
+      "coverage_sources": ["src/bloom.c"]
+    },
+    "buffer": {
+      "physical_sources": ["src/buffer.c"],
+      "coverage_sources": ["src/buffer.c"]
+    },
+    "deque": {
+      "physical_sources": ["src/deque.c"],
+      "coverage_sources": ["src/deque.c"]
+    },
+    "dlist": {
+      "physical_sources": ["src/dlist.c"],
+      "coverage_sources": ["src/dlist.c"]
+    },
+    "error": {
+      "physical_sources": ["src/error.c"],
+      "coverage_sources": ["src/error.c"]
+    },
+    "fgetline": {
+      "physical_sources": ["src/fgetline.c"],
+      "coverage_sources": ["src/fgetline.c"]
+    },
+    "generic": {
+      "physical_sources": ["src/generic.c"],
+      "coverage_sources": ["src/generic.c"]
+    },
+    "hashtable": {
+      "physical_sources": ["src/hashtable.c"],
+      "coverage_sources": ["src/hashtable.c"]
+    },
+    "heap": {
+      "physical_sources": ["src/heap.c"],
+      "coverage_sources": ["src/heap.c"]
+    },
+    "iMask": {
+      "test": "imask",
+      "physical_sources": ["src/iMask.c"],
+      "coverage_sources": ["src/iMask.c"]
+    },
+    "list": {
+      "physical_sources": ["src/list.c"],
+      "coverage_sources": ["src/list.c"]
+    },
+    "malloc_debug": {
+      "physical_sources": ["src/malloc_debug.c"],
+      "coverage_sources": ["src/malloc_debug.c"]
+    },
+    "memorymanager": {
+      "physical_sources": ["src/memorymanager.c"],
+      "coverage_sources": ["src/memorymanager.c"]
+    },
+    "observer": {
+      "physical_sources": ["src/observer.c"],
+      "coverage_sources": ["src/observer.c"]
+    },
+    "pool": {
+      "physical_sources": ["src/pool.c"],
+      "coverage_sources": ["src/pool.c"]
+    },
+    "pooldebug": {
+      "physical_sources": ["src/pooldebug.c"],
+      "coverage_sources": ["src/pooldebug.c"]
+    },
+    "priorityqueue": {
+      "physical_sources": ["src/priorityqueue.c"],
+      "coverage_sources": ["src/priorityqueue.c"]
+    },
+    "qsort_r": {
+      "physical_sources": ["src/qsort_r.c"],
+      "coverage_sources": ["src/qsort_r.c"]
+    },
+    "qsortex": {
+      "physical_sources": ["src/qsortex.c"],
+      "coverage_sources": ["src/qsortex.c"]
+    },
+    "queue": {
+      "physical_sources": ["src/queue.c"],
+      "coverage_sources": ["src/queue.c"]
+    },
+    "redblacktree": {
+      "physical_sources": ["src/redblacktree.c"],
+      "coverage_sources": ["src/redblacktree.c"]
+    },
+    "scapegoat": {
+      "physical_sources": ["src/scapegoat.c"],
+      "coverage_sources": ["src/scapegoat.c"]
+    },
+    "searchtree": {
+      "physical_sources": ["src/searchtree.c"],
+      "coverage_sources": ["src/searchtree.c"]
+    },
+    "sequential": {
+      "physical_sources": ["src/sequential.c"],
+      "coverage_sources": ["src/sequential.c"]
+    },
+    "smallpool": {
+      "physical_sources": ["src/smallpool.c"],
+      "coverage_sources": ["src/smallpool.c"]
+    },
+    "vector": {
+      "physical_sources": ["src/vector.c"],
+      "coverage_sources": ["src/vector.c"]
+    },
+    "dictionary": {
+      "test": "dictionary_family",
+      "physical_sources": [
+        "src/dictionarygen.c",
+        "src/dictionary.c",
+        "src/wdictionary.c"
+      ],
+      "coverage_sources": ["src/dictionarygen.c"]
+    },
+    "dlistgen": {
+      "test": "dlist_family",
+      "physical_sources": [
+        "src/dlistgen.c",
+        "src/intdlist.c",
+        "src/doubledlist.c",
+        "src/longlongdlist.c"
+      ],
+      "coverage_sources": ["src/dlistgen.c"]
+    },
+    "listgen": {
+      "test": "list_family",
+      "physical_sources": [
+        "src/listgen.c",
+        "src/intlist.c",
+        "src/doublelist.c",
+        "src/longlonglist.c"
+      ],
+      "coverage_sources": ["src/listgen.c"]
+    },
+    "strcollectiongen": {
+      "test": "strcollection_family",
+      "physical_sources": [
+        "src/strcollectiongen.c",
+        "src/strcollection.c",
+        "src/wstrcollection.c"
+      ],
+      "coverage_sources": ["src/strcollectiongen.c"]
+    },
+    "stringlistgen": {
+      "test": "stringlist_family",
+      "physical_sources": [
+        "src/stringlistgen.c",
+        "src/stringlist.c",
+        "src/wstringlist.c"
+      ],
+      "coverage_sources": ["src/stringlistgen.c"]
+    },
+    "valarray": {
+      "physical_sources": [
+        "src/valarraygen.c",
+        "src/valarraydouble.c",
+        "src/valarrayfloat.c",
+        "src/valarrayint.c",
+        "src/valarraylongdouble.c",
+        "src/valarraylonglong.c",
+        "src/valarrayshort.c",
+        "src/valarraysize_t.c",
+        "src/valarrayuint.c",
+        "src/valarrayulonglong.c"
+      ],
+      "coverage_sources": ["src/valarraygen.c"]
+    },
+    "vectorgen": {
+      "test": "vector_family",
+      "physical_sources": ["src/vectorgen.c", "src/vectorsize_t.c"],
+      "coverage_sources": ["src/vectorgen.c"]
+    }
+  }
+}

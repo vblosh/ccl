@@ -21,5 +21,8 @@
 #define STRLEN strlen
 #define iSTRCOLLECTION istrCollection
 #define STRCOLLECTION strCollection
+#define DICT_ERROR_PREFIX "iDictionary"
+#define DICT_MAGIC_NUMBER DICTIONARY_MAGIC_NUMBER
+#define HASHCHAR(ch) scatter[(unsigned)(ch) & 255u]
 
 #include "dictionarygen.c"

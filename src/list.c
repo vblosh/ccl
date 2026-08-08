@@ -18,17 +18,128 @@
 #include "containers.h"
 #include "ccl_internal.h"
 #include <stdint.h>
+#include <stddef.h>
+#include <limits.h>
 #ifndef INT_MAX
 #define INT_MAX (((unsigned)-1) >> 1)
 #endif
 static int IndexOf_nd(const List * AL, const void *SearchedElement, 
                       void *ExtraArgs, size_t * result);
 static int RemoveAt(List * AL, size_t idx);
-#define CONTAINER_LIST_SMALL    2
+static int RemoveRange(List * AL, size_t start, size_t end);
 #define CHUNK_SIZE    1000
 static const guid ListGuid = {0x672abd64, 0xe231, 0x486b,
     {0xbc, 0x72, 0x9b, 0x3a, 0x88, 0x20, 0x10, 0x35}
 };
+#define LIST_PERSIST_VERSION UINT32_C(1)
+
+/* Keep persistence independent of the in-memory List ABI (which contains
+ * pointers, callbacks and allocator addresses).  Fields are written one at a
+ * time below, so struct padding and host pointer size do not enter the file. */
+
+/* Placement-initialized List headers are caller-owned while Create headers
+ * are allocator-owned.  List predates an ownership field in its public
+ * layout (which is shared by generated lists), so keep a small side registry
+ * for headers created here.  This also makes Finalize safe for placement
+ * headers without changing the ABI. */
+typedef struct ListHeaderOwner ListHeaderOwner;
+struct ListHeaderOwner {
+    List *list;
+    ListHeaderOwner *next;
+};
+static ListHeaderOwner *ListOwners;
+
+static int RegisterListHeader(List *list)
+{
+    ListHeaderOwner *owner = (ListHeaderOwner *)malloc(sizeof(*owner));
+    if (owner == NULL)
+        return 0;
+    owner->list = list;
+    owner->next = ListOwners;
+    ListOwners = owner;
+    return 1;
+}
+
+static int UnregisterListHeader(List *list)
+{
+    ListHeaderOwner **p = &ListOwners;
+    while (*p) {
+        if ((*p)->list == list) {
+            ListHeaderOwner *owner = *p;
+            *p = owner->next;
+            free(owner);
+            return 1;
+        }
+        p = &(*p)->next;
+    }
+    return 0;
+}
+
+static int IsRegisteredListHeader(const List *list)
+{
+    const ListHeaderOwner *owner = ListOwners;
+    while (owner) {
+        if (owner->list == list)
+            return 1;
+        owner = owner->next;
+    }
+    return 0;
+}
+
+static int ListNodeSize(const List *list, size_t *size)
+{
+    if (list == NULL || size == NULL)
+        return CONTAINER_ERROR_BADARG;
+    if (list->ElementSize > SIZE_MAX - offsetof(ListElement, Data))
+        return CONTAINER_ERROR_NOMEMORY;
+    *size = offsetof(ListElement, Data) + list->ElementSize;
+    return 1;
+}
+
+static void FreeListNode(List *list, ListElement *node)
+{
+    if (list->Heap)
+        (void)iHeap.FreeObject(list->Heap, node);
+    else
+        list->Allocator->free(node);
+}
+
+static void DestroyListNode(List *list, ListElement *node)
+{
+    if (list->DestructorFn)
+        (void)list->DestructorFn(node->Data);
+    FreeListNode(list, node);
+}
+
+static void ClearListNodes(List *list)
+{
+    ListElement *node = list->First;
+    while (node) {
+        ListElement *next = node->Next;
+        DestroyListNode(list, node);
+        node = next;
+    }
+    if (list->Heap) {
+        iHeap.Finalize(list->Heap);
+        list->Heap = NULL;
+    }
+    list->First = NULL;
+    list->Last = NULL;
+    list->count = 0;
+}
+
+static int ListContainsNode(const List *list, const ListElement *needle)
+{
+    const ListElement *node;
+    size_t i;
+    if (list == NULL || needle == NULL)
+        return 0;
+    node = list->First;
+    for (i = 0; node && i < list->count; ++i, node = node->Next)
+        if (node == needle)
+            return 1;
+    return 0;
+}
 
 static int ErrorReadOnly(const List * L,const char *fnName)
 {
@@ -64,10 +175,15 @@ static int NullPtrError(const char *fnName)
 static ListElement * NewLink(List * li, const void *data, const char *fname)
 {
     ListElement    *result;
+    size_t          nodeSize;
 
-    if (li->Flags & CONTAINER_LIST_SMALL || li->Heap == NULL) {
-        result = (ListElement *)li->Allocator->malloc(sizeof(*result) + li->ElementSize);
-    } else
+    if (ListNodeSize(li, &nodeSize) < 0) {
+        li->RaiseError(fname, CONTAINER_ERROR_NOMEMORY);
+        return NULL;
+    }
+    if (li->Heap == NULL)
+        result = (ListElement *)li->Allocator->malloc(nodeSize);
+    else
         result = (ListElement *)iHeap.NewObject(li->Heap);
     if (result == NULL) {
         li->RaiseError(fname, CONTAINER_ERROR_NOMEMORY);
@@ -116,29 +232,15 @@ static int Contains(const List * l, const void *data)
 ------------------------------------------------------------------------*/
 static int Clear_nd(List * l)
 {
+    unsigned oldFlags = l->Flags;
     if (l->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(l, CCL_CLEAR, NULL, NULL);
-#ifdef NO_GC
-    if (l->Heap)
-        iHeap.Finalize(l->Heap);
-    else {
-        ListElement    *rvp = l->First, *tmp;
-
-        while (rvp) {
-            tmp = rvp;
-            rvp = rvp->Next;
-            if (l->DestructorFn)
-                l->DestructorFn(tmp);
-            l->Allocator->free(tmp);
-        }
-    }
-#endif
-    /* Clear the fields that need to be cleared but not all fields */
-    l->count = 0;
-    l->Heap = NULL;
-    l->First = l->Last = NULL;
-    l->Flags = 0;
-    l->timestamp = 0;
+    ClearListNodes(l);
+    /* Configuration (observer/read-only state, callbacks, allocator) is not
+     * element storage and must survive a Clear.  Advance, rather than reset,
+     * the generation so existing iterators cannot become valid again. */
+    l->Flags = oldFlags;
+    l->timestamp++;
     return 1;
 }
 
@@ -242,7 +344,8 @@ static unsigned GetFlags(const List * l)
 static size_t Size(const List * l)
 {
     if (l == NULL) {
-        return (size_t) NullPtrError("Size");
+        (void)NullPtrError("Size");
+        return 0;
     }
     return l->count;
 }
@@ -297,7 +400,10 @@ static List    *Copy(const List * l)
         l->RaiseError("iList.Copy", CONTAINER_ERROR_NOMEMORY);
         return NULL;
     }
-    result->Flags = l->Flags;    /* Same flags */
+    /* Byte copies are not clones of pointer-owned values; do not propagate a
+     * destructor or heap policy.  Observer registrations belong to the
+     * source object, not the result. */
+    result->Flags = l->Flags & ~(CONTAINER_HAS_OBSERVER | CONTAINER_READONLY);
     result->VTable = l->VTable;    /* Copy possibly subclassed methods */
     result->Compare = l->Compare;    /* Copy compare function */
     result->RaiseError = l->RaiseError;
@@ -306,7 +412,9 @@ static List    *Copy(const List * l)
         newElem = NewLink(result, elem->Data, "iList.Copy");
         if (newElem == NULL) {
             l->RaiseError("iList.Copy", CONTAINER_ERROR_NOMEMORY);
-            result->VTable->Finalize(result);
+            ClearListNodes(result);
+            (void)UnregisterListHeader(result);
+            result->Allocator->free(result);
             return NULL;
         }
         if (elem == l->First) {
@@ -343,14 +451,18 @@ static int Finalize(List * l)
         Flags = l->Flags;
     else
         return CONTAINER_ERROR_BADARG;
-    t = Clear(l);
+    /* Finalization must always release owned storage, even for a read-only
+     * view.  Read-only blocks mutation APIs; it must not turn ownership into
+     * a leak. */
+    t = (l->Flags & CONTAINER_READONLY) ? Clear_nd(l) : Clear(l);
     if (t < 0)
         return t;
     if (Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(l, CCL_FINALIZE, NULL, NULL);
-    if (l->VTable != &iList)
-        l->Allocator->free(l->VTable);
-    l->Allocator->free(l);
+    /* Generated interfaces are static objects.  Only headers allocated by
+     * Create are released; placement headers are caller-owned. */
+    if (UnregisterListHeader(l))
+        l->Allocator->free(l);
     return 1;
 }
 
@@ -451,6 +563,7 @@ static int CopyElement(const List * l, size_t position, void *outBuffer)
 static int ReplaceAt(List * l, size_t position, const void *data)
 {
     ListElement    *rvp;
+    size_t          originalPosition = position;
 
     /* Error checking */
     if (l == NULL || data == NULL) {
@@ -481,12 +594,16 @@ static int ReplaceAt(List * l, size_t position, const void *data)
         iError.RaiseError("iList.ReplaceAt",CONTAINER_INTERNAL_ERROR);
         return CONTAINER_INTERNAL_ERROR;
     }
+    if (data == rvp->Data)
+        return 1;
     if (l->DestructorFn)
-        l->DestructorFn(&rvp->Data);
+        (void)l->DestructorFn(rvp->Data);
 
     /* Replace the data there */
     memcpy(&rvp->Data, data, l->ElementSize);
     l->timestamp++;
+    if (l->Flags & CONTAINER_HAS_OBSERVER)
+        iObserver.Notify(l, CCL_REPLACEAT, rvp, (void *)originalPosition);
     return 1;
 }
 
@@ -511,14 +628,20 @@ static List    *GetRange(const List * l, size_t start, size_t end)
         NullPtrError("GetRange");
         return NULL;
     }
-    result = iList.Create(l->ElementSize);
+    result = iList.CreateWithAllocator(l->ElementSize, l->Allocator);
+    if (result == NULL)
+        return NULL;
     result->VTable = l->VTable;
+    result->Compare = l->Compare;
+    result->RaiseError = l->RaiseError;
     if (l->count == 0)
         return result;
     if (end >= l->count)
         end = l->count;
-    if (start >= end || start > l->count)
+    if (start >= end || start > l->count) {
+        (void)Finalize(result);
         return NULL;
+    }
     if (start == l->count - 1)
         rvp = l->Last;
     else {
@@ -532,7 +655,9 @@ static List    *GetRange(const List * l, size_t start, size_t end)
     while (start < end && rvp != NULL) {
         int             r = Add_nd(result, &rvp->Data);
         if (r < 0) {
-            Finalize(result);
+            ClearListNodes(result);
+            (void)UnregisterListHeader(result);
+            result->Allocator->free(result);
             result = NULL;
             break;
         }
@@ -656,10 +781,10 @@ static int PopFront(List * l, void *result)
     l->count--;
     if (result)
         memcpy(result, &le->Data, l->ElementSize);
-    if (l->Heap) {
-        iHeap.FreeObject(l->Heap, le);
-    } else
-        l->Allocator->free(le);
+    /* Supplying result transfers ownership of the element to the caller. */
+    if (l->DestructorFn && result == NULL)
+        (void)l->DestructorFn(le->Data);
+    FreeListNode(l, le);
     l->timestamp++;
     if (l->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(l, CCL_POP, result, NULL);
@@ -670,8 +795,9 @@ static int PopFront(List * l, void *result)
 
 static int InsertIn(List * l, size_t idx, List * newData)
 {
-    size_t          newCount;
-    ListElement    *le, *nle;
+    ListElement *insertedFirst = NULL, *insertedLast = NULL;
+    ListElement *source;
+    size_t newCount, originalCount;
 
     if (l == NULL || newData == NULL) {
         if (l)
@@ -683,6 +809,10 @@ static int InsertIn(List * l, size_t idx, List * newData)
     if (l->Flags & CONTAINER_READONLY) {
         return ErrorReadOnly(l, "InsertIn");
     }
+    if (l == newData) {
+        l->RaiseError("iList.InsertIn", CONTAINER_ERROR_INCOMPATIBLE, l, newData);
+        return CONTAINER_ERROR_INCOMPATIBLE;
+    }
     if (idx > l->count) {
         l->RaiseError("iList.InsertIn", CONTAINER_ERROR_INDEX,l,idx);
         return CONTAINER_ERROR_INDEX;
@@ -691,28 +821,58 @@ static int InsertIn(List * l, size_t idx, List * newData)
         l->RaiseError("iList.InsertIn", CONTAINER_ERROR_INCOMPATIBLE,l,newData);
         return CONTAINER_ERROR_INCOMPATIBLE;
     }
+    if (l->DestructorFn || newData->DestructorFn) {
+        l->RaiseError("iList.InsertIn", CONTAINER_ERROR_INCOMPATIBLE, l, newData);
+        return CONTAINER_ERROR_INCOMPATIBLE;
+    }
     if (newData->count == 0)
         return 1;
-    newData = Copy(newData);
-    if (newData == NULL) {
+    if (newData->count > SIZE_MAX - l->count) {
         l->RaiseError("iList.InsertIn", CONTAINER_ERROR_NOMEMORY);
         return CONTAINER_ERROR_NOMEMORY;
     }
     newCount = l->count + newData->count;
-    if (l->count == 0) {
-        l->First = newData->First;
-        l->Last = newData->Last;
-    } else {
-        le = l->First;
-        while (idx > 1) {
-            le = le->Next;
-            idx--;
+    originalCount = l->count;
+
+    /* Copy values into nodes owned by the destination.  This deliberately
+     * avoids adopting nodes from a different allocator/heap (and keeps the
+     * source list valid after the operation). */
+    for (source = newData->First; source; source = source->Next) {
+        ListElement *node = NewLink(l, source->Data, "iList.InsertIn");
+        if (node == NULL) {
+            while (insertedFirst) {
+                ListElement *next = insertedFirst->Next;
+                FreeListNode(l, insertedFirst);
+                insertedFirst = next;
+            }
+            l->RaiseError("iList.InsertIn", CONTAINER_ERROR_NOMEMORY);
+            return CONTAINER_ERROR_NOMEMORY;
         }
-        nle = le->Next;
-        le->Next = newData->First;
-        newData->Last->Next = nle;
+        if (insertedLast)
+            insertedLast->Next = node;
+        else
+            insertedFirst = node;
+        insertedLast = node;
     }
-    newData->Allocator->free(newData);
+    if (idx == 0) {
+        insertedLast->Next = l->First;
+        l->First = insertedFirst;
+        if (originalCount == 0)
+            l->Last = insertedLast;
+    } else if (idx == originalCount) {
+        if (l->Last)
+            l->Last->Next = insertedFirst;
+        else
+            l->First = insertedFirst;
+        l->Last = insertedLast;
+    } else {
+        ListElement *before = l->First;
+        size_t i;
+        for (i = 1; i < idx; ++i)
+            before = before->Next;
+        insertedLast->Next = before->Next;
+        before->Next = insertedFirst;
+    }
     l->timestamp++;
     l->count = newCount;
     if (l->Flags & CONTAINER_HAS_OBSERVER)
@@ -724,6 +884,7 @@ static int InsertIn(List * l, size_t idx, List * newData)
 static int InsertAt(List * l, size_t pos, const void *pdata)
 {
     ListElement    *elem;
+    size_t          originalPos = pos;
     if (l == NULL || pdata == NULL) {
         if (l)
             l->RaiseError("iList.InsertAt", CONTAINER_ERROR_BADARG);
@@ -760,7 +921,7 @@ static int InsertAt(List * l, size_t pos, const void *pdata)
     l->count++;
     l->timestamp++;
     if (l->Flags & CONTAINER_HAS_OBSERVER)
-        iObserver.Notify(l, CCL_INSERT_AT, pdata, (void *) pos);
+        iObserver.Notify(l, CCL_INSERT_AT, pdata, (void *) originalPos);
 
     return 1;
 }
@@ -794,40 +955,34 @@ static int EraseInternal(List * l, const void *elem, int all)
     ci.ContainerRight = NULL;
     ci.ExtraArgs = NULL;
     while (rvp) {
+        ListElement *next = rvp->Next;
         r = fn(&rvp->Data, elem, &ci);
         if (r == 0) {
             if (l->Flags & CONTAINER_HAS_OBSERVER)
                 iObserver.Notify(l, CCL_ERASE_AT, rvp, (void *) position);
 
-            if (position == 0) {
-                if (l->count == 1) {
-                    l->First = l->Last = NULL;
-                } else {
-                    l->First = l->First->Next;
-                }
-            } else if (position == l->count - 1) {
+            if (previous == NULL) {
+                l->First = next;
+            } else if (rvp == l->Last) {
                 previous->Next = NULL;
                 l->Last = previous;
             } else {
-                previous->Next = rvp->Next;
+                previous->Next = next;
             }
 
-            if (l->DestructorFn)
-                l->DestructorFn(&rvp->Data);
-
-            if (l->Heap)
-                iHeap.FreeObject(l->Heap, rvp);
-            else {
-                l->Allocator->free(rvp);
-            }
+            DestroyListNode(l, rvp);
             l->count--;
             l->timestamp++;
             if (all == 0)
                 return 1;
             result = 1;
+        } else {
+            previous = rvp;
+            ++position;
         }
-        previous = rvp;
-        rvp = rvp->Next;
+        rvp = next;
+        if (l->count == 0)
+            l->First = l->Last = NULL;
         position++;
     }
     return result;
@@ -845,50 +1000,13 @@ static int EraseAll(List * l, const void *elem)
 
 static int EraseRange(List * l, size_t start, size_t end)
 {
-    ListElement    *rvp, *start_pos, *tmp;
-    size_t          toremove;
-    if (l == NULL) {
-        return NullPtrError("EraseRange");
-    }
-    if (end > l->count)
-        end = l->count;
-    if (start >= l->count)
-        return 0;
-    if (start >= end)
-        return 0;
-    toremove = end - start + 1;
-    rvp = l->First;
-    while (start > 1) {
-        rvp = rvp->Next;
-        start--;
-    }
-    start_pos = rvp;
-    rvp = rvp->Next;
-    if (rvp == NULL) {
-        iError.RaiseError("iList.EraseRange", CONTAINER_ASSERTION_FAILED);
-        return CONTAINER_ASSERTION_FAILED;
-    }
-    while (toremove > 1) {
-        tmp = rvp->Next;
-        if (l->DestructorFn)
-            l->DestructorFn(&rvp->Data);
-
-        if (l->Heap)
-            iHeap.FreeObject(l->Heap, rvp);
-        else {
-            l->Allocator->free(rvp);
-        }
-        rvp = tmp;
-        toremove--;
-        l->count--;
-    }
-    start_pos->Next = rvp;
-    return 1;
+    return RemoveRange(l, start, end);
 }
 
 static int RemoveAt(List * l, size_t position)
 {
     ListElement    *rvp, *last, *removed;
+    size_t          originalPosition = position;
 
 	/* Error handling: l should not be NULL, and position should be within the bounds
 	   of the list. Besides that, the list should not be read only of course. */
@@ -928,14 +1046,8 @@ static int RemoveAt(List * l, size_t position)
         last->Next = rvp->Next;
     }
     if (l->Flags & CONTAINER_HAS_OBSERVER) /* Notify observer if needed */
-        iObserver.Notify(l, CCL_ERASE_AT, removed, (void *) position);
-    if (l->DestructorFn) /* Call destructor if needed */
-        l->DestructorFn(&removed->Data);
-	/* Reclaim the space */
-    if (l->Heap) {
-        iHeap.FreeObject(l->Heap, removed);
-    } else
-        l->Allocator->free(removed);
+        iObserver.Notify(l, CCL_ERASE_AT, removed, (void *) originalPosition);
+    DestroyListNode(l, removed);
     l->timestamp++; /* List has been modified */
     --l->count; /* One element less */
     return 1;
@@ -944,8 +1056,12 @@ static int RemoveAt(List * l, size_t position)
 
 static int Append(List * l1, List * l2)
 {
-	/* Error handling: l1 and l2 not NULL, l1 not read only and l1 should have
-	   the same number of elements as l2 */
+    ListElement *source;
+    ListElement *oldLast;
+    ListElement *oldFirst;
+    size_t oldCount;
+    unsigned oldTimestamp;
+
     if (l1 == NULL || l2 == NULL) {
         if (l1)
             l1->RaiseError("iList.Append", CONTAINER_ERROR_BADARG);
@@ -956,30 +1072,50 @@ static int Append(List * l1, List * l2)
     if ((l1->Flags & CONTAINER_READONLY) || (l2->Flags & CONTAINER_READONLY)) {
         return ErrorReadOnly(l1,"Append");
     }
-    if (l2->ElementSize != l1->ElementSize || l2->Allocator != l1->Allocator) {
+    if (l1 == l2) {
+        l1->RaiseError("iList.Append", CONTAINER_ERROR_INCOMPATIBLE, l1, l2);
+        return CONTAINER_ERROR_INCOMPATIBLE;
+    }
+    if (l2->ElementSize != l1->ElementSize) {
         l1->RaiseError("iList.Append", CONTAINER_ERROR_INCOMPATIBLE,l1,l2);
         return CONTAINER_ERROR_INCOMPATIBLE;
     }
-	/*                                     Take care of any eventual observer */
+    if (l1->DestructorFn || l2->DestructorFn) {
+        l1->RaiseError("iList.Append", CONTAINER_ERROR_INCOMPATIBLE, l1, l2);
+        return CONTAINER_ERROR_INCOMPATIBLE;
+    }
+    if (l2->count > SIZE_MAX - l1->count) {
+        l1->RaiseError("iList.Append", CONTAINER_ERROR_NOMEMORY, l1, l2);
+        return CONTAINER_ERROR_NOMEMORY;
+    }
+
+    /* Append by value, so nodes remain owned by the allocator/heap that
+     * created them and l2 remains a usable source list. */
+    oldFirst = l1->First;
+    oldLast = l1->Last;
+    oldCount = l1->count;
+    oldTimestamp = l1->timestamp;
+    for (source = l2->First; source; source = source->Next) {
+        if (Add_nd(l1, source->Data) < 0) {
+            ListElement *node = oldLast ? oldLast->Next : l1->First;
+            while (node) {
+                ListElement *next = node->Next;
+                FreeListNode(l1, node);
+                node = next;
+            }
+            l1->First = oldFirst;
+            l1->Last = oldLast;
+            l1->count = oldCount;
+            l1->timestamp = oldTimestamp;
+            if (oldLast)
+                oldLast->Next = NULL;
+            return CONTAINER_ERROR_NOMEMORY;
+        }
+    }
+    if (l2->count)
+        l1->timestamp = oldTimestamp + 1;
     if (l1->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(l1, CCL_APPEND, l2, NULL);
-
-    if (l2->Flags & CONTAINER_HAS_OBSERVER)
-        iObserver.Notify(l2, CCL_FINALIZE, NULL, NULL);
-
-    if (l1->count == 0) { /* Appending to an empty list? */
-        l1->First = l2->First;
-        l1->Last = l2->Last;
-    } else if (l2->count > 0) { /* Append elements to l1 */
-        if (l2->First)
-            l1->Last->Next = l2->First;
-        if (l2->Last)
-            l1->Last = l2->Last;
-    }
-    l1->count += l2->count;
-    l1->timestamp++;
-	/* Free the header structure from l2 */
-    l2->Allocator->free(l2);
     return 1;
 }
 
@@ -1018,7 +1154,9 @@ static int Reverse(List * l)
 static int AddRange(List * AL, size_t n, const void *data)
 {
     const unsigned char *p;
-    ListElement    *oldLast;
+    ListElement    *oldLast, *oldFirst;
+    size_t oldCount, original_n;
+    unsigned oldTimestamp;
 
     if (AL == NULL)
         return NullPtrError("AddRange");
@@ -1031,32 +1169,36 @@ static int AddRange(List * AL, size_t n, const void *data)
         AL->RaiseError("iList.AddRange", CONTAINER_ERROR_BADARG);
         return CONTAINER_ERROR_BADARG;
     }
+    original_n = n;
+    oldFirst = AL->First;
     p = (const unsigned char *)data;
     oldLast = AL->Last;
+    oldCount = AL->count;
+    oldTimestamp = AL->timestamp;
     while (n > 0) {
         int             r = Add_nd(AL, p);
         if (r < 0) {
-            AL->Last = oldLast;
-            if (AL->Last) {
-                ListElement    *removed = oldLast->Next;
-                while (removed) {
-                    ListElement    *tmp = removed->Next;
-                    if (AL->Heap)
-                        iHeap.FreeObject(AL->Heap, removed);
-                    else
-                        AL->Allocator->free(removed);
-                    removed = tmp;
-                }
-                AL->Last->Next = NULL;
+            ListElement *removed = oldLast ? oldLast->Next : oldFirst;
+            while (removed) {
+                ListElement *tmp = removed->Next;
+                DestroyListNode(AL, removed);
+                removed = tmp;
             }
+            AL->First = oldFirst;
+            AL->Last = oldLast;
+            AL->count = oldCount;
+            AL->timestamp = oldTimestamp;
+            if (oldLast)
+                oldLast->Next = NULL;
             return r;
         }
         p += AL->ElementSize;
         n--;
     }
-    AL->timestamp++;
+    if (original_n != 0)
+        ++AL->timestamp;
     if (AL->Flags & CONTAINER_HAS_OBSERVER)
-        iObserver.Notify(AL, CCL_ADDRANGE, data, (void *) n);
+        iObserver.Notify(AL, CCL_ADDRANGE, data, (void *) original_n);
 
     return 1;
 }
@@ -1129,6 +1271,10 @@ static int Sort(List * l)
         l->RaiseError("iList.Sort", CONTAINER_ERROR_READONLY);
         return CONTAINER_ERROR_READONLY;
     }
+    if (l->count > SIZE_MAX / sizeof(ListElement *)) {
+        l->RaiseError("iList.Sort", CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
+    }
     tab = (ListElement **)l->Allocator->malloc(l->count * sizeof(ListElement *));
     if (tab == NULL) {
         l->RaiseError("iList.Sort", CONTAINER_ERROR_NOMEMORY);
@@ -1150,6 +1296,7 @@ static int Sort(List * l)
     l->Last = tab[l->count - 1];
     l->First = tab[0];
     l->Allocator->free(tab);
+    ++l->timestamp;
     return 1;
 
 }
@@ -1175,13 +1322,15 @@ static int      Apply(List * L, int (Applyfn) (void *, void *), void *arg) {
     while (le) {
         if (pElem) {
             memcpy(pElem, le->Data, L->ElementSize);
-            Applyfn(pElem, arg);
+            (void)Applyfn(pElem, arg);
         } else
-            Applyfn(le->Data, arg);
+            (void)Applyfn(le->Data, arg);
         le = le->Next;
     }
     if (pElem)
         L->Allocator->free(pElem);
+    if (!(L->Flags & CONTAINER_READONLY) && L->count)
+        ++L->timestamp;
     return 1;
 }
 
@@ -1199,19 +1348,28 @@ static ErrorFunction SetErrorFunction(List * l, ErrorFunction fn)
 
 static size_t Sizeof(const List * l)
 {
+    size_t nodeSize;
     if (l == NULL) {
         return sizeof(List);
     }
-    return sizeof(List) + l->ElementSize * l->count + l->count * offsetof(ListElement,Data);
+    if (ListNodeSize(l, &nodeSize) < 0 ||
+        l->count > (SIZE_MAX - sizeof(List)) / nodeSize)
+        return 0;
+    return sizeof(List) + nodeSize * l->count;
 }
 
 static size_t SizeofIterator(const List * l)
 {
-    return sizeof(struct ListIterator);
+    if (l == NULL)
+        return sizeof(struct ListIterator);
+    if (l->ElementSize > SIZE_MAX - offsetof(struct ListIterator, ElementBuffer))
+        return 0;
+    return offsetof(struct ListIterator, ElementBuffer) + l->ElementSize;
 }
 
 static int UseHeap(List * L, const ContainerAllocator * m)
 {
+    size_t nodeSize;
     if (L == NULL) {
         return NullPtrError("UseHeap");
     }
@@ -1220,8 +1378,20 @@ static int UseHeap(List * L, const ContainerAllocator * m)
         return CONTAINER_ERROR_NOT_EMPTY;
     }
     if (m == NULL)
-        m = CurrentAllocator;
-    L->Heap = iHeap.Create(L->ElementSize + sizeof(ListElement), m);
+        m = L->Allocator;
+    if (m == NULL)
+        return CONTAINER_ERROR_BADARG;
+    if (ListNodeSize(L, &nodeSize) < 0) {
+        L->RaiseError("iList.UseHeap", CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
+    }
+    /* heap.c advances through blocks by sizeof(void *) + ElementSize.  Give
+     * it a pointer-aligned stride so each returned ListElement is aligned. */
+    L->Heap = iHeap.Create(roundupTo(nodeSize, sizeof(void *)), m);
+    if (L->Heap == NULL) {
+        L->RaiseError("iList.UseHeap", CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
+    }
     return 1;
 }
 
@@ -1255,8 +1425,16 @@ static void    * Seek(Iterator * it, size_t idx)
 		iError.RaiseError("List.Seek",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
 	}
+    if (li->timestamp != li->L->timestamp) {
+        li->L->RaiseError("iList.Seek", CONTAINER_ERROR_OBJECT_CHANGED);
+        return NULL;
+    }
     if (li->L->count == 0)
         return NULL;
+    if (idx >= li->L->count) {
+        li->L->RaiseError("iList.Seek", CONTAINER_ERROR_INDEX, li->L, idx);
+        return NULL;
+    }
     rvp = li->L->First;
     if (idx == 0) {
         li->index = 0;
@@ -1272,7 +1450,11 @@ static void    * Seek(Iterator * it, size_t idx)
         }
         li->Current = rvp;
     }
-    return li->Current;
+    if (li->L->Flags & CONTAINER_READONLY) {
+        memcpy(li->ElementBuffer, li->Current->Data, li->L->ElementSize);
+        return li->ElementBuffer;
+    }
+    return li->Current->Data;
 }
 
 /*------------------------------------------------------------------------
@@ -1300,14 +1482,12 @@ static void    *GetNext(Iterator * it)
 		return NULL;
 	}
     L = li->L;
-    if (li->L->count == 0)
-        return NULL;
-    if (li->index >= (L->count - 1) || li->Current == NULL)
-        return NULL;
     if (li->timestamp != L->timestamp) {
         L->RaiseError("GetNext", CONTAINER_ERROR_OBJECT_CHANGED);
         return NULL;
     }
+    if (L->count == 0 || li->index >= (L->count - 1) || li->Current == NULL)
+        return NULL;
     if (li->Current == NULL) return NULL;
     li->Current = li->Current->Next;
     if (li->Current == NULL) return NULL;
@@ -1323,8 +1503,16 @@ static void    *GetNext(Iterator * it)
 static size_t GetPosition(Iterator *it)
 {
     struct ListIterator *li = (struct ListIterator *) it;
+	if (li == NULL) {
+		NullPtrError("GetPosition");
+		return (size_t)-1;
+	}
 	if (li->Magic != LIST_MAGIC_NUMBER) {
 		iError.RaiseError("List.GetPosition",CONTAINER_ERROR_WRONG_ITERATOR);
+		return (size_t)-1;
+	}
+	if (li->L && li->timestamp != li->L->timestamp) {
+		li->L->RaiseError("GetPosition", CONTAINER_ERROR_OBJECT_CHANGED);
 		return (size_t)-1;
 	}
     return li->index;
@@ -1344,15 +1532,15 @@ static void    *GetPrevious(Iterator * it)
 		iError.RaiseError("List.GetPrevious",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
 	}
-    if (li->L->count == 0)
-        return NULL;
     L = li->L;
-    if (li->index >= L->count || li->index == 0)
-        return NULL;
     if (li->timestamp != L->timestamp) {
         L->RaiseError("GetPrevious", CONTAINER_ERROR_OBJECT_CHANGED);
         return NULL;
     }
+    if (L->count == 0)
+        return NULL;
+    if (li->index >= L->count || li->index == 0)
+        return NULL;
     rvp = L->First;
     i = 0;
     li->index--;
@@ -1384,13 +1572,48 @@ static void    *GetCurrent(Iterator * it)
 		iError.RaiseError("List.GetCurrent",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
 	}
+	if (li->timestamp != li->L->timestamp) {
+        li->L->RaiseError("GetCurrent", CONTAINER_ERROR_OBJECT_CHANGED);
+        return NULL;
+    }
     if (li->L->count == 0)
         return NULL;
     if (li->index == (size_t) - 1) {
         li->L->RaiseError("GetCurrent", CONTAINER_ERROR_BADARG);
         return NULL;
     }
+    if (li->Current == NULL)
+        return NULL;
     if (li->L->Flags & CONTAINER_READONLY) {
+        memcpy(li->ElementBuffer, li->Current->Data, li->L->ElementSize);
+        return li->ElementBuffer;
+    }
+    return li->Current->Data;
+}
+
+static void *GetLast(Iterator *it)
+{
+    struct ListIterator *li = (struct ListIterator *)it;
+    List *list;
+    if (li == NULL) {
+        NullPtrError("GetLast");
+        return NULL;
+    }
+    if (li->Magic != LIST_MAGIC_NUMBER) {
+        iError.RaiseError("List.GetLast", CONTAINER_ERROR_WRONG_ITERATOR);
+        return NULL;
+    }
+    list = li->L;
+    if (li->timestamp != list->timestamp) {
+        list->RaiseError("GetLast", CONTAINER_ERROR_OBJECT_CHANGED);
+        return NULL;
+    }
+    if (list->count == 0)
+        return NULL;
+    li->index = list->count - 1;
+    li->Current = list->Last;
+    if (list->Flags & CONTAINER_READONLY) {
+        memcpy(li->ElementBuffer, li->Current->Data, list->ElementSize);
         return li->ElementBuffer;
     }
     return li->Current->Data;
@@ -1398,8 +1621,8 @@ static void    *GetCurrent(Iterator * it)
 static int ReplaceWithIterator(Iterator * it, void *data, int direction)
 {
     struct ListIterator *li = (struct ListIterator *) it;
-    int             result;
-    size_t          pos;
+    int result;
+    size_t pos;
 
     if (it == NULL) {
         return NullPtrError("Replace");
@@ -1420,10 +1643,6 @@ static int ReplaceWithIterator(Iterator * it, void *data, int direction)
         return CONTAINER_ERROR_OBJECT_CHANGED;
     }
     pos = li->index;
-    if (direction)
-        GetNext(it);
-    else
-        GetPrevious(it);
     if (data == NULL)
         result = RemoveAt(li->L, pos);
     else {
@@ -1431,6 +1650,25 @@ static int ReplaceWithIterator(Iterator * it, void *data, int direction)
     }
     if (result >= 0) {
         li->timestamp = li->L->timestamp;
+        if (li->L->count == 0) {
+            li->index = (size_t)-1;
+            li->Current = NULL;
+        } else if (data != NULL) {
+            /* Replacement keeps the cursor on the same logical position. */
+            li->Current = li->L->First;
+            for (size_t i = 0; i < pos; ++i)
+                li->Current = li->Current->Next;
+        } else if (direction && pos < li->L->count) {
+            li->index = pos;
+            li->Current = li->L->First;
+            for (size_t i = 0; i < pos; ++i)
+                li->Current = li->Current->Next;
+        } else {
+            li->index = pos == 0 ? 0 : pos - 1;
+            li->Current = li->L->First;
+            for (size_t i = 0; i < li->index; ++i)
+                li->Current = li->Current->Next;
+        }
     }
     return result;
 }
@@ -1449,14 +1687,14 @@ static void    *GetFirst(Iterator * it)
 	if (li->Magic != LIST_MAGIC_NUMBER) {
 		iError.RaiseError("List.GetFirst",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
-	}
+    }
     L = li->L;
-    if (L->count == 0)
-        return NULL;
     if (li->timestamp != L->timestamp) {
         L->RaiseError("iList.GetFirst", CONTAINER_ERROR_OBJECT_CHANGED);
         return NULL;
     }
+    if (L->count == 0)
+        return NULL;
     li->index = 0;
     li->Current = L->First;
     if (L->Flags & CONTAINER_READONLY) {
@@ -1471,12 +1709,15 @@ static int InitIterator(List * L, void *r)
     struct ListIterator *result = (struct ListIterator *) r;
 
     if (L == NULL) {
-        return (int) sizeof(struct ListIterator);
+        return (int) SizeofIterator(NULL);
     }
+    if (result == NULL)
+        return NullPtrError("InitIterator");
     result->it.GetNext = GetNext;
     result->it.GetPrevious = GetPrevious;
     result->it.GetFirst = GetFirst;
     result->it.GetCurrent = GetCurrent;
+    result->it.GetLast = GetLast;
     result->it.Seek = Seek;
     result->it.GetPosition = GetPosition;
     result->it.Replace = ReplaceWithIterator;
@@ -1485,23 +1726,29 @@ static int InitIterator(List * L, void *r)
     result->index = (size_t) - 1;
     result->Current = NULL;
 	result->Magic = LIST_MAGIC_NUMBER;
+    result->Previous = NULL; /* NULL marks caller-provided placement storage. */
     return 1;
 }
 
 static Iterator *NewIterator(List * L)
 {
     struct ListIterator *result;
+    size_t iteratorSize;
 
     if (L == NULL) {
         NullPtrError("NewIterator");
         return NULL;
     }
-    result = (struct ListIterator *)L->Allocator->malloc(sizeof(struct ListIterator));
+    iteratorSize = SizeofIterator(L);
+    if (iteratorSize == 0)
+        return NULL;
+    result = (struct ListIterator *)L->Allocator->malloc(iteratorSize);
     if (result == NULL) {
         L->RaiseError("iList.NewIterator", CONTAINER_ERROR_NOMEMORY);
         return NULL;
     }
     InitIterator(L,result);
+    result->Previous = (ListElement *)(uintptr_t)1; /* allocator-owned */
     return &result->it;
 }
 static int DeleteIterator(Iterator * it)
@@ -1514,7 +1761,14 @@ static int DeleteIterator(Iterator * it)
     }
     li = (struct ListIterator *) it;
     L = li->L;
-    L->Allocator->free(it);
+    if (li->Magic != LIST_MAGIC_NUMBER)
+        return CONTAINER_ERROR_WRONG_ITERATOR;
+    if (li->Previous == (ListElement *)(uintptr_t)1) {
+        li->Magic = 0;
+        L->Allocator->free(it);
+    } else {
+        li->Magic = 0;
+    }
     return 1;
 }
 
@@ -1544,11 +1798,19 @@ static int Save(const List * L, FILE * stream, SaveFunction saveFn, void *arg)
         elemsiz = L->ElementSize;
         arg = &elemsiz;
     }
-    if (fwrite(&ListGuid, sizeof(guid), 1, stream) == 0)
+    if (fwrite(&ListGuid, sizeof(guid), 1, stream) != 1)
         return EOF;
-
-    if (fwrite(L, sizeof(List), 1, stream) == 0)
-        return EOF;
+    {
+        uint32_t version = LIST_PERSIST_VERSION;
+        uint32_t flags = (uint32_t)L->Flags;
+        uint64_t elementSize = (uint64_t)L->ElementSize;
+        uint64_t count = (uint64_t)L->count;
+        if (fwrite(&version, sizeof(version), 1, stream) != 1 ||
+            fwrite(&flags, sizeof(flags), 1, stream) != 1 ||
+            fwrite(&elementSize, sizeof(elementSize), 1, stream) != 1 ||
+            fwrite(&count, sizeof(count), 1, stream) != 1)
+            return EOF;
+    }
     rvp = L->First;
     for (i = 0; i < L->count; i++) {
         char           *p = rvp->Data;
@@ -1570,7 +1832,10 @@ static int DefaultLoadFunction(void *element, void *arg, FILE * Infile)
 static List    *Load(FILE * stream, ReadFunction loadFn, void *arg)
 {
     size_t          i, elemSize;
-    List           *result, L;
+    size_t          count;
+    uint32_t        version, flags;
+    uint64_t        serializedSize, serializedCount;
+    List           *result;
     char           *buf;
     int             r;
     guid            Guid;
@@ -1583,7 +1848,7 @@ static List    *Load(FILE * stream, ReadFunction loadFn, void *arg)
         loadFn = DefaultLoadFunction;
         arg = &elemSize;
     }
-    if (fread(&Guid, sizeof(guid), 1, stream) == 0) {
+    if (fread(&Guid, sizeof(guid), 1, stream) != 1) {
         iError.RaiseError("iList.Load", CONTAINER_ERROR_FILE_READ);
         return NULL;
     }
@@ -1591,25 +1856,41 @@ static List    *Load(FILE * stream, ReadFunction loadFn, void *arg)
         iError.RaiseError("iList.Load", CONTAINER_ERROR_WRONGFILE);
         return NULL;
     }
-    if (fread(&L, 1, sizeof(List), stream) == 0) {
+    if (fread(&version, sizeof(version), 1, stream) != 1 ||
+        fread(&flags, sizeof(flags), 1, stream) != 1 ||
+        fread(&serializedSize, sizeof(serializedSize), 1, stream) != 1 ||
+        fread(&serializedCount, sizeof(serializedCount), 1, stream) != 1) {
         iError.RaiseError("iList.Load", CONTAINER_ERROR_FILE_READ);
         return NULL;
     }
-    elemSize = L.ElementSize;
-    buf = (char *)calloc(1, L.ElementSize);
-    if (buf == NULL) {
-        iError.RaiseError("iList.Load", CONTAINER_ERROR_NOMEMORY);
+    if (version != LIST_PERSIST_VERSION || serializedSize == 0 ||
+        serializedSize > (uint64_t)INT_MAX || serializedSize > SIZE_MAX ||
+        serializedCount > SIZE_MAX) {
+        iError.RaiseError("iList.Load", CONTAINER_ERROR_WRONGFILE);
         return NULL;
     }
-    result = iList.Create(L.ElementSize);
+    elemSize = (size_t)serializedSize;
+    count = (size_t)serializedCount;
+    if (elemSize > SIZE_MAX - offsetof(ListElement, Data) ||
+        count > SIZE_MAX / (offsetof(ListElement, Data) + elemSize)) {
+        iError.RaiseError("iList.Load", CONTAINER_ERROR_WRONGFILE);
+        return NULL;
+    }
+    result = iList.Create(elemSize);
     if (result == NULL) {
         iError.RaiseError("iList.Load", CONTAINER_ERROR_NOMEMORY);
-        free(buf);    /* Was missing! */
         return NULL;
     }
-    result->Flags = L.Flags;
+    buf = (char *)result->Allocator->calloc(1, elemSize);
+    if (buf == NULL) {
+        iError.RaiseError("iList.Load", CONTAINER_ERROR_NOMEMORY);
+        (void)Finalize(result);
+        return NULL;
+    }
+    /* Keep policy flags off until all records have been read; in particular,
+     * a serialized READONLY bit must not prevent cleanup of a partial load. */
     r = 1;
-    for (i = 0; i < L.count; i++) {
+    for (i = 0; i < count; i++) {
         if (loadFn(buf, arg, stream) <= 0) {
             r = CONTAINER_ERROR_FILE_READ;
             break;
@@ -1618,11 +1899,13 @@ static List    *Load(FILE * stream, ReadFunction loadFn, void *arg)
             break;
         }
     }
-    free(buf);
+    result->Allocator->free(buf);
     if (r < 0) {
         iError.RaiseError("iList.Load", r);
-        iList.Finalize(result);
+        (void)Finalize(result);
         result = NULL;
+    } else {
+        result->Flags = flags & CONTAINER_READONLY;
     }
     return result;
 }
@@ -1652,8 +1935,12 @@ static List    *CreateWithAllocator(size_t elementsize, const ContainerAllocator
 {
     List           *result;
 
-    if (elementsize == 0 || (int) elementsize >= INT_MAX) {
-        NullPtrError("Create");
+    if (allocator == NULL)
+        allocator = CurrentAllocator;
+    if (allocator == NULL || allocator->calloc == NULL || allocator->malloc == NULL ||
+        allocator->free == NULL || elementsize == 0 || elementsize > (size_t)INT_MAX ||
+        elementsize > SIZE_MAX - offsetof(ListElement, Data)) {
+        (void)NullPtrError("Create");
         return NULL;
     }
     result = (List *)allocator->calloc(1, sizeof(List));
@@ -1666,6 +1953,11 @@ static List    *CreateWithAllocator(size_t elementsize, const ContainerAllocator
     result->Compare = DefaultListCompareFunction;
     result->RaiseError = iError.RaiseError;
     result->Allocator = (ContainerAllocator *) allocator;
+    if (!RegisterListHeader(result)) {
+        allocator->free(result);
+        iError.RaiseError("iList.Create", CONTAINER_ERROR_NOMEMORY);
+        return NULL;
+    }
     return result;
 }
 
@@ -1681,8 +1973,16 @@ static List    *InitializeWith(size_t elementSize, size_t n, const void *Data)
     const char     *pData = (const char *)Data;
     if (result == NULL)
         return result;
+    if (n && Data == NULL) {
+        result->RaiseError("iList.InitializeWith", CONTAINER_ERROR_BADARG);
+        Finalize(result);
+        return NULL;
+    }
     for (i = 0; i < n; i++) {
-        Add_nd(result, pData);
+        if (Add_nd(result, pData) < 0) {
+            Finalize(result);
+            return NULL;
+        }
         pData += elementSize;
     }
     return result;
@@ -1691,10 +1991,21 @@ static List    *InitializeWith(size_t elementSize, size_t n, const void *Data)
 static List    *InitWithAllocator(List * result, size_t elementsize,
           const ContainerAllocator * allocator)
 {
-    if (elementsize == 0) {
-        NullPtrError("Init");
+    if (result == NULL) {
+        (void)NullPtrError("Init");
         return NULL;
     }
+    if (allocator == NULL)
+        allocator = CurrentAllocator;
+    if (allocator == NULL || allocator->malloc == NULL || allocator->free == NULL ||
+        elementsize == 0 || elementsize > (size_t)INT_MAX ||
+        elementsize > SIZE_MAX - offsetof(ListElement, Data)) {
+        (void)NullPtrError("Init");
+        return NULL;
+    }
+    if (IsRegisteredListHeader(result) && result->Allocator)
+        ClearListNodes(result);
+    (void)UnregisterListHeader(result);
     memset(result, 0, sizeof(List));
     result->ElementSize = elementsize;
     result->VTable = &iList;
@@ -1731,58 +2042,54 @@ SetDestructor(List * cb, DestructorFunction fn)
 
 static int RemoveRange(List * l, size_t start, size_t end)
 {
-    ListElement    *rvp, *previous = NULL, *rvpS, *rvpE;
-    size_t          position = 0, tmp;
+    ListElement *node, *previous = NULL;
+    size_t position = 0;
+    size_t removeCount;
 
     if (l == NULL)
         return NullPtrError("RemoveRange");
     if (l->Flags & CONTAINER_READONLY)
         return ErrorReadOnly(l, "RemoveRange");
-    rvp = l->First;
     if (start >= l->count)
         return 0;
-    if (end >= l->count)
+    if (end > l->count)
         end = l->count;
-    if (start == end)
-        return 0;
     if (end < start) {
-        tmp = end;
-        end = start;
-        start = tmp;
+        size_t tmp = start;
+        start = end;
+        end = tmp;
+        if (start >= l->count)
+            return 0;
+        if (end > l->count)
+            end = l->count;
     }
-    while (rvp && position != start) {
-        previous = rvp;
-        rvp = rvp->Next;
-        position++;
+    if (start >= end)
+        return 0;
+    removeCount = end - start;
+    node = l->First;
+    while (node && position < start) {
+        previous = node;
+        node = node->Next;
+        ++position;
     }
-    rvpS = previous;
-    while (rvp && position < end) {
-        previous = rvp;
-        rvp = rvp->Next;
-        l->Allocator->free(previous);
-        position++;
+    while (node && position < end) {
+        ListElement *next = node->Next;
+        if (l->Flags & CONTAINER_HAS_OBSERVER)
+            iObserver.Notify(l, CCL_ERASE_AT, node, (void *)position);
+        DestroyListNode(l, node);
+        node = next;
+        ++position;
     }
-    // PV: rvp, not previous, is the head of the remaining list
-    rvpE = rvp;
-    if (rvpS) {
-        rvpS->Next = rvpE;
-    }
-    // PV: This could become an else; test start==0 by assert only
-    if (start == 0) {
-        l->First = rvpE;
-    }
-    // PV: This seems to be wrong. end == l->count-1 means that the last element is not deleted and the last pointer doesn't need to be changed
-    //if (end == l->count - 1) {
-    //    l->Last = rvpE;
-    //    if (rvpE)
-    //        rvpE->Next = NULL;
-    //}
-    if(rvpE == NULL)
-        l->Last = rvpS;
-    
-    // PV: We delete from start (including) till end (excluding), these are end-start elements
-    l->count -= (end - start);
-    l->timestamp++;
+    if (previous)
+        previous->Next = node;
+    else
+        l->First = node;
+    if (node == NULL)
+        l->Last = previous;
+    l->count -= removeCount;
+    if (l->count == 0)
+        l->First = l->Last = NULL;
+    ++l->timestamp;
     return 1;
 }
 
@@ -1809,6 +2116,7 @@ static int RotateLeft(List * l, size_t n)
     last->Next = NULL;
     l->Last->Next = oldStart;
     l->Last = last;
+    ++l->timestamp;
     return 1;
 }
 
@@ -1841,13 +2149,14 @@ static int RotateRight(List * l, size_t n)
     last->Next = NULL;
     l->Last->Next = oldStart;
     l->Last = last;
+    ++l->timestamp;
     return 1;
 }
 
 static int Select(List *src,const Mask *m)
 {
-    size_t i,offset=0;
-    ListElement *dst,*s,*removed;
+    size_t i, kept = 0;
+    ListElement *node, *previous = NULL;
 
     if (src == NULL || m == NULL) {
         return NullPtrError("Select");
@@ -1858,49 +2167,30 @@ static int Select(List *src,const Mask *m)
         iError.RaiseError("Select",CONTAINER_ERROR_BADMASK,src,m);
         return CONTAINER_ERROR_BADMASK;
     }
-    if (src->count == 0) return 0;
-    i=0;
-    dst = src->First;
-    while (i < m->length) {
-        if (m->data[i]) break;
-        if (src->DestructorFn)
-            src->DestructorFn(dst->Data);
-        removed = dst;
-        dst = dst->Next;
-        if (src->Heap) {
-                iHeap.FreeObject(src->Heap, removed);
-        } else
-                src->Allocator->free(removed);
-        i++;
-    }
-    if (i >= m->length) {
-        src->First = src->Last = NULL;
-        src->count = 0;
-        src->timestamp++;
-        return 1;
-    }
-    src->First = dst;
-    i++;
-    offset++;
-    s = dst->Next;
-    for (; i<m->length;i++) {
+    if (src->count == 0)
+        return 0;
+    node = src->First;
+    for (i = 0; node && i < m->length; ++i) {
+        ListElement *next = node->Next;
         if (m->data[i]) {
-            dst->Next = s;
-            offset++;
-            dst = s;
-            s = s->Next;
+            if (previous)
+                previous->Next = node;
+            else
+                src->First = node;
+            previous = node;
+            src->Last = node;
+            ++kept;
+        } else {
+            DestroyListNode(src, node);
         }
-        else {
-            if (src->DestructorFn) src->DestructorFn(s->Data);
-            removed = s;
-            s = s->Next;
-            if (src->Heap) iHeap.FreeObject(src->Heap,removed);
-            else src->Allocator->free(removed);
-        }
+        node = next;
     }
-    dst->Next = NULL;
-    src->Last = dst;
-    src->count = offset;
+    if (previous)
+        previous->Next = NULL;
+    else
+        src->First = src->Last = NULL;
+    src->count = kept;
+    ++src->timestamp;
     return 1;
 }
 
@@ -1919,8 +2209,10 @@ static List *SelectCopy(const List *src,const Mask *m)
         iError.RaiseError("SelectCopy",CONTAINER_ERROR_BADMASK,src,m);
         return NULL;
     }
-    result = Create(src->ElementSize);
+    result = CreateWithAllocator(src->ElementSize, src->Allocator);
     if (result == NULL) return NULL;
+    result->Compare = src->Compare;
+    result->RaiseError = src->RaiseError;
     rvp = src->First;
     for (i=0; i<m->length;i++) {
         if (m->data[i]) {
@@ -1978,8 +2270,20 @@ static int SetElementData(List *l,ListElement *le,void *data)
     if (l == NULL || le == NULL || data == NULL) {
         return iError.NullPtrError("iList.SetElementData");
     }
+    if (l->Flags & CONTAINER_READONLY)
+        return ErrorReadOnly(l, "SetElementData");
+    if (!ListContainsNode(l, le)) {
+        l->RaiseError("iList.SetElementData", CONTAINER_ERROR_WRONGELEMENT, l, le);
+        return CONTAINER_ERROR_WRONGELEMENT;
+    }
+    if (data == le->Data)
+        return 1;
+    if (l->DestructorFn)
+        (void)l->DestructorFn(le->Data);
     memcpy(le->Data,data,l->ElementSize);
     l->timestamp++;
+    if (l->Flags & CONTAINER_HAS_OBSERVER)
+        iObserver.Notify(l, CCL_REPLACEAT, le, NULL);
     return 1;
 }
 
@@ -2022,10 +2326,24 @@ static List *SplitAfter(List *l, ListElement *pt)
         ErrorReadOnly(l,"SplitAfter");
         return NULL;
     }
+    if (!ListContainsNode(l, pt)) {
+        l->RaiseError("iList.SplitAfter", CONTAINER_ERROR_WRONGELEMENT, l, pt);
+        return NULL;
+    }
+    /* A heap backs the entire allocation arena.  Moving only a suffix would
+     * leave the prefix and suffix sharing an ownership object, so reject the
+     * ambiguous transfer instead of finalizing through the wrong allocator. */
+    if (l->Heap) {
+        l->RaiseError("iList.SplitAfter", CONTAINER_ERROR_INCOMPATIBLE, l, pt);
+        return NULL;
+    }
     pNext = pt->Next;
     if (pNext == NULL) return NULL;
     result = CreateWithAllocator(l->ElementSize, l->Allocator);
     if (result == NULL) return NULL;
+    result->Compare = l->Compare;
+    result->RaiseError = l->RaiseError;
+    result->DestructorFn = l->DestructorFn;
     result->First = pNext;
     while (pNext) {
         count++;

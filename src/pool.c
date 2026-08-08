@@ -395,6 +395,9 @@ static void * PoolAlloc(Pool *pool, size_t in_size)
     void *mem;
     size_t size, free_index;
 
+    if (pool == NULL)
+        return NULL;
+
     size = ALIGN_DEFAULT(in_size);
     if (size < in_size) {
         return NULL;
@@ -451,9 +454,13 @@ static void * PoolCalloc(Pool *pool,size_t n, size_t size)
 {
     void *mem;
 
-	size *= n;
-    if ((mem = PoolAlloc(pool, size)) != NULL) {
-        memset(mem, 0, size);
+	if (pool == NULL)
+		return NULL;
+	if (size != 0 && n > SIZE_MAX / size)
+		return NULL;
+	n *= size;
+	if ((mem = PoolAlloc(pool, n)) != NULL) {
+		memset(mem, 0, n);
     }
     return mem;
 }
@@ -475,6 +482,9 @@ static void PoolClear(Pool *pool)
 {
     MemoryNode_t *active;
 
+    if (pool == NULL)
+        return;
+
     /* Find the node attached to the pool structure, reset it, make
      * it the active node and free the rest of the nodes.
      */
@@ -494,20 +504,26 @@ static void PoolFinalize(Pool *pool)
 {
     MemoryNode_t *active;
     Allocator *allocator;
+	ContainerAllocator *memory_manager;
+
+	if (pool == NULL)
+		return;
 
     /* Find the block attached to the pool structure.  Save a copy of the
      * allocator pointer, because the pool struct soon will be no more.
      */
     allocator = pool->allocator;
+	memory_manager = pool->MemManager;
     active = pool->self;
     *active->ref = NULL;
 
     /* Free all the nodes in the pool (including the node holding the
      * pool struct), by giving them back to the allocator.
      */
-    allocator_free(allocator, active,pool->MemManager);
+    allocator_free(allocator, active,memory_manager);
 
-    destroyAllocator(allocator,pool->MemManager);
+    destroyAllocator(allocator,memory_manager);
+	memory_manager->free(allocator);
 }
 
 static Pool *newPool(ContainerAllocator *m)
@@ -518,10 +534,14 @@ static Pool *newPool(ContainerAllocator *m)
 
 	if (m == NULL)
 		m = CurrentAllocator;
+	if (m == NULL || m->malloc == NULL || m->free == NULL ||
+		m->calloc == NULL)
+		return NULL;
     if ((pool_allocator = m->calloc(1,sizeof(Allocator))) == NULL) {
         return NULL;
     }
     if ((node = newAllocator(pool_allocator, MIN_ALLOC - MEMORYNODE_SIZE,m)) == NULL) {
+		m->free(pool_allocator);
         return NULL;
     }
 

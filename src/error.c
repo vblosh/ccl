@@ -24,6 +24,9 @@ static struct Error {
 	{CONTAINER_ERROR_BUFFEROVERFLOW,"Debug_malloc: BUFFER OVERFLOW******"},
 	{CONTAINER_ERROR_WRONGELEMENT,  "Wrong element passed to a list"},
 	{CONTAINER_ERROR_BADMASK,       "Incorrect mask length"},
+	{CONTAINER_ERROR_NOTFOUND,      "Object not found"},
+	{CONTAINER_ERROR_DIVISION_BY_ZERO, "Division by zero"},
+	{CONTAINER_ERROR_WRONG_ITERATOR, "Wrong iterator"},
 	{0,"Unknown error"},
 };
 
@@ -37,6 +40,9 @@ static struct ErrorList {
 
 static int AddError(int code, char *message)
 {
+    if (message == NULL)
+        return CONTAINER_ERROR_BADARG;
+
     struct ErrorList *e = CurrentAllocator->calloc(1,sizeof(struct ErrorList));
     if (e) {
         e->Message = CurrentAllocator->malloc(1+strlen(message));
@@ -100,4 +106,3 @@ ErrorInterface iError = {
 	BadArgError,
     AddError,
 };
-

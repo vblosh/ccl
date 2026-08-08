@@ -1,411 +1,602 @@
 #include "containers.h"
 #include "ccl_internal.h"
-#ifndef CHUNK_SIZE 
+
+#include <limits.h>
+
+#ifndef CHUNK_SIZE
 #define CHUNK_SIZE 1000
 #endif
-/*------------------------------------------------------------------------
- Procedure:     new_HeapObject ID:1
- Purpose:       Allocation of a new list element. If the element
-                size is zero, we have an heterogenous
-                list, and we allocate just a pointer to the data
-                that is maintained by the user.
-                Note that we allocate the size of a list element
-                plus the size of the data in a single
-                block. This block should be passed to the FREE
-                function.
 
- Input:         The list where the new element should be added and a
-                pointer to the data that will be added (can be
-                NULL).
- Output:        A pointer to the new list element (can be NULL)
- Errors:        If there is no memory returns NULL
-------------------------------------------------------------------------*/ 
-static void *newHeapObject(ContainerHeap *l)
+/*
+ * A heap slot has private metadata in front of the object returned to the
+ * caller.  The old implementation used ListElement::Next for the free-list
+ * link, which both corrupted arbitrary heap objects and made a freed slot
+ * indistinguishable from a live one.  Keeping the metadata outside the
+ * object also makes this allocator safe for priority-queue elements, which
+ * are not ListElements.
+ */
+typedef struct HeapSlotMeta {
+    uintptr_t state;
+    void *next;
+} HeapSlotMeta;
+
+#define HEAP_SLOT_LIVE ((uintptr_t)0x484541505F4C4956ULL)
+#define HEAP_SLOT_FREE ((uintptr_t)0x484541505F465245ULL)
+
+static size_t heap_alignment(void)
 {
-    size_t siz;
-    char *result;
-
-    if (l->Heap == NULL) {
-        /* Allocate an array of pointers that will hold the blocks
-        of CHUNK_SIZE list items
-        */
-        l->Heap = l->Allocator->calloc(CHUNK_SIZE,sizeof(ListElement *));
-        if (l->Heap == NULL) {
-            return NULL;
-        }
-        l->MemoryUsed += sizeof(ListElement *)*CHUNK_SIZE;
-        l->BlockCount = CHUNK_SIZE;
-        l->CurrentBlock=0;
-        l->BlockIndex = 0;
-    }
-    if (l->FreeList) {
-        ListElement *le = l->FreeList;
-        l->FreeList = le->Next;
-        return le;
-    }
-    if (l->BlockIndex >= CHUNK_SIZE) {
-        /* The current block is full */
-        l->CurrentBlock++;
-        if (l->CurrentBlock == l->BlockCount) {
-            /* The array of block pointers is full. Allocate CHUNK_SIZE elements more */
-            siz = (l->BlockCount+CHUNK_SIZE)*sizeof(ListElement *);
-            result = l->Allocator->realloc(l->Heap,siz);
-            if (result == NULL) {
-                return NULL;
-            }
-            l->Heap = (char **)result;
-            l->MemoryUsed += CHUNK_SIZE*sizeof(ListElement *);
-            /* Position pointer at the start of the new area */
-            result += l->BlockCount*sizeof(ListElement *);
-            /* Zero the new pointers */
-            siz = CHUNK_SIZE*sizeof(ListElement *);
-            memset(result,0,siz);
-            l->BlockCount += CHUNK_SIZE;
-        }
-    }
-    if (l->Heap[l->CurrentBlock] == NULL) {
-        result = l->Allocator->calloc(CHUNK_SIZE,sizeof(void *)+l->ElementSize);
-        if (result == NULL) {
-            return NULL;
-        }
-        l->Heap[l->CurrentBlock] = result;
-        l->BlockIndex = 0;
-	l->MemoryUsed += CHUNK_SIZE * (sizeof(void *) + l->ElementSize);
-    }
-    result = l->Heap[l->CurrentBlock];
-    result += l->ElementSize * l->BlockIndex;
-    l->BlockIndex++;
-    l->timestamp++;
-    return result;
+    return (size_t)_Alignof(max_align_t);
 }
 
-#ifdef DEBUG_HEAP_FREELIST
-static size_t FindBlock(ContainerHeap *heap,void *elem, size_t *idx)
+static int checked_add(size_t left, size_t right, size_t *result)
 {
-    size_t i;
-    intptr_t blockStart,blockEnd,e = (intptr_t)elem;
-
-    for (i=0; i<=heap->BlockIndex;i++) {
-        blockStart = (intptr_t) heap->Heap[i];
-        blockEnd = blockStart + CHUNK_SIZE*sizeof(ListElement *);
-        if (e >= blockStart && e < blockEnd) {
-            if (((e-blockStart) % sizeof(ListElement)) == 0) {
-                *idx = (e-blockStart)/sizeof(ListElement);
-                return i;
-            }
-            else
-                return 1+heap->BlockIndex;
-        }
-    }
-    return i;
-}
-#endif
-
-static int FreeObject(ContainerHeap *heap,void *element)
-{
-    ListElement *le = element;
-
-    le->Next = INVALID_POINTER_VALUE;
-#ifdef DEBUG_HEAP_FREELIST
-    { size_t idx,blockNr;
-        blockNr = FindBlock(heap,element,&idx);
-        if (blockNr > heap->CurrentBlock) return -1;
-    }
-#endif
-    memcpy(le->Data, &heap->FreeList,sizeof(ListElement *));
-	le->Next = heap->FreeList;
-    heap->FreeList = le;
-    heap->timestamp++;
+    if (left > SIZE_MAX - right)
+        return 0;
+    *result = left + right;
     return 1;
 }
 
-static void Clear(ContainerHeap * heap)
+static int checked_mul(size_t left, size_t right, size_t *result)
+{
+    if (left != 0 && right > SIZE_MAX / left)
+        return 0;
+    *result = left * right;
+    return 1;
+}
+
+static int checked_align(size_t value, size_t alignment, size_t *result)
+{
+    size_t remainder;
+    size_t padding;
+
+    if (alignment == 0)
+        return 0;
+    remainder = value % alignment;
+    if (remainder == 0) {
+        *result = value;
+        return 1;
+    }
+    padding = alignment - remainder;
+    return checked_add(value, padding, result);
+}
+
+static size_t heap_metadata_size(void)
+{
+    size_t result;
+
+    if (!checked_align(sizeof(HeapSlotMeta), heap_alignment(), &result))
+        return 0;
+    return result;
+}
+
+static int heap_slot_stride(const ContainerHeap *heap, size_t *result)
+{
+    size_t metadata = heap_metadata_size();
+
+    if (heap == NULL || metadata == 0)
+        return 0;
+    return checked_add(metadata, heap->ElementSize, result);
+}
+
+static int allocator_is_valid(const ContainerAllocator *allocator)
+{
+    return allocator != NULL && allocator->malloc != NULL &&
+           allocator->calloc != NULL && allocator->realloc != NULL &&
+           allocator->free != NULL;
+}
+
+static int heap_is_valid(const ContainerHeap *heap)
+{
+    return heap != NULL && heap->VTable == &iHeap &&
+           allocator_is_valid(heap->Allocator);
+}
+
+static void *heap_slot_object(ContainerHeap *heap, size_t index)
+{
+    size_t block = index / (size_t)CHUNK_SIZE;
+    size_t position = index % (size_t)CHUNK_SIZE;
+    size_t stride;
+    size_t offset;
+
+    if (heap == NULL || heap->Heap == NULL || block >= heap->BlockCount ||
+        heap->Heap[block] == NULL || !heap_slot_stride(heap, &stride) ||
+        !checked_mul(position, stride, &offset))
+        return NULL;
+    return heap->Heap[block] + offset + heap_metadata_size();
+}
+
+static HeapSlotMeta *heap_slot_metadata(ContainerHeap *heap, size_t index)
+{
+    void *object = heap_slot_object(heap, index);
+
+    if (object == NULL)
+        return NULL;
+    return (HeapSlotMeta *)((char *)object - heap_metadata_size());
+}
+
+/* Number of slots whose backing block has actually been allocated. */
+static size_t heap_allocated_count(const ContainerHeap *heap)
+{
+    size_t prefix;
+
+    if (heap == NULL || heap->Heap == NULL || heap->BlockCount == 0 ||
+        heap->CurrentBlock >= heap->BlockCount ||
+        heap->Heap[heap->CurrentBlock] == NULL)
+        return 0;
+    if (!checked_mul((size_t)heap->CurrentBlock, (size_t)CHUNK_SIZE, &prefix))
+        return 0;
+    if (!checked_add(prefix, (size_t)heap->BlockIndex, &prefix))
+        return 0;
+    return prefix;
+}
+
+static HeapSlotMeta *find_slot(ContainerHeap *heap, const void *element,
+                               size_t *index)
+{
+    size_t count;
+    size_t i;
+
+    if (heap == NULL || element == NULL)
+        return NULL;
+    count = heap_allocated_count(heap);
+    for (i = 0; i < count; ++i) {
+        void *object = heap_slot_object(heap, i);
+        if (object != NULL && (uintptr_t)object == (uintptr_t)element) {
+            if (index != NULL)
+                *index = i;
+            return heap_slot_metadata(heap, i);
+        }
+    }
+    return NULL;
+}
+
+static int report_bad_argument(const char *name)
+{
+    iError.RaiseError(name, CONTAINER_ERROR_BADARG);
+    return CONTAINER_ERROR_BADARG;
+}
+
+/* Allocate a new object from the pool, or reuse a freed slot. */
+static void *newHeapObject(ContainerHeap *heap)
+{
+    size_t table_bytes;
+    size_t block_bytes;
+    size_t stride;
+    size_t next_block;
+    size_t new_count;
+    size_t old_bytes;
+    size_t object_index;
+    char *table_tail;
+    HeapSlotMeta *meta;
+    void *object;
+
+    if (!heap_is_valid(heap)) {
+        report_bad_argument("iHeap.NewObject");
+        return NULL;
+    }
+    if (!heap_slot_stride(heap, &stride) ||
+        !checked_mul((size_t)CHUNK_SIZE, stride, &block_bytes))
+        return NULL;
+
+    if (heap->FreeList != NULL) {
+        object = heap->FreeList;
+        meta = (HeapSlotMeta *)((char *)object - heap_metadata_size());
+        if (meta->state != HEAP_SLOT_FREE)
+            return NULL;
+        heap->FreeList = meta->next;
+        meta->next = NULL;
+        meta->state = HEAP_SLOT_LIVE;
+        ++heap->timestamp;
+        return object;
+    }
+
+    if (heap->Heap == NULL) {
+        if (!checked_mul((size_t)CHUNK_SIZE, sizeof(char *), &table_bytes))
+            return NULL;
+        heap->Heap = heap->Allocator->calloc((size_t)CHUNK_SIZE,
+                                              sizeof(char *));
+        if (heap->Heap == NULL)
+            return NULL;
+        heap->BlockCount = (unsigned)CHUNK_SIZE;
+        heap->CurrentBlock = 0;
+        heap->BlockIndex = 0;
+        heap->MemoryUsed = table_bytes;
+    }
+
+    /* A full block is retained as the last allocated block until the next
+     * block is successfully allocated.  This keeps allocation failures
+     * retryable without publishing a partially initialized state. */
+    if (heap->BlockIndex >= (unsigned)CHUNK_SIZE) {
+        if (heap->CurrentBlock == UINT_MAX)
+            return NULL;
+        next_block = (size_t)heap->CurrentBlock + 1;
+        if (next_block >= (size_t)heap->BlockCount) {
+            if ((size_t)heap->BlockCount > SIZE_MAX - (size_t)CHUNK_SIZE ||
+                (size_t)heap->BlockCount + (size_t)CHUNK_SIZE > UINT_MAX)
+                return NULL;
+            new_count = (size_t)heap->BlockCount + (size_t)CHUNK_SIZE;
+            if (!checked_mul(new_count, sizeof(char *), &table_bytes) ||
+                !checked_mul((size_t)heap->BlockCount, sizeof(char *),
+                             &old_bytes))
+                return NULL;
+            if (table_bytes - old_bytes > SIZE_MAX - heap->MemoryUsed)
+                return NULL;
+            table_tail = heap->Allocator->realloc(heap->Heap, table_bytes);
+            if (table_tail == NULL)
+                return NULL;
+            memset(table_tail + old_bytes, 0, table_bytes - old_bytes);
+            heap->Heap = (char **)table_tail;
+            heap->MemoryUsed += table_bytes - old_bytes;
+            heap->BlockCount = (unsigned)new_count;
+        }
+        if (heap->Heap[next_block] == NULL) {
+            heap->Heap[next_block] = heap->Allocator->calloc(
+                (size_t)CHUNK_SIZE, stride);
+            if (heap->Heap[next_block] == NULL)
+                return NULL;
+            if (!checked_add(heap->MemoryUsed, block_bytes,
+                             &heap->MemoryUsed)) {
+                heap->Allocator->free(heap->Heap[next_block]);
+                heap->Heap[next_block] = NULL;
+                return NULL;
+            }
+        }
+        heap->CurrentBlock = (unsigned)next_block;
+        heap->BlockIndex = 0;
+    } else if (heap->Heap[heap->CurrentBlock] == NULL) {
+        heap->Heap[heap->CurrentBlock] = heap->Allocator->calloc(
+            (size_t)CHUNK_SIZE, stride);
+        if (heap->Heap[heap->CurrentBlock] == NULL)
+            return NULL;
+        if (!checked_add(heap->MemoryUsed, block_bytes, &heap->MemoryUsed)) {
+            heap->Allocator->free(heap->Heap[heap->CurrentBlock]);
+            heap->Heap[heap->CurrentBlock] = NULL;
+            return NULL;
+        }
+    }
+
+    if (!checked_mul((size_t)heap->CurrentBlock, (size_t)CHUNK_SIZE,
+                     &object_index) ||
+        !checked_add(object_index, (size_t)heap->BlockIndex, &object_index))
+        return NULL;
+    object = heap_slot_object(heap, object_index);
+    if (object == NULL)
+        return NULL;
+    meta = (HeapSlotMeta *)((char *)object - heap_metadata_size());
+    meta->state = HEAP_SLOT_LIVE;
+    meta->next = NULL;
+    ++heap->BlockIndex;
+    ++heap->timestamp;
+    return object;
+}
+
+static int FreeObject(ContainerHeap *heap, void *element)
+{
+    HeapSlotMeta *meta;
+
+    if (!heap_is_valid(heap) || element == NULL)
+        return report_bad_argument("iHeap.FreeObject");
+    meta = find_slot(heap, element, NULL);
+    if (meta == NULL || meta->state != HEAP_SLOT_LIVE)
+        return report_bad_argument("iHeap.FreeObject");
+    meta->state = HEAP_SLOT_FREE;
+    meta->next = heap->FreeList;
+    heap->FreeList = element;
+    ++heap->timestamp;
+    return 1;
+}
+
+static void Clear(ContainerHeap *heap)
 {
     size_t i;
 
-    for (i=0; i<heap->BlockCount;i++) heap->Allocator->free(heap->Heap[i]);
-    heap->Allocator->free(heap->Heap);
+    if (!heap_is_valid(heap)) {
+        iError.RaiseError("iHeap.Clear", CONTAINER_ERROR_BADARG);
+        return;
+    }
+    if (heap->Heap != NULL) {
+        for (i = 0; i <= (size_t)heap->CurrentBlock &&
+                    i < (size_t)heap->BlockCount; ++i) {
+            if (heap->Heap[i] != NULL)
+                heap->Allocator->free(heap->Heap[i]);
+        }
+        heap->Allocator->free(heap->Heap);
+    }
     heap->BlockCount = 0;
     heap->CurrentBlock = 0;
     heap->BlockIndex = 0;
     heap->Heap = NULL;
+    heap->FreeList = NULL;
     heap->MemoryUsed = 0;
-    heap->timestamp=0;
+    ++heap->timestamp;
 }
 
-/*------------------------------------------------------------------------
- Procedure:     DestroyListElements ID:1
- Purpose:       Reclaims all memory used by a list
- Input:         The list
- Output:        None
- Errors:        None
- ------------------------------------------------------------------------*/
-static void DestroyHeap(ContainerHeap *l)
+static void DestroyHeap(ContainerHeap *heap)
 {
-    Clear(l);
-    l->Allocator->free(l);
+    if (!heap_is_valid(heap)) {
+        iError.RaiseError("iHeap.Finalize", CONTAINER_ERROR_BADARG);
+        return;
+    }
+    Clear(heap);
+    heap->Allocator->free(heap);
 }
 
 static size_t GetHeapSize(ContainerHeap *heap)
 {
-    size_t result;
-    
-    if (heap->Heap == NULL)
+    if (heap == NULL)
         return 0;
-    result = CHUNK_SIZE * (heap->CurrentBlock+1) * heap->ElementSize;
-    result += heap->BlockIndex * (heap->ElementSize);
-    result += (sizeof(void *) * heap->BlockCount);
-    return result;
+    return heap->MemoryUsed;
 }
 
-static ContainerHeap *InitHeap(void *pHeap,size_t ElementSize,const ContainerAllocator *m)
+static ContainerHeap *InitHeap(void *storage, size_t element_size,
+                               const ContainerAllocator *allocator)
 {
-    ContainerHeap *heap = pHeap;
-    memset(heap,0,sizeof(*heap));
+    ContainerHeap *heap = storage;
+    size_t minimum;
+    size_t normalized;
+
+    if (heap == NULL)
+        return (iError.NullPtrError("iHeap.InitHeap"), NULL);
+    if (allocator == NULL)
+        allocator = CurrentAllocator;
+    if (!allocator_is_valid(allocator)) {
+        iError.RaiseError("iHeap.InitHeap", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    minimum = 2 * sizeof(void *);
+    if (element_size < minimum)
+        element_size = minimum;
+    if (!checked_align(element_size, heap_alignment(), &normalized))
+        return NULL;
+    memset(heap, 0, sizeof(*heap));
     heap->VTable = &iHeap;
-    if (ElementSize < 2*sizeof(ListElement *))
-        ElementSize = 2*sizeof(ListElement *);
-    heap->ElementSize = ElementSize;
-    if (m == NULL)
-        m = CurrentAllocator;
-    heap->Allocator = m;
+    heap->ElementSize = normalized;
+    heap->Allocator = allocator;
     return heap;
 }
 
-static  ContainerHeap *newHeap(size_t ElementSize,const ContainerAllocator *m)
+static ContainerHeap *newHeap(size_t element_size,
+                               const ContainerAllocator *allocator)
 {
-    ContainerHeap *result = m->malloc(sizeof(ContainerHeap));
-    if (result == NULL)
+    ContainerHeap *heap;
+
+    if (allocator == NULL)
+        allocator = CurrentAllocator;
+    if (!allocator_is_valid(allocator)) {
+        iError.RaiseError("iHeap.Create", CONTAINER_ERROR_BADARG);
         return NULL;
-    return InitHeap(result,ElementSize,m);
+    }
+    heap = allocator->malloc(sizeof(ContainerHeap));
+    if (heap == NULL)
+        return NULL;
+    if (InitHeap(heap, element_size, allocator) == NULL) {
+        allocator->free(heap);
+        return NULL;
+    }
+    return heap;
 }
 
-static int SkipFreeForward(struct HeapIterator *it)
+static int iterator_ready(struct HeapIterator *iterator, const char *name)
 {
-    size_t idx = it->BlockNumber * CHUNK_SIZE + it->BlockPosition;
-    size_t start = idx;
-    ListElement *le;
-    char *p;
-
-    p = it->Heap->Heap[it->BlockNumber];
-    p += it->BlockPosition*it->Heap->ElementSize;
-    le = (ListElement *)p;
-
-    while (le->Next == INVALID_POINTER_VALUE) {
-        idx++;
-        it->BlockPosition++;
-        if (it->BlockPosition >= CHUNK_SIZE) {
-            it->BlockNumber++;
-            if (it->BlockNumber >= it->Heap->BlockCount)
-                return -1;
-            p = it->Heap->Heap[it->BlockNumber];
-            it->BlockPosition = 0;
-        }
-        else {
-            /* Do not go beyond the last position in the last block */
-            if (it->BlockNumber == it->Heap->BlockCount &&
-                it->BlockPosition >= it->Heap->BlockIndex)
-                return -1;
-            p = it->Heap->Heap[it->BlockNumber];
-            p += (it->BlockPosition)*it->Heap->ElementSize;
-        }
-        le = (ListElement *)p;
+    if (iterator == NULL)
+        return (iError.NullPtrError(name), 0);
+    if (iterator->Magic != HEAP_MAGIC_NUMBER) {
+        iError.RaiseError(name, CONTAINER_ERROR_WRONG_ITERATOR);
+        return 0;
     }
-    if (idx == start) return 0;
+    if (!heap_is_valid(iterator->Heap) ||
+        iterator->timestamp != iterator->Heap->timestamp) {
+        iError.RaiseError(name, CONTAINER_ERROR_OBJECT_CHANGED);
+        return 0;
+    }
     return 1;
 }
 
-static int SkipFreeBackwards(struct HeapIterator *it)
+static void iterator_no_current(struct HeapIterator *iterator)
 {
-    size_t idx = it->Heap->CurrentBlock * CHUNK_SIZE + it->Heap->BlockIndex;
-    size_t start = idx;
-    ListElement *le;
-    char *p;
+    iterator->BlockNumber = SIZE_MAX;
+    iterator->BlockPosition = SIZE_MAX;
+}
 
-    p = it->Heap->Heap[it->BlockNumber];
-    p += it->BlockPosition*it->Heap->ElementSize;
-    le = (ListElement *)p;
+static void iterator_set_index(struct HeapIterator *iterator, size_t index)
+{
+    iterator->BlockNumber = index / (size_t)CHUNK_SIZE;
+    iterator->BlockPosition = index % (size_t)CHUNK_SIZE;
+}
 
-    while (le->Next == INVALID_POINTER_VALUE) {
-        idx--;
-        if (it->Heap->BlockIndex > 0) {
-            p -= it->Heap->ElementSize;
-            it->BlockPosition--;
+static size_t iterator_index(const struct HeapIterator *iterator)
+{
+    if (iterator->BlockNumber == SIZE_MAX || iterator->BlockPosition == SIZE_MAX)
+        return SIZE_MAX;
+    if (iterator->BlockNumber > SIZE_MAX / (size_t)CHUNK_SIZE)
+        return SIZE_MAX;
+    return iterator->BlockNumber * (size_t)CHUNK_SIZE +
+           iterator->BlockPosition;
+}
+
+static int slot_is_live(ContainerHeap *heap, size_t index)
+{
+    HeapSlotMeta *meta = heap_slot_metadata(heap, index);
+    return meta != NULL && meta->state == HEAP_SLOT_LIVE;
+}
+
+static void *find_live_forward(ContainerHeap *heap, size_t start,
+                               size_t *found)
+{
+    size_t count = heap_allocated_count(heap);
+    size_t i;
+
+    if (start >= count)
+        return NULL;
+    for (i = start; i < count; ++i) {
+        if (slot_is_live(heap, i)) {
+            if (found != NULL)
+                *found = i;
+            return heap_slot_object(heap, i);
         }
-        else {
-            if (it->BlockNumber == 0)
-                return -1;
-            it->BlockNumber--;
-            it->BlockPosition = CHUNK_SIZE-1;
-            p = it->Heap->Heap[it->BlockNumber];
-            p += (CHUNK_SIZE-1)*it->Heap->ElementSize;
+    }
+    return NULL;
+}
+
+static void *find_live_backward(ContainerHeap *heap, size_t start,
+                                size_t *found)
+{
+    size_t count = heap_allocated_count(heap);
+    size_t i;
+
+    if (count == 0 || start >= count)
+        return NULL;
+    i = start;
+    for (;;) {
+        if (slot_is_live(heap, i)) {
+            if (found != NULL)
+                *found = i;
+            return heap_slot_object(heap, i);
         }
-        le = (ListElement *)p;
+        if (i == 0)
+            break;
+        --i;
     }
-    if (idx == start) return 0;
-    return 1;
+    return NULL;
 }
 
-static void *GetFirst(Iterator *it)
+static void *GetFirst(Iterator *base)
 {
-    struct HeapIterator *hi = (struct HeapIterator *)it;
-    ContainerHeap *heap = hi->Heap;
-    char *result;
-    int r;
+    struct HeapIterator *iterator = (struct HeapIterator *)base;
+    size_t index;
+    void *result;
 
-	if (hi->Magic != HEAP_MAGIC_NUMBER) {
-		iError.RaiseError("Heap.GetFirst",CONTAINER_ERROR_WRONG_ITERATOR);
-		return NULL;
-	}
-    hi->BlockNumber = hi->BlockPosition = 0;
-    if (heap->BlockCount == 0)
+    if (!iterator_ready(iterator, "Heap.GetFirst"))
         return NULL;
-    r = SkipFreeForward(hi);
-    if (r < 0) return NULL;
-    result = heap->Heap[hi->BlockNumber];
-    result += (hi->BlockPosition*heap->ElementSize);
-    if (r == 0) hi->BlockPosition++;
+    iterator_no_current(iterator);
+    result = find_live_forward(iterator->Heap, 0, &index);
+    if (result != NULL)
+        iterator_set_index(iterator, index);
     return result;
 }
 
-
-static void *GetNext(Iterator *it)
+static void *GetNext(Iterator *base)
 {
-    struct HeapIterator *hi = (struct HeapIterator *)it;
-    ContainerHeap *heap = hi->Heap;
-    char *result;
-    
-	if (hi->Magic != HEAP_MAGIC_NUMBER) {
-		iError.RaiseError("Heap.GetNext",CONTAINER_ERROR_WRONG_ITERATOR);
-		return NULL;
-	}
-    if (hi->BlockNumber == (heap->CurrentBlock)) {
-        /* In the last block we should not got beyond the
-           last used element, the block can be half full.
-        */
-        if (hi->BlockPosition >= heap->BlockIndex)
-            return NULL;
-    }
-    /*
-        We are in a block that is full. Check that the position
-        is less than the size of the block.
-        */
-    if (hi->BlockPosition >= CHUNK_SIZE) {
-        hi->BlockNumber++;
-        hi->BlockPosition = 0;
-        return GetNext(it);
-    }
-    if (SkipFreeForward(hi) < 0)
+    struct HeapIterator *iterator = (struct HeapIterator *)base;
+    size_t current;
+    size_t start;
+    size_t index;
+    void *result;
+
+    if (!iterator_ready(iterator, "Heap.GetNext"))
         return NULL;
-    result = heap->Heap[hi->BlockNumber];
-    result += (hi->BlockPosition*heap->ElementSize);
-    hi->BlockPosition++;
+    current = iterator_index(iterator);
+    if (current == SIZE_MAX)
+        start = 0;
+    else if (current == SIZE_MAX - 1)
+        return NULL;
+    else
+        start = current + 1;
+    result = find_live_forward(iterator->Heap, start, &index);
+    if (result != NULL)
+        iterator_set_index(iterator, index);
     return result;
 }
 
-static size_t GetPosition(Iterator *it)
+static void *GetPrevious(Iterator *base)
 {
-    struct HeapIterator *hi = (struct HeapIterator *)it;
+    struct HeapIterator *iterator = (struct HeapIterator *)base;
+    size_t current;
+    size_t index;
+    void *result;
 
-	if (hi->Magic != HEAP_MAGIC_NUMBER) {
-		iError.RaiseError("Heap.GetPosition",CONTAINER_ERROR_WRONG_ITERATOR);
-		return (size_t)-1;
-	}
-    return hi->BlockNumber*CHUNK_SIZE + hi->BlockPosition;
-}
-
-static void *GetPrevious(Iterator *it)
-{
-    struct HeapIterator *hi = (struct HeapIterator *)it;
-    ContainerHeap *heap = hi->Heap;
-    char *result;
-    int r;
-
-	if (hi->Magic != HEAP_MAGIC_NUMBER) {
-		iError.RaiseError("Heap.GetPrevious",CONTAINER_ERROR_WRONG_ITERATOR);
-		return NULL;
-	}
-    if (hi->BlockPosition == 0) {
-        /* Go to the last element of the previous block        */
-        if (hi->BlockNumber == 0)
-            return NULL;
-        hi->BlockNumber--;
-        hi->BlockPosition = CHUNK_SIZE -1;
-        result = heap->Heap[hi->BlockNumber];
-        result += (hi->BlockPosition*heap->ElementSize);
-        return result;
-    }
-    r = SkipFreeBackwards(hi);
-    if (r < 0) 
+    if (!iterator_ready(iterator, "Heap.GetPrevious"))
         return NULL;
-    if (r == 0) hi->BlockPosition--;
-    result = heap->Heap[hi->BlockNumber];
-    result += (hi->BlockPosition*heap->ElementSize);
+    current = iterator_index(iterator);
+    if (current == SIZE_MAX || current == 0)
+        return NULL;
+    result = find_live_backward(iterator->Heap, current - 1, &index);
+    if (result != NULL)
+        iterator_set_index(iterator, index);
     return result;
 }
 
-static void *GetLast(Iterator *it)
+static void *GetLast(Iterator *base)
 {
-    struct HeapIterator *hi = (struct HeapIterator *)it;
-    ContainerHeap *heap = hi->Heap;
-    char *result;
-	if (hi->Magic != HEAP_MAGIC_NUMBER) {
-		iError.RaiseError("Heap.GetLast",CONTAINER_ERROR_WRONG_ITERATOR);
-		return NULL;
-	}
-    if (heap->BlockCount == 0)
+    struct HeapIterator *iterator = (struct HeapIterator *)base;
+    size_t count;
+    size_t index;
+    void *result;
+
+    if (!iterator_ready(iterator, "Heap.GetLast"))
         return NULL;
-    hi->BlockNumber = heap->CurrentBlock;
-    hi->BlockPosition = heap->BlockIndex-1;
-    result = heap->Heap[heap->CurrentBlock];
-    result += (hi->BlockPosition) *heap->ElementSize;
+    iterator_no_current(iterator);
+    count = heap_allocated_count(iterator->Heap);
+    result = find_live_backward(iterator->Heap, count == 0 ? 0 : count - 1,
+                                &index);
+    if (result != NULL)
+        iterator_set_index(iterator, index);
     return result;
 }
 
-static void *GetCurrent(Iterator *it)
+static void *GetCurrent(Iterator *base)
 {
-    struct HeapIterator *hi = (struct HeapIterator *)it;
-    ContainerHeap *heap = hi->Heap;
-    char *result;
-	if (hi->Magic != HEAP_MAGIC_NUMBER) {
-		iError.RaiseError("Heap.GetCurrent",CONTAINER_ERROR_WRONG_ITERATOR);
-		return NULL;
-	}
-    if (heap->BlockCount == 0)
+    struct HeapIterator *iterator = (struct HeapIterator *)base;
+    size_t index;
+
+    if (!iterator_ready(iterator, "Heap.GetCurrent"))
         return NULL;
-    result = heap->Heap[hi->BlockNumber];
-    result += (hi->BlockPosition) *heap->ElementSize;
-    return result;
+    index = iterator_index(iterator);
+    if (index == SIZE_MAX || !slot_is_live(iterator->Heap, index))
+        return NULL;
+    return heap_slot_object(iterator->Heap, index);
+}
+
+static size_t GetPosition(Iterator *base)
+{
+    struct HeapIterator *iterator = (struct HeapIterator *)base;
+
+    if (!iterator_ready(iterator, "Heap.GetPosition"))
+        return SIZE_MAX;
+    return iterator_index(iterator);
 }
 
 static Iterator *NewIterator(ContainerHeap *heap)
 {
-    struct HeapIterator *result;
+    struct HeapIterator *iterator;
 
-    if (heap == NULL) {
-        iError.RaiseError("iHeap.NewIterator",CONTAINER_ERROR_BADARG);
+    if (!heap_is_valid(heap)) {
+        iError.RaiseError("iHeap.NewIterator", CONTAINER_ERROR_BADARG);
         return NULL;
     }
-    result = heap->Allocator->calloc(1,sizeof(struct HeapIterator));
-    if (result == NULL)
+    iterator = heap->Allocator->calloc(1, sizeof(*iterator));
+    if (iterator == NULL)
         return NULL;
-    result->Heap = heap;
-    result->timestamp = heap->CurrentBlock+heap->BlockIndex;
-    result->it.GetFirst = GetFirst;
-    result->it.GetNext = GetNext;
-    result->it.GetPrevious = GetPrevious;
-    result->it.GetCurrent = GetCurrent;
-    result->it.GetLast = GetLast;
-    result->it.GetPosition = GetPosition;
-	result->Magic = HEAP_MAGIC_NUMBER;
-    return &result->it;
+    iterator->Heap = heap;
+    iterator->timestamp = heap->timestamp;
+    iterator->Magic = HEAP_MAGIC_NUMBER;
+    iterator_no_current(iterator);
+    iterator->it.GetFirst = GetFirst;
+    iterator->it.GetNext = GetNext;
+    iterator->it.GetPrevious = GetPrevious;
+    iterator->it.GetCurrent = GetCurrent;
+    iterator->it.GetLast = GetLast;
+    iterator->it.GetPosition = GetPosition;
+    return &iterator->it;
 }
 
-static int DeleteIterator(Iterator *it)
+static int DeleteIterator(Iterator *base)
 {
-    struct HeapIterator *hi = (struct HeapIterator *)it;
-    ContainerHeap *heap = hi->Heap;
-    heap->Allocator->free(it);
+    struct HeapIterator *iterator;
+    ContainerHeap *heap;
+
+    if (base == NULL)
+        return iError.NullPtrError("iHeap.DeleteIterator");
+    iterator = (struct HeapIterator *)base;
+    if (iterator->Magic != HEAP_MAGIC_NUMBER) {
+        iError.RaiseError("iHeap.DeleteIterator", CONTAINER_ERROR_WRONG_ITERATOR);
+        return CONTAINER_ERROR_WRONG_ITERATOR;
+    }
+    heap = iterator->Heap;
+    iterator->Magic = 0;
+    if (!heap_is_valid(heap))
+        return CONTAINER_ERROR_WRONG_ITERATOR;
+    heap->Allocator->free(base);
     return 1;
 }
 

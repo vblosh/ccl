@@ -1,14 +1,10 @@
 /*
 The algorithms of this code have been adapted from the Apache runtime library.
 */
-#ifndef TEST
+#include <stdint.h>
 #include "containers.h"
-#ifndef _MSC_VER
-#include <inttypes.h>
-#endif
-#else
+#include <stdlib.h>
 #include <string.h>
-#endif
 #define MAX_INDEX	20
 #define ALIGN(size, boundary) (((size) + ((boundary) - 1)) & ~((boundary) - 1))
 #define ALIGN_DEFAULT(size) ALIGN(size, 8)
@@ -122,15 +118,8 @@ static void * PoolAlloc_debug(Pool *p, size_t size, const char *file_line);
  * @return See: PoolCalloc
  */
 static void * PoolCalloc_debug(Pool *p, size_t n,size_t size, const char *file_line);
-#define PoolCalloc(p, size) PoolCalloc_debug(p, size, __FILE_LINE__)
+#define PoolCalloc(p, n, size) PoolCalloc_debug(p, n, size, __FILE_LINE__)
 
-
-/**
- * Guarantee that a subpool has the same lifetime as the parent.
- * @param p The parent pool
- * @param sub The subpool
- */
-void JoinPool(Pool *p, Pool *sub);
 
 /**
  * Report the number of bytes currently in the pool
@@ -138,13 +127,6 @@ void JoinPool(Pool *p, Pool *sub);
  * @return The number of bytes
  */
 static size_t Sizeof(Pool *p);
-
-/**
- * Lock a pool
- * @param pool The pool to lock
- * @param flag  The flag
- */
-void LockPool(Pool *pool, int flag);
 
 /** The base size of a memory node - aligned.  */
 #define MEMORYNODE_SIZE ALIGN_DEFAULT(sizeof(MemoryNode_t))
@@ -157,31 +139,6 @@ void LockPool(Pool *pool, int flag);
  */
 static void destroyAllocator(Allocator *allocator);
 
-/**
- * Set the current threshold at which the allocator should start
- * giving blocks back to the system.
- * @param allocator The allocator the set the threshold on
- * @param size The threshold.  0 == unlimited.
- */
-void SetMaxFree(Allocator *allocator, size_t size);
-
-#ifdef THREAD_VERSION
-#define NESTED_MUTEX	0
-/**
- * Set a mutex for the allocator to use
- * @param allocator The allocator to set the mutex for
- * @param mutex The mutex
- */
-void SetMutex(Allocator *allocator, Mutex *mutex);
-
-/**
- * Get the mutex currently set for the allocator
- * @param allocator The allocator
- */
-Mutex * GetMutex( Allocator *allocator);
-
-#endif /* THREAD_VERSION */
-
 /*
  * Magic numbers
  */
@@ -189,21 +146,6 @@ Mutex * GetMutex( Allocator *allocator);
 #define MIN_ALLOC 8192
 #define BOUNDARY_INDEX 12
 #define BOUNDARY_SIZE (1 << BOUNDARY_INDEX)
-
-#ifdef THREAD_VERSION
-void SetMutex(Allocator *allocator,
-                                          Mutex *mutex)
-{
-    allocator->mutex = mutex;
-}
-
-Mutex * GetMutex( Allocator *allocator)
-{
-    return allocator->mutex;
-}
-#endif /* THREAD_VERSION */
-
-
 
 /*
  * Debug level
@@ -235,18 +177,12 @@ struct debug_node_t {
 struct Pool {
     Allocator      *allocator;
     const char           *tag;
-    Pool           *joined; /* the caller has guaranteed that this pool
-                                   * will survive as long as ->joined */
     debug_node_t         *nodes;
     const char           *file_line;
     uint32_t          creation_flags;
     unsigned int          stat_alloc;
     unsigned int          stat_total_alloc;
     unsigned int          stat_clear;
-#ifdef THREAD_VERSION
-    thread_t       owner;
-    Mutex   *mutex;
-#endif /* THREAD_VERSION */
 };
 
 #define SIZEOF_POOL_T       ALIGN_DEFAULT(sizeof(Pool))
@@ -260,7 +196,7 @@ static void destroyAllocator(Allocator *allocator)
         ref = &allocator->free[idx];
         while ((node = *ref) != NULL) {
             *ref = node->next;
-            iDebugMalloc.free(node);
+            free(node);
         }
     }
 }
@@ -278,9 +214,6 @@ static void Log(Pool *pool, const char *event, const char *file_line, int deref)
             fprintf(stderr,
                 "POOL DEBUG: "
                 "[%lu"
-#if THREAD_VERSION
-                "/%lu"
-#endif /* THREAD_VERSION */
                 "] "
                 "%7s "
                 "(%10lu) "
@@ -289,9 +222,6 @@ static void Log(Pool *pool, const char *event, const char *file_line, int deref)
                 "(%u/%u/%u) "
                 "\n",
                 0UL,
-#if THREAD_VERSION
-                (unsigned long)GetCurrentThread(),
-#endif /* THREAD_VERSION */
                 event,
                 (unsigned long)Sizeof(pool),
                 pool, pool->tag,
@@ -302,9 +232,6 @@ static void Log(Pool *pool, const char *event, const char *file_line, int deref)
             fprintf(stderr,
                 "POOL DEBUG: "
                 "[%lu"
-#if THREAD_VERSION
-                "/%lu"
-#endif /* THREAD_VERSION */
                 "] "
                 "%7s "
                 "                                   "
@@ -312,9 +239,6 @@ static void Log(Pool *pool, const char *event, const char *file_line, int deref)
                 "<%s> "
                 "\n",
                 0UL,
-#if THREAD_VERSION
-                (unsigned long)GetCurrentThread(),
-#endif /* THREAD_VERSION */
                 event,
                 pool,
                 file_line);
@@ -324,6 +248,7 @@ static void Log(Pool *pool, const char *event, const char *file_line, int deref)
 
 static void CheckIntegrity(Pool *pool)
 {
+    (void)pool;
 }
 
 
@@ -336,12 +261,15 @@ static void *pool_alloc_debug(Pool *pool, size_t size,const char *file_line)
     debug_node_t *node;
     void *mem;
 
+    (void)file_line;
+
     if ((mem = iDebugMalloc.malloc(size)) == NULL) {
         return NULL;
     }
     node = pool->nodes;
     if (node == NULL || node->index == 64) {
         if ((node = calloc(1,SIZEOF_DEBUG_NODE_T)) == NULL) {
+            iDebugMalloc.free(mem);
             return NULL;
         }
         node->next = pool->nodes;
@@ -376,12 +304,16 @@ static void * PoolAlloc_debug(Pool *pool, size_t size, const char *file_line)
 static void * PoolCalloc_debug(Pool *pool, size_t n,size_t size, const char *file_line)
 {
     void *mem;
+    size_t total_size;
 
     CheckIntegrity(pool);
 
-    mem = pool_alloc_debug(pool, n*size,file_line);
+    if (size != 0 && n > SIZE_MAX / size)
+        return NULL;
+    total_size = n * size;
+    mem = pool_alloc_debug(pool, total_size,file_line);
     if (mem)
-        memset(mem, 0, size);
+        memset(mem, 0, total_size);
 
 #if (POOL_DEBUG_VERSION & POOL_DEBUG_VERSION_VERBOSE_ALLOC)
     Log(pool, "PCALLOC", file_line, 1);
@@ -402,6 +334,8 @@ static void pool_clear_debug(Pool *pool, const char *file_line)
     debug_node_t *node;
     uint32_t idx;
 
+    (void)file_line;
+
     /* Free the blocks, scribbling over them first to help highlight
      * use-after-free issues. */
     while ((node = pool->nodes) != NULL) {
@@ -414,7 +348,7 @@ static void pool_clear_debug(Pool *pool, const char *file_line)
         }
 
         memset(node, POOL_POISON_BYTE, SIZEOF_DEBUG_NODE_T);
-        iDebugMalloc.free(node);
+        free(node);
     }
 
     pool->stat_alloc = 0;
@@ -423,56 +357,17 @@ static void pool_clear_debug(Pool *pool, const char *file_line)
 
 static void PoolClear_debug(Pool *pool, const char *file_line)
 {
-#ifdef THREAD_VERSION
-    Mutex *mutex = NULL;
-#endif
-
     CheckIntegrity(pool);
 
 #if (POOL_DEBUG_VERSION & POOL_DEBUG_VERSION_VERBOSE)
     Log(pool, "CLEAR", file_line, 1);
 #endif /* (POOL_DEBUG_VERSION & POOL_DEBUG_VERSION_VERBOSE) */
 
-#ifdef THREAD_VERSION
-
-    /* Lock the parent mutex before clearing so that if we have our
-     * own mutex it won't be accessed by pool_walk_tree after
-     * it has been destroyed.
-     */
-    if (mutex != NULL && mutex != pool->mutex) {
-        LockMutex(mutex);
-    }
-#endif
-
     pool_clear_debug(pool, file_line);
-
-#ifdef THREAD_VERSION
-    /* If we had our own mutex, it will have been destroyed by
-     * the registered cleanups.  Recreate the mutex.  Unlock
-     * the mutex we obtained above.
-     */
-    if (mutex != pool->mutex) {
-        (void)CreateMutex(&pool->mutex,
-                                      NESTED_MUTEX, pool);
-
-        if (mutex != NULL)
-            (void)MutexUnlock(mutex);
-    }
-#endif /* THREAD_VERSION */
 }
 
 static void PoolDestroy_debug(Pool *pool, const char *file_line)
 {
-    if (pool->joined) {
-        /* Joined pools must not be explicitly destroyed; the caller
-         * has broken the guarantee. */
-#if (POOL_DEBUG_VERSION & POOL_DEBUG_VERSION_VERBOSE_ALL)
-        Log(pool, "LIFE",
-                           __FILE__ ":PoolDestroy abort on joined", 0);
-#endif /* (POOL_DEBUG_VERSION & POOL_DEBUG_VERSION_VERBOSE_ALL) */
-
-        abort();
-    }
     CheckIntegrity(pool);
 
 #if (POOL_DEBUG_VERSION & POOL_DEBUG_VERSION_VERBOSE)
@@ -481,14 +376,16 @@ static void PoolDestroy_debug(Pool *pool, const char *file_line)
 
     pool_clear_debug(pool, file_line);
 
-    /* Remove the pool from the parents child list */
-    if (pool->allocator != NULL
-        && pool->allocator->owner == pool) {
+    /* The allocator is bookkeeping owned by this pool.  It is allocated
+     * with libc calloc, so release it with libc free after draining it. */
+    if (pool->allocator != NULL) {
         destroyAllocator(pool->allocator);
+        free(pool->allocator);
+        pool->allocator = NULL;
     }
 
     /* Free the pool itself */
-    iDebugMalloc.free(pool);
+    free(pool);
 
 }
 
@@ -504,22 +401,12 @@ static Pool *newPool_debug( const char *file_line)
     pool->tag = file_line;
     pool->file_line = file_line;
 
-#ifdef THREAD_VERSION
-    pool->owner = GetCurrentThread();
-#endif /* THREAD_VERSION */
      if ((pool_allocator = calloc(1,sizeof(Allocator))) == NULL) {
         free(pool); /* Was missing! */
         return NULL;
     }
     pool_allocator->owner = pool;
     pool->allocator = pool_allocator;
-
-#ifdef THREAD_VERSION
-    if ((CreateMutex(&pool->mutex, NESTED_MUTEX, pool)) != 0) {
-        Free(pool);
-        return NULL;
-    }
-#endif /* THREAD_VERSION */
 
 #if (POOL_DEBUG_VERSION & POOL_DEBUG_VERSION_VERBOSE)
     Log(pool, "CREATE", file_line, 1);
@@ -537,13 +424,19 @@ static int FindPoolFromData(Pool *pool, void *data)
     void **pmem = (void **)data;
     debug_node_t *node;
     uint32_t idx;
+    uintptr_t address;
+
+    if (pool == NULL || pmem == NULL || *pmem == NULL)
+        return 0;
+
+    address = (uintptr_t)*pmem;
 
     node = pool->nodes;
 
     while (node) {
         for (idx = 0; idx < node->index; idx++) {
-             if (node->beginp[idx] <= *pmem
-                 && node->endp[idx] > *pmem) {
+             if ((uintptr_t)node->beginp[idx] <= address
+                 && (uintptr_t)node->endp[idx] > address) {
                  *pmem = pool;
                  return 1;
              }
@@ -561,14 +454,6 @@ static void SetMaxSize(Pool *pool,size_t in_size)
     uint32_t size = (uint32_t)in_size;
 	Allocator *allocator = pool->allocator;
 
-#ifdef THREAD_VERSION
-    Mutex *mutex;
-
-    mutex = GetMutex(allocator);
-    if (mutex != NULL)
-        LockMutex(mutex);
-#endif /* THREAD_VERSION */
-
     max_free_index = ALIGN(size, BOUNDARY_SIZE) >> BOUNDARY_INDEX;
     allocator->current_free_index += max_free_index;
     allocator->current_free_index -= allocator->max_free_index;
@@ -576,10 +461,6 @@ static void SetMaxSize(Pool *pool,size_t in_size)
     if (allocator->current_free_index > max_free_index)
 		allocator->current_free_index = max_free_index;
 
-#ifdef THREAD_VERSION
-    if (mutex != NULL)
-        MutexUnlock(mutex);
-#endif
 }
 
 static size_t Sizeof(Pool *pool)

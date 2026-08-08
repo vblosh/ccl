@@ -1,6 +1,9 @@
 #ifndef DATA_TYPE
 #error "The symbol DATA_TYPE MUST be defined"
 #else
+#ifdef __cplusplus
+extern "C" {
+#endif
 #ifndef DEFAULT_START_SIZE
 #define DEFAULT_START_SIZE 20
 #endif
@@ -11,7 +14,7 @@
 #undef VECTOR_TYPE_
 #undef INTERFACE
 #undef ITERATOR
-#undef ITERFACE_NAME
+#undef INTERFACE_NAME
 #undef VECTOR_ELEMENT
 #undef INTERFACE_STRUCT_INTERNAL_NAME
 
@@ -35,25 +38,25 @@ struct VECTOR_STRUCT_INTERNAL_NAME(DATA_TYPE) {
     INTERFACE(DATA_TYPE) *VTable;      /* Methods table */
     size_t count;               /* in elements units */
     unsigned Flags;
-    unsigned timestamp;         /* Changed at each modification */
     size_t ElementSize;         /* Size (in bytes) of each element */
     DATA_TYPE *contents;        /* The data */
+    size_t capacity;            /* allocated space in contents */
+    unsigned timestamp;         /* Changed at each modification */
     CompareFunction CompareFn;  /* Element comparison function */
     ErrorFunction RaiseError;   /* Error function */
-    ContainerHeap *Heap;
     const ContainerAllocator *Allocator;
     DestructorFunction DestructorFn;
 };
 
 struct ITERATOR(DATA_TYPE) {
     Iterator it;
+    long long Magic;
     VECTOR_TYPE *L;
     size_t index;
     unsigned  timestamp;
     unsigned long Flags;
-    DATA_TYPE *Current;
-    DATA_TYPE ElementBuffer;
-    int   (*VectorReplace)(struct _Iterator *,void *data,int direction);
+    void *Current;
+    DATA_TYPE ElementBuffer[1];
 };
 extern INTERFACE(DATA_TYPE) INTERFACE_NAME(DATA_TYPE);
 
@@ -85,7 +88,7 @@ struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
     int (*Add)(VECTOR_TYPE *AL,const DATA_TYPE newval);
     DATA_TYPE *(*GetElement)(const VECTOR_TYPE *AL,size_t idx);
     int (*PushBack)(VECTOR_TYPE *AL,const DATA_TYPE str);
-    int (*PopBack)(VECTOR_TYPE *AL,DATA_TYPE result);
+    int (*PopBack)(VECTOR_TYPE *AL,DATA_TYPE *result);
     int (*InsertAt)(VECTOR_TYPE *AL,size_t idx,DATA_TYPE newval);
     int (*EraseAt)(VECTOR_TYPE *AL,size_t idx);
     int (*ReplaceAt)(VECTOR_TYPE *AL,size_t idx,DATA_TYPE newval);
@@ -95,7 +98,7 @@ struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
 
     int (*Insert)(VECTOR_TYPE *AL,DATA_TYPE elem);
     int (*InsertIn)(VECTOR_TYPE *AL, size_t idx,VECTOR_TYPE *newData);
-    VECTOR_TYPE *(*IndexIn)(VECTOR_TYPE *SC,const Vector *AL);
+    VECTOR_TYPE *(*IndexIn)(VECTOR_TYPE *SC,VECTOR_TYPE *AL);
     size_t (*GetCapacity)(const VECTOR_TYPE *AL);
     int (*SetCapacity)(VECTOR_TYPE *AL,size_t newCapacity);
 
@@ -128,4 +131,26 @@ struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
     Mask *(*CompareEqualScalar)(const VECTOR_TYPE *left, const DATA_TYPE right,Mask *m);
     int (*Reserve)(VECTOR_TYPE *src,size_t newCapacity);
 };
+
+/* A specialization is a declaration, not a request to leave the generator's
+ * implementation macros in the including translation unit.  The compiled
+ * wrapper defines VECTORGEN_IMPLEMENTATION while including the implementation
+ * body, so that body can continue to use the names below until EOF. */
+#ifndef VECTORGEN_IMPLEMENTATION
+#undef VECTOR_TYPE
+#undef VECTOR_TYPE_
+#undef INTERFACE
+#undef ITERATOR
+#undef ERROR_RETURN
+#undef CONCAT
+#undef CONCAT3_
+#undef CONCAT3
+#undef EVAL
+#undef INTERFACE_NAME
+#undef VECTOR_STRUCT_INTERNAL_NAME
+#undef INTERFACE_STRUCT_INTERNAL_NAME
+#endif
+#ifdef __cplusplus
+}
+#endif
 #endif

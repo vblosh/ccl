@@ -116,10 +116,12 @@ struct tagSuffixTree {
    ContainerAllocator *allocator;
    ErrorFunction RaiseError;
    unsigned counter;
-   unsigned heap;	/* Used for statistic measures of space. */
+   size_t heap;        /* Live bytes owned by this tree. */
+   NODE *suffixless;   /* Construction state; never shared between trees. */
 };
 
 static void ST_PrintTree(SuffixTree* tree,FILE *outstream);
+static int ST_DeleteSubTree(SuffixTree *tree, NODE *node);
 
 /* Used in function trace_string for skipping (Ukkonen's Skip Trick). */
 typedef enum SKIP_TYPE     {skip, no_skip}                 SKIP_TYPE;
@@ -128,10 +130,6 @@ typedef enum SKIP_TYPE     {skip, no_skip}                 SKIP_TYPE;
 typedef enum RULE_2_TYPE   {new_son, split}                RULE_2_TYPE;
 /* Signals whether last matching position is the last one of the current edge */
 typedef enum LAST_POS_TYPE {last_char_in_edge, other_char} LAST_POS_TYPE;
-
-/* Used to mark the node that has no suffix link yet. By Ukkonen, it will have
-   one by the end of the current phase. */
-static NODE*    suffixless;
 
 typedef struct SuffixTreePATH {
    int32_t   begin;
@@ -177,7 +175,8 @@ static NODE* create_node(NODE* father, int32_t start, int32_t end, int32_t posit
        return NULL;
    }
 
-   tree->heap+=sizeof(NODE);
+   tree->heap += sizeof(NODE);
+   tree->count++;
 
    /* Initialize node fields. For detailed description of the fields see
       suffix_tree.h */
@@ -190,6 +189,17 @@ static NODE* create_node(NODE* father, int32_t start, int32_t end, int32_t posit
    node->edge_label_start = start;
    node->edge_label_end   = end;
    return node;
+}
+
+static void release_node(SuffixTree *tree, NODE *node)
+{
+   if (tree == NULL || node == NULL)
+      return;
+   tree->allocator->free(node);
+   if (tree->heap >= sizeof(NODE))
+      tree->heap -= sizeof(NODE);
+   if (tree->count != 0)
+      tree->count--;
 }
 
 /******************************************************************************/
@@ -342,8 +352,14 @@ static NODE* apply_extension_rule_2(
 #endif
       /* Create a new leaf (4) with the characters of the extension */
       new_leaf = create_node(node, edge_label_begin , edge_label_end, path_pos,tree);
+      if (new_leaf == NULL)
+         return NULL;
       /* Connect new_leaf (4) as the new son of node (1) */
       son = node->sons;
+      if (son == NULL) {
+         node->sons = new_leaf;
+         return new_leaf;
+      }
       while(son->right_sibling != 0)
          son = son->right_sibling;
       connect_siblings(son, new_leaf);
@@ -360,9 +376,8 @@ static NODE* apply_extension_rule_2(
                       node->edge_label_start,
                       node->edge_label_start+edge_pos,
                       node->path_position,tree);
-   /* Update the node (1) incoming edge starting index (it now starts where node
-   (3) incoming edge ends) */
-   node->edge_label_start += edge_pos+1;
+   if (new_internal == NULL)
+      return NULL;
 
    /* Create a new leaf (2) with the characters of the extension */
    new_leaf = create_node(
@@ -370,6 +385,15 @@ static NODE* apply_extension_rule_2(
                       edge_label_begin,
                       edge_label_end,
                       path_pos,tree);
+   if (new_leaf == NULL) {
+      release_node(tree, new_internal);
+      return NULL;
+   }
+
+   /* Both allocations succeeded; only now mutate the reachable topology. */
+   /* Update the node (1) incoming edge starting index (it now starts where
+      node (3) incoming edge ends). */
+   node->edge_label_start += edge_pos+1;
    
    /* Connect new_internal (3) where node (1) was */
    /* Connect (3) with (1)'s left sibling */
@@ -552,6 +576,12 @@ static int32_t ST_FindSubstring(
                       /* The length of W */
                       int32_t        P)         
 {
+   if (tree == NULL || tree->root == NULL || W == NULL)
+      return CONTAINER_ERROR_BADARG;
+   if (P == 0)
+      return 1;
+   if (P < 0)
+      return CONTAINER_ERROR_BADARG;
    /* Starts with the root's son that has the first character of W as its
       incoming edge first character */
    NODE* node   = find_son(tree, tree->root, W[0]);
@@ -680,11 +710,11 @@ static void create_suffix_link(NODE* node, NODE* link)
            or 2 (a new leaf was created).
 */
 
-static void SEA(SuffixTree*   tree,
+static int SEA(SuffixTree*   tree,
                       POS*           pos,
                       PATH           str, 
                       int32_t*      rule_applied,
-                      char           after_rule_3,ContainerAllocator *allocator)
+                      char           after_rule_3)
 {
    int32_t   chars_found = 0 , path_pos = str.begin;
    NODE*      tmp;
@@ -738,16 +768,16 @@ static void SEA(SuffixTree*   tree,
       /* If there is an internal node that has no suffix link yet (only one may 
          exist) - create a suffix link from it to the father-node of the 
          current position in the tree (pos) */
-      if(suffixless != 0) {
-         create_suffix_link(suffixless, pos->node->father);
+      if(tree->suffixless != 0) {
+         create_suffix_link(tree->suffixless, pos->node->father);
          /* Marks that no internal node with no suffix link exists */
-         suffixless = 0;
+         tree->suffixless = 0;
       }
 
       #ifdef DEBUG   
          printf("rule 3 (%lu,%lu)\n",str.begin,str.end);
       #endif
-      return;
+      return 1;
    }
    
    /* If last char found is the last char of an edge - add a character at the 
@@ -757,15 +787,17 @@ static void SEA(SuffixTree*   tree,
       if(pos->node->sons != 0) {
          /* Apply extension rule 2 new son - a new leaf is created and returned 
             by apply_extension_rule_2 */
-         apply_extension_rule_2(pos->node, str.begin+chars_found, str.end, path_pos, 0, new_son,tree);
+         if (apply_extension_rule_2(pos->node, str.begin+chars_found, str.end,
+                                    path_pos, 0, new_son,tree) == NULL)
+            return CONTAINER_ERROR_NOMEMORY;
          *rule_applied = 2;
          /* If there is an internal node that has no suffix link yet (only one 
             may exist) - create a suffix link from it to the father-node of the 
             current position in the tree (pos) */
-         if (suffixless != 0) {
-            create_suffix_link(suffixless, pos->node);
+         if (tree->suffixless != 0) {
+            create_suffix_link(tree->suffixless, pos->node);
             /* Marks that no internal node with no suffix link exists */
-            suffixless = 0;
+            tree->suffixless = 0;
          }
       }
    }
@@ -773,22 +805,25 @@ static void SEA(SuffixTree*   tree,
       /* Apply extension rule 2 split - a new node is created and returned by 
          apply_extension_rule_2 */
       tmp = apply_extension_rule_2(pos->node, str.begin+chars_found, str.end, path_pos, pos->edge_pos, split,tree);
-      if(suffixless != 0)
-         create_suffix_link(suffixless, tmp);
+      if (tmp == NULL)
+         return CONTAINER_ERROR_NOMEMORY;
+      if(tree->suffixless != 0)
+         create_suffix_link(tree->suffixless, tmp);
       /* Link root's sons with a single character to the root */
       if(get_node_label_length(tree,tmp) == 1 && tmp->father == tree->root) {
          tmp->suffix_link = tree->root;
          /* Marks that no internal node with no suffix link exists */
-         suffixless = 0;
+         tree->suffixless = 0;
       }
       else
          /* Mark tmp as waiting for a link */
-         suffixless = tmp;
+         tree->suffixless = tmp;
       
       /* Prepare pos for the next extension */
       pos->node = tmp;
       *rule_applied = 2;
    }
+   return 1;
 }
 
 /******************************************************************************/
@@ -809,7 +844,7 @@ static void SEA(SuffixTree*   tree,
           will start from it and not from 1
 */
 
-static void SPA(
+static int SPA(
                       /* The tree */
                       SuffixTree*    tree,            
                       /* Current node */
@@ -835,7 +870,8 @@ static void SPA(
       str.end         = phase+1;
       
       /* Call Single-Extension-Algorithm */
-      SEA(tree, pos, str, &rule_applied, *repeated_extension,tree->allocator);
+      if (SEA(tree, pos, str, &rule_applied, *repeated_extension) < 0)
+         return CONTAINER_ERROR_NOMEMORY;
       
       /* Check if rule 3 was applied for the current extension */
       if(rule_applied == 3) {
@@ -847,7 +883,7 @@ static void SPA(
       *repeated_extension = 0;
       (*extension)++;
    }
-   return;
+   return 1;
 }
 
 /******************************************************************************/
@@ -878,9 +914,14 @@ static SuffixTree* ST_CreateTree(char* str, int32_t length,ContainerAllocator *a
    char          repeated_extension = 0;
    POS           pos;
 
-   if(str == 0) {
-      iError.NullPtrError("SuffixTree.Create");
+   if(str == NULL || allocator == NULL || allocator->calloc == NULL ||
+      allocator->malloc == NULL || allocator->free == NULL) {
+      iError.RaiseError("SuffixTree.Create", CONTAINER_ERROR_BADARG);
       return 0;
+   }
+   if (length < 0 || length > INT32_MAX - 2) {
+      iError.RaiseError("SuffixTree.Create", CONTAINER_ERROR_BADARG);
+      return NULL;
    }
 
    /* Allocating the tree */
@@ -889,7 +930,10 @@ static SuffixTree* ST_CreateTree(char* str, int32_t length,ContainerAllocator *a
       iError.RaiseError("iSuffixTree.Create", CONTAINER_ERROR_NOMEMORY);
       return NULL;
    }
-   tree->heap+=sizeof(SuffixTree);
+   tree->heap = sizeof(SuffixTree);
+   tree->allocator = allocator;
+   tree->RaiseError = iError.RaiseError;
+   tree->VTable = &iSuffixTree;
 
    /* Calculating string length (with an ending \0 sign) */
    tree->length         = length+1;
@@ -898,13 +942,11 @@ static SuffixTree* ST_CreateTree(char* str, int32_t length,ContainerAllocator *a
    tree->tree_string = allocator->malloc((tree->length+1)*sizeof(char));
    if(tree->tree_string == 0)
    {
-      iError.RaiseError("iList.Create", CONTAINER_ERROR_NOMEMORY);
+      iError.RaiseError("iSuffixTree.Create", CONTAINER_ERROR_NOMEMORY);
       allocator->free(tree);
       return NULL;
    }
-   tree->allocator = allocator;
-   tree->RaiseError = iError.RaiseError;
-   tree->heap+=(tree->length+1)*sizeof(char);
+   tree->heap += (size_t)(tree->length+1) * sizeof(char);
 
    memcpy(tree->tree_string+sizeof(char),str,length*sizeof(char));
    /* \0 is considered a unique symbol */
@@ -912,7 +954,15 @@ static SuffixTree* ST_CreateTree(char* str, int32_t length,ContainerAllocator *a
    
    /* Allocating the tree root node */
    tree->root            = create_node(0, 0, 0, 0,tree);
+   if (tree->root == NULL) {
+      allocator->free(tree->tree_string);
+      allocator->free(tree);
+      return NULL;
+   }
    tree->root->suffix_link = 0;
+   /* Leaves use e as their virtual end.  The initial leaf is valid even when
+      no Ukkonen phase is needed (empty and one-character inputs). */
+   tree->e = tree->length;
 
    /* Initializing algorithm parameters */
    extension = 2;
@@ -920,7 +970,13 @@ static SuffixTree* ST_CreateTree(char* str, int32_t length,ContainerAllocator *a
    
    /* Allocating first node, son of the root (phase 0), the longest path node */
    tree->root->sons = create_node(tree->root, 1, tree->length, 1,tree);
-   suffixless       = 0;
+   if (tree->root->sons == NULL) {
+      ST_DeleteSubTree(tree, tree->root);
+      allocator->free(tree->tree_string);
+      allocator->free(tree);
+      return NULL;
+   }
+   tree->suffixless = 0;
    pos.node         = tree->root;
    pos.edge_pos     = 0;
 
@@ -928,7 +984,12 @@ static SuffixTree* ST_CreateTree(char* str, int32_t length,ContainerAllocator *a
    for(; phase < tree->length; phase++)
    {
       /* Perform Single Phase Algorithm */
-      SPA(tree, &pos, phase, &extension, &repeated_extension);
+      if (SPA(tree, &pos, phase, &extension, &repeated_extension) < 0) {
+         ST_DeleteSubTree(tree, tree->root);
+         allocator->free(tree->tree_string);
+         allocator->free(tree);
+         return NULL;
+      }
    }
    return tree;
 }
@@ -944,19 +1005,37 @@ static SuffixTree* ST_CreateTree(char* str, int32_t length,ContainerAllocator *a
   Output: None.
 */
 
-static int ST_DeleteSubTree(NODE* node,ContainerAllocator *allocator)
+static int ST_DeleteSubTree(SuffixTree *tree, NODE *node)
 {
-   /* Recursion stoping condition */
-   if(node == 0)
+   NODE *stop;
+   NODE *current;
+
+   if (tree == NULL || node == NULL)
       return 0;
-   /* Recoursive call for right sibling */
-   if(node->right_sibling!=0)
-      ST_DeleteSubTree(node->right_sibling,allocator);
-   /* Recoursive call for first son */
-   if(node->sons!=0)
-      ST_DeleteSubTree(node->sons,allocator);
-   /* Delete node itself, after its whole tree was deleted as well */
-   allocator->free(node);
+
+   /* Walk the sibling/parent links iteratively.  `stop` is the parent of the
+      requested subtree, which lets Clear retain its root without recursion or
+      a temporary allocation that could itself fail. */
+   stop = node->father;
+   current = node;
+   while (current != stop) {
+      if (current->sons != NULL) {
+         NODE *child = current->sons;
+         current->sons = NULL;
+         child->left_sibling = NULL;
+         current = child;
+         continue;
+      }
+
+      {
+         NODE *next = current->right_sibling;
+         NODE *parent = current->father;
+         if (next != NULL)
+            next->left_sibling = NULL;
+         release_node(tree, current);
+         current = next != NULL ? next : parent;
+      }
+   }
    return 1;
 }
 
@@ -976,7 +1055,7 @@ static int Finalize(SuffixTree* tree)
 {
    if(tree == 0)
       return 0;
-   ST_DeleteSubTree(tree->root,tree->allocator);
+   ST_DeleteSubTree(tree,tree->root);
    if (tree->tree_string)
        tree->allocator->free(tree->tree_string);
    tree->allocator->free(tree);
@@ -997,63 +1076,82 @@ static int Finalize(SuffixTree* tree)
    Output: A printout of the subtree to the screen.
 */
 
-static void ST_PrintNode(SuffixTree* tree, NODE* node1, long depth)
+static void ST_PrintNode(SuffixTree* tree, NODE* node1, long depth,
+                         FILE *outstream)
 {
-   NODE* node2 = node1->sons;
-   long  d = depth , start = node1->edge_label_start , end;
-   end     = get_node_label_end(tree, node1);
+   NODE *stop = node1->father;
+   NODE *node = node1;
+   long current_depth = depth;
 
-   if(depth>0)
-   {
-      /* Print the branches coming from higher nodes */
-      while(d>1)
-      {
-         fprintf(tree->outstream,"|");
-         d--;
+   /* Parent and sibling links already form an explicit DFS stack. */
+   while (node != stop && node != NULL) {
+      long start = node->edge_label_start;
+      long end = get_node_label_end(tree, node);
+      long d = current_depth;
+
+      if (current_depth > 0) {
+         while (d > 1) {
+            fprintf(outstream,"|");
+            d--;
+         }
+         fprintf(outstream,"+");
+         while (start <= end) {
+            /* The terminal NUL is an implementation sentinel, not text. */
+            if (tree->tree_string[start] != '\0')
+               fprintf(outstream,"%c",tree->tree_string[start]);
+            start++;
+         }
+         #ifdef DEBUG
+            fprintf(outstream,"  \t\t\t(%lu,%lu | %lu)",node->edge_label_start,end,node->path_position);
+         #endif
+         fprintf(outstream,"\n");
       }
-      fprintf(tree->outstream,"+");
-      /* Print the node itself */
-      while(start<=end)
-      {
-         fprintf(tree->outstream,"%c",tree->tree_string[start]);
-         start++;
+
+      if (node->sons != NULL) {
+         node = node->sons;
+         current_depth++;
+         continue;
       }
-      #ifdef DEBUG
-         fprintf(tree->outstream,"  \t\t\t(%lu,%lu | %lu)",node1->edge_label_start,end,node1->path_position);
-      #endif
-      fprintf(tree->outstream,"\n");
-   }
-   /* Recoursive call for all node1's sons */
-   while(node2!=0)
-   {
-      ST_PrintNode(tree,node2, depth+1);
-      node2 = node2->right_sibling;
+      while (node != stop && node->right_sibling == NULL) {
+         node = node->father;
+         current_depth--;
+      }
+      if (node != stop && node != NULL)
+         node = node->right_sibling;
    }
 }
 
-static void VisitNode(SuffixTree* tree, int (*Applyfn)(void *,void *),NODE* node1, long depth,void *arg)
+static int VisitNode(int (*Applyfn)(void *,void *), NODE* node1, void *arg)
 {
-   NODE* node2 = node1->sons;
+   NODE *stop = node1->father;
+   NODE *node = node1;
 
-   Applyfn(node1,arg);
-   /* Recoursive call for all node1's sons */
-   while(node2!=0)
-   {
-      VisitNode(tree,Applyfn,node2, depth+1,arg);
-      node2 = node2->right_sibling;
+   while (node != stop && node != NULL) {
+      if (Applyfn(node,arg) == 0)
+         return 0;
+      if (node->sons != NULL) {
+         node = node->sons;
+         continue;
+      }
+      while (node != stop && node->right_sibling == NULL)
+         node = node->father;
+      if (node != stop && node != NULL)
+         node = node->right_sibling;
    }
+   return 1;
 }
 
 static int Apply(SuffixTree *tree, int(*Applyfn)(void *,void *),void *arg)
 {
     if (tree == NULL || Applyfn == NULL) {
         if (tree)
-            tree->RaiseError("SuffixTree.Aply",CONTAINER_ERROR_BADARG);
+            tree->RaiseError("SuffixTree.Apply",CONTAINER_ERROR_BADARG);
         else
             iError.RaiseError("SuffixTree.Apply",CONTAINER_ERROR_BADARG);
         return CONTAINER_ERROR_BADARG;
     }
-    VisitNode(tree,Applyfn,tree->root,0,arg);
+    if (tree->root != NULL && VisitNode(Applyfn,tree->root,arg) == 0)
+        return 0;
     return 1;
 }
 #ifdef NOTUSED
@@ -1102,31 +1200,87 @@ static void ST_PrintFullNode(SuffixTree* tree, NODE* node)
 
 static void ST_PrintTree(SuffixTree* tree,FILE *outstream)
 {
+   if (tree == NULL || outstream == NULL) {
+      if (tree != NULL && tree->RaiseError != NULL)
+         tree->RaiseError("SuffixTree.Print", CONTAINER_ERROR_BADARG);
+      else
+         iError.RaiseError("SuffixTree.Print", CONTAINER_ERROR_BADARG);
+      return;
+   }
    fprintf(outstream,"\nroot\n");
-   tree->outstream = outstream;
-   ST_PrintNode(tree, tree->root, 0);
+   if (tree->root != NULL)
+      ST_PrintNode(tree, tree->root, 0, outstream);
 }
 
 static SuffixTree *CreateWithAllocator(char *text,ContainerAllocator *allocator)
 {
-	return ST_CreateTree(text,strlen(text),allocator);
+	 size_t length;
+    if (text == NULL || allocator == NULL || allocator->calloc == NULL ||
+        allocator->malloc == NULL || allocator->free == NULL) {
+        iError.RaiseError("SuffixTree.CreateWithAllocator", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    length = strlen(text);
+    if (length > (size_t)INT32_MAX - 2U) {
+        iError.RaiseError("SuffixTree.CreateWithAllocator", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+	return ST_CreateTree(text,(int32_t)length,allocator);
 }
 
 static SuffixTree *Create(char *text)
 {
-	return ST_CreateTree(text,strlen(text),CurrentAllocator);
+	 size_t length;
+    if (text == NULL || CurrentAllocator == NULL) {
+        iError.RaiseError("SuffixTree.Create", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    length = strlen(text);
+    if (length > (size_t)INT32_MAX - 2U) {
+        iError.RaiseError("SuffixTree.Create", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+	return ST_CreateTree(text,(int32_t)length,CurrentAllocator);
 }
 
 static int Find(SuffixTree *tree,char *txt)
 {
-	return ST_FindSubstring(tree,txt,strlen(txt));
+	 size_t length;
+    if (tree == NULL || txt == NULL) {
+        if (tree != NULL && tree->RaiseError != NULL)
+            tree->RaiseError("SuffixTree.Find", CONTAINER_ERROR_BADARG);
+        else
+            iError.RaiseError("SuffixTree.Find", CONTAINER_ERROR_BADARG);
+        return CONTAINER_ERROR_BADARG;
+    }
+    length = strlen(txt);
+    if (length == 0)
+        return tree->root != NULL ? 1 : CONTAINER_ERROR_NOTFOUND;
+    if (length > (size_t)INT32_MAX) {
+        tree->RaiseError("SuffixTree.Find", CONTAINER_ERROR_BADARG);
+        return CONTAINER_ERROR_BADARG;
+    }
+    if (tree->root == NULL)
+        return CONTAINER_ERROR_NOTFOUND;
+    return ST_FindSubstring(tree,txt,(int32_t)length);
 }
 
 static int Clear(SuffixTree *tree)
 {
-	int r = ST_DeleteSubTree(tree->root,tree->allocator);
-	tree->root = NULL;
-    return r;
+	NODE *children;
+    if (tree == NULL || tree->allocator == NULL) {
+        iError.RaiseError("SuffixTree.Clear", CONTAINER_ERROR_BADARG);
+        return CONTAINER_ERROR_BADARG;
+    }
+    if (tree->root == NULL)
+        return 1;
+    children = tree->root->sons;
+    tree->root->sons = NULL;
+    if (children != NULL)
+        ST_DeleteSubTree(tree, children);
+    tree->suffixless = NULL;
+    tree->e = tree->length;
+    return 1;
 }
 
 static size_t Sizeof(SuffixTree *tree)

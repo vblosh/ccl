@@ -16,6 +16,9 @@ the proposed interface COULD be done.
 #ifndef INT_MAX
 #define INT_MAX (((unsigned)-1) >> 1)
 #endif
+#define STRINGLIST_STREAM_VERSION 1u
+#define STRINGLIST_STREAM_ENCODING 1u
+#define STRINGLIST_STREAM_MAGIC 0x31534c53u /* "SLS1" in little-endian */
 static int IndexOf_nd(const LIST_TYPE(DATA_TYPE) *AL,const CHARTYPE *SearchedElement,void *ExtraArgs,size_t *result);
 static int RemoveAt_nd(LIST_TYPE(DATA_TYPE) *AL,size_t idx);
 static LIST_TYPE(DATA_TYPE) *CreateWithAllocator(const ContainerAllocator *allocator);
@@ -40,12 +43,79 @@ static int NullPtrError(char *fnName)
     snprintf(buf,sizeof(buf),"iStringList.%s",fnName);
     return iError.NullPtrError(buf);
 }
+
+static int SizeAdd(size_t a,size_t b,size_t *out)
+{
+    if (b > SIZE_MAX-a)
+        return 0;
+    *out = a+b;
+    return 1;
+}
+
+static int SizeMul(size_t a,size_t b,size_t *out)
+{
+    if (a != 0 && b > SIZE_MAX/a)
+        return 0;
+    *out = a*b;
+    return 1;
+}
+
+static int StringBytes(size_t chars,size_t *bytes)
+{
+    return SizeMul(chars,sizeof(CHARTYPE),bytes);
+}
+
+static void ReleaseLink(LIST_TYPE(DATA_TYPE) *l,LIST_ELEMENT(DATA_TYPE) *link)
+{
+    if (link == NULL)
+        return;
+    if (l->DestructorFn)
+        l->DestructorFn(link->Data);
+    if (l->Heap)
+        iHeap.FreeObject(l->Heap,link);
+    else
+        l->Allocator->free(link);
+}
+
+static CHARTYPE *CopyToIteratorBuffer(struct ITERATOR(DATA_TYPE) *it,
+                                      const CHARTYPE *data)
+{
+    LIST_TYPE(DATA_TYPE) *l = it->L;
+    size_t chars,bytes;
+    CHARTYPE *tmp;
+
+    chars = STRLEN(data);
+    if (!SizeAdd(chars,1,&chars) || !StringBytes(chars,&bytes)) {
+        l->RaiseError("iStringList.Iterator",CONTAINER_ERROR_NOMEMORY);
+        return NULL;
+    }
+    tmp = l->Allocator->realloc(it->ElementBuffer,bytes);
+    if (tmp == NULL) {
+        l->RaiseError("iStringList.Iterator",CONTAINER_ERROR_NOMEMORY);
+        return NULL;
+    }
+    it->ElementBuffer = tmp;
+    memcpy(tmp,data,bytes);
+    return tmp;
+}
+
 static LIST_ELEMENT(DATA_TYPE) *NewLink(LIST_TYPE(DATA_TYPE) *li,const CHARTYPE *data,const char *fname)
 {
     LIST_ELEMENT(DATA_TYPE) *result;
-    size_t len = STRLEN(data)+1;
+    size_t len,chars,bytes,total;
 
-    result = li->Allocator->malloc(sizeof(*result)+len);
+    if (data == NULL) {
+        li->RaiseError(fname,CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    chars = STRLEN(data);
+    if (!SizeAdd(chars,1,&len) || !StringBytes(len,&bytes) ||
+        !SizeAdd(offsetof(LIST_ELEMENT(DATA_TYPE),Data),bytes,&total)) {
+        li->RaiseError(fname,CONTAINER_ERROR_NOMEMORY);
+        return NULL;
+    }
+
+    result = li->Allocator->malloc(total);
     if (result == NULL) {
         li->RaiseError(fname,CONTAINER_ERROR_NOMEMORY);
     }
@@ -94,29 +164,25 @@ static int Contains(const LIST_TYPE(DATA_TYPE) *l,const CHARTYPE *data)
 ------------------------------------------------------------------------*/
 static int Clear_nd(LIST_TYPE(DATA_TYPE) *l)
 {
+    LIST_ELEMENT(DATA_TYPE) *rvp,*tmp;
     if (l->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(l,CCL_CLEAR,NULL,NULL);
 #ifdef NO_GC
+    rvp = l->First;
+    while (rvp) {
+        tmp = rvp->Next;
+        ReleaseLink(l,rvp);
+        rvp = tmp;
+    }
     if (l->Heap)
         iHeap.Finalize(l->Heap);
-    else {
-        LIST_ELEMENT(DATA_TYPE) *rvp = l->First,*tmp;
-
-        while (rvp) {
-            tmp = rvp;
-            rvp = rvp->Next;
-        	if (l->DestructorFn)
-        		l->DestructorFn(tmp);			
-            l->Allocator->free(tmp);
-        }
-    }
 #endif
     /* Clear the fields that need to be cleared but not all fields */
     l->count = 0;
     l->Heap = NULL;
     l->First = l->Last = NULL;
     l->Flags = 0;
-    l->timestamp = 0;
+    l->timestamp++;
     return 1;
 }
 
@@ -230,7 +296,7 @@ static LIST_TYPE(DATA_TYPE) *SetAllocator(LIST_TYPE(DATA_TYPE) *l,ContainerAlloc
         NullPtrError("SetAllocator");
         return NULL;
     }
-    if (l->count)
+    if (l->count || l->Heap)
         return NULL;
     if (allocator != NULL) {
         LIST_TYPE(DATA_TYPE) *newStringList;
@@ -245,7 +311,9 @@ static LIST_TYPE(DATA_TYPE) *SetAllocator(LIST_TYPE(DATA_TYPE) *l,ContainerAlloc
         }
         memcpy(newStringList,l,sizeof(LIST_TYPE(DATA_TYPE)));
         newStringList->Allocator = allocator;
-        l->Allocator->free(l);
+        newStringList->ownsStorage = 1;
+        if (l->ownsStorage)
+            l->Allocator->free(l);
         return newStringList;
     }
     return NULL;
@@ -262,13 +330,14 @@ static LIST_TYPE(DATA_TYPE) *SetAllocator(LIST_TYPE(DATA_TYPE) *l,ContainerAlloc
 ------------------------------------------------------------------------*/
 static CompareFunction SetCompareFunction(LIST_TYPE(DATA_TYPE) *l,CompareFunction fn)
 {
-    CompareFunction oldfn = l->Compare;
+    CompareFunction oldfn;
 
 
     if (l == NULL) {
         NullPtrError("iStringList.SetCompareFunction");
         return NULL;
     }
+    oldfn = l->Compare;
     if (fn != NULL) { /* Treat NULL as an enquiry to get the compare function */
         if (l->Flags&CONTAINER_READONLY) {
             l->RaiseError("iStringList.SetCompareFunction",CONTAINER_READONLY);
@@ -304,11 +373,14 @@ static LIST_TYPE(DATA_TYPE) *Copy(const LIST_TYPE(DATA_TYPE) *l)
     result->VTable = l->VTable; /* Copy possibly subclassed methods */
     result->Compare = l->Compare; /* Copy compare function */
     result->RaiseError = l->RaiseError;
+    result->ElementSize = l->ElementSize;
+    result->DestructorFn = l->DestructorFn;
     elem = l->First;
     while (elem) {
         newElem = NewLink(result,elem->Data,"iStringList.Copy");
         if (newElem == NULL) {
             l->RaiseError("iStringList.Copy",CONTAINER_ERROR_NOMEMORY);
+            result->Flags &= ~CONTAINER_READONLY;
             Finalize(result);
             return NULL;
         }
@@ -350,9 +422,10 @@ static int Finalize(LIST_TYPE(DATA_TYPE) *l)
         return t;
     if (Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(l,CCL_FINALIZE,NULL,NULL);
-    if (l->VTable != &iSTRINGLIST(DATA_TYPE))
+    if (l->VTable != &iSTRINGLIST(DATA_TYPE) && l->ownsStorage)
         l->Allocator->free(l->VTable);
-    l->Allocator->free(l);
+    if (l->ownsStorage)
+        l->Allocator->free(l);
     return 1;
 }
 
@@ -451,7 +524,7 @@ static int CopyElement(LIST_TYPE(DATA_TYPE) *l,size_t position,CHARTYPE *outBuff
 
 static int ReplaceAt(LIST_TYPE(DATA_TYPE) *l,size_t position,CHARTYPE *data)
 {
-    LIST_ELEMENT(DATA_TYPE) *rvp;
+    LIST_ELEMENT(DATA_TYPE) *rvp,*previous = NULL,*newnode;
 
     /* Error checking */
     if (l == NULL || data == NULL) {
@@ -469,21 +542,24 @@ static int ReplaceAt(LIST_TYPE(DATA_TYPE) *l,size_t position,CHARTYPE *data)
         l->RaiseError("iStringList.ReplaceAt",CONTAINER_ERROR_READONLY);
         return CONTAINER_ERROR_READONLY;
     }
-    /* Position at the right data item */
-    if (position == l->count-1)
-        rvp = l->Last;
-    else  {
-        rvp = l->First;
-        while (position) {
-            rvp = rvp->Next;
-            position--;
-        }
+    rvp = l->First;
+    while (position-- > 0) {
+        previous = rvp;
+        rvp = rvp->Next;
     }
-    if (l->DestructorFn)
-        l->DestructorFn(&rvp->Data);
-    
-    /* Replace the data there */
-    STRCPY(rvp->Data , data);
+    /* Allocate a complete replacement before touching the old node.  Nodes
+     * have no capacity field, so an in-place copy cannot be made safe. */
+    newnode = NewLink(l,data,"iStringList.ReplaceAt");
+    if (newnode == NULL)
+        return CONTAINER_ERROR_NOMEMORY;
+    newnode->Next = rvp->Next;
+    if (previous)
+        previous->Next = newnode;
+    else
+        l->First = newnode;
+    if (l->Last == rvp)
+        l->Last = newnode;
+    ReleaseLink(l,rvp);
     l->timestamp++;
     return 1;
 }
@@ -509,9 +585,14 @@ static LIST_TYPE(DATA_TYPE) *GetRange(LIST_TYPE(DATA_TYPE) *l,size_t start,size_
         NullPtrError("GetRange");
         return NULL;
     }
-    result = Create();
+    result = CreateWithAllocator(l->Allocator);
     if (result == NULL) return NULL;
     result->VTable = l->VTable;
+    result->Flags = l->Flags;
+    result->Compare = l->Compare;
+    result->RaiseError = l->RaiseError;
+    result->ElementSize = l->ElementSize;
+    result->DestructorFn = l->DestructorFn;
     if (l->count == 0)
         return result;
     if (end >= l->count)
@@ -531,6 +612,7 @@ static LIST_TYPE(DATA_TYPE) *GetRange(LIST_TYPE(DATA_TYPE) *l,size_t start,size_
     while (start < end && rvp != NULL) {
         int r = Add_nd(result,rvp->Data);
         if (r < 0) {
+            result->Flags &= ~CONTAINER_READONLY;
             Finalize(result);
             result = NULL;
             break;
@@ -653,7 +735,7 @@ static int PopFront(LIST_TYPE(DATA_TYPE) *l,CHARTYPE *result)
     l->count--;
     if (result)
         STRCPY(result,le->Data);
-    l->Allocator->free(le);
+    ReleaseLink(l,le);
     l->timestamp++;
     if (l->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(l,CCL_POP,result,NULL);
@@ -673,6 +755,8 @@ static int InsertIn(LIST_TYPE(DATA_TYPE) *l, size_t idx,LIST_TYPE(DATA_TYPE) *ne
             NullPtrError("InsertIn");
         return CONTAINER_ERROR_BADARG;
     }
+    if (l == newData)
+        return CONTAINER_ERROR_INCOMPATIBLE;
     if (l->Flags & CONTAINER_READONLY) {
         return ErrorReadOnly(l,"InsertIn");
     }
@@ -687,26 +771,37 @@ static int InsertIn(LIST_TYPE(DATA_TYPE) *l, size_t idx,LIST_TYPE(DATA_TYPE) *ne
         l->RaiseError("iStringList.InsertIn",CONTAINER_ERROR_NOMEMORY);
         return CONTAINER_ERROR_NOMEMORY;
     }
+    if (newData->count > SIZE_MAX-l->count) {
+        Finalize(newData);
+        l->RaiseError("iStringList.InsertIn",CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
+    }
     newCount = l->count + newData->count;
     if (l->count == 0) {
         l->First = newData->First;
         l->Last = newData->Last;
     }
     else {
-        le = l->First;
-        while ( idx > 1) {
-            le = le->Next;
-            idx--;
+        if (idx == 0) {
+            newData->Last->Next = l->First;
+            l->First = newData->First;
+        } else if (idx == l->count) {
+            l->Last->Next = newData->First;
+            l->Last = newData->Last;
+        } else {
+            le = l->First;
+            while (--idx > 0)
+                le = le->Next;
+            nle = le->Next;
+            le->Next = newData->First;
+            newData->Last->Next = nle;
         }
-        nle = le->Next;
-        le->Next = newData->First;
-        newData->Last->Next = nle;
     }
+    if (l->Flags & CONTAINER_HAS_OBSERVER)
+        iObserver.Notify(l,CCL_INSERT_IN,newData,NULL);
     newData->Allocator->free(newData);
     l->timestamp++;
     l->count = newCount;
-    if (l->Flags & CONTAINER_HAS_OBSERVER)
-        iObserver.Notify(l,CCL_INSERT_IN,newData,NULL);
 
     return 1;
 }
@@ -806,14 +901,7 @@ static int Erase(LIST_TYPE(DATA_TYPE) *l, CHARTYPE *elem)
                 if (previous) previous->Next = rvp->Next;
             }
 
-            if (l->DestructorFn)
-                l->DestructorFn(&rvp->Data);
-
-            if (l->Heap)
-                iHeap.FreeObject(l->Heap,rvp);
-            else {
-                l->Allocator->free(rvp);
-            }
+            ReleaseLink(l,rvp);
             l->count--;
             l->timestamp++;
             return 1;
@@ -827,80 +915,61 @@ static int Erase(LIST_TYPE(DATA_TYPE) *l, CHARTYPE *elem)
 
 static int EraseRange(LIST_TYPE(DATA_TYPE) *l,size_t start,size_t end)
 {
-    LIST_ELEMENT(DATA_TYPE) *rvp,*start_pos,*tmp;
-    size_t toremove;
+    LIST_ELEMENT(DATA_TYPE) *previous = NULL,*current,*tmp;
+    size_t i,n;
     if (l == NULL) {
         return NullPtrError("EraseRange");
     }
+    if (l->Flags & CONTAINER_READONLY)
+        return ErrorReadOnly(l,"EraseRange");
     if (end > l->count)
         end = l->count;
-    if (start >= l->count)
+    if (start >= end || start >= l->count)
         return 0;
-    if (start >= end)
-        return 0;
-    toremove = end - start+1;
-    rvp = l->First;
-    while (start > 1) {
-        rvp = rvp->Next;
-        start--;
+    current = l->First;
+    for (i=0; i<start; ++i) {
+        previous = current;
+        current = current->Next;
     }
-    start_pos = rvp;
-    rvp = rvp->Next;
-    if (rvp == NULL) {
-        iError.RaiseError("iStringList.EraseRange",CONTAINER_ASSERTION_FAILED);
-        return CONTAINER_ASSERTION_FAILED;
+    n = end-start;
+    while (n-- > 0 && current) {
+        tmp = current->Next;
+        ReleaseLink(l,current);
+        current = tmp;
+        --l->count;
     }
-    while (toremove > 1) {
-        tmp = rvp->Next;
-        if (l->DestructorFn)
-        	l->DestructorFn(&rvp->Data);
-        
-        l->Allocator->free(rvp);
-        rvp = tmp;
-        toremove--;
-        l->count--;
-    }
-    start_pos->Next = rvp;
+    if (previous)
+        previous->Next = current;
+    else
+        l->First = current;
+    if (current == NULL)
+        l->Last = previous;
+    if (l->count == 0)
+        l->First = l->Last = NULL;
+    l->timestamp++;
     return 1;
 }
 
 static int RemoveAt_nd(LIST_TYPE(DATA_TYPE) *l,size_t position)
 {
-    LIST_ELEMENT(DATA_TYPE) *rvp,*last,*removed;
+    LIST_ELEMENT(DATA_TYPE) *rvp,*last = NULL,*removed;
 
     rvp = l->First;
-    if (position == 0) {
-        removed = l->First;
-        if (l->count == 1) {
-            l->First = l->Last = NULL;
-        }
-        else {
-            l->First = l->First->Next;
-        }
-    }
-    else if (position == l->count - 1) {
-        while (rvp->Next != l->Last)
-            rvp = rvp->Next;
-        removed = rvp->Next;
-        rvp->Next = NULL;
-        l->Last = rvp;
-    }
-    else {
+    while (position > 0) {
         last = rvp;
-        while (position > 0) {
-            last = rvp;
-            rvp = rvp->Next;
-            position --;
-        }
-        removed = rvp;
-        last->Next = rvp->Next;
+        rvp = rvp->Next;
+        --position;
     }
+    removed = rvp;
+    if (last)
+        last->Next = removed->Next;
+    else
+        l->First = removed->Next;
+    if (l->Last == removed)
+        l->Last = last;
     if (l->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(l,CCL_ERASE_AT,removed,(void *)position);
-    if (l->DestructorFn)
-        l->DestructorFn(&removed->Data);
-    
-    l->Allocator->free(removed);
+    ReleaseLink(l,removed);
     l->timestamp++;
     --l->count;
     return 1;
@@ -930,9 +999,15 @@ static int Append(LIST_TYPE(DATA_TYPE) *l1,LIST_TYPE(DATA_TYPE) *l2)
             iError.RaiseError("iStringList.Append",CONTAINER_ERROR_BADARG);
         return CONTAINER_ERROR_BADARG;
     }
+    if (l1 == l2)
+        return CONTAINER_ERROR_INCOMPATIBLE;
     if ((l1->Flags & CONTAINER_READONLY) || (l2->Flags & CONTAINER_READONLY)) {
         l1->RaiseError("iStringList.Append",CONTAINER_ERROR_READONLY);
         return CONTAINER_ERROR_READONLY;
+    }
+    if (l1->Allocator != l2->Allocator || l1->Heap != l2->Heap) {
+        l1->RaiseError("iStringList.Append",CONTAINER_ERROR_INCOMPATIBLE);
+        return CONTAINER_ERROR_INCOMPATIBLE;
     }
     if (l1->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(l1,CCL_APPEND,l2,NULL);
@@ -952,7 +1027,15 @@ static int Append(LIST_TYPE(DATA_TYPE) *l1,LIST_TYPE(DATA_TYPE) *l2)
     }
     l1->count += l2->count;
     l1->timestamp++;
-    l2->Allocator->free(l2);
+    if (l2->ownsStorage)
+        l2->Allocator->free(l2);
+    else {
+        /* Placement-created headers remain caller-owned after their nodes
+         * have been transferred. */
+        l2->First = l2->Last = NULL;
+        l2->count = 0;
+        l2->timestamp++;
+    }
     return 1;
 }
 
@@ -990,7 +1073,7 @@ static int Reverse(LIST_TYPE(DATA_TYPE) *l)
 static int AddRange(LIST_TYPE(DATA_TYPE) * AL,size_t n, CHARTYPE **data)
 {
     CHARTYPE **p;
-    LIST_ELEMENT(DATA_TYPE) *oldLast;
+    size_t oldCount;
 
     if (AL == NULL) return NullPtrError("AddRange");
         
@@ -1003,20 +1086,16 @@ static int AddRange(LIST_TYPE(DATA_TYPE) * AL,size_t n, CHARTYPE **data)
         return CONTAINER_ERROR_BADARG;
     }
     p = data;
-    oldLast = AL->Last;
+    oldCount = AL->count;
     while (n > 0) {
+        if (*p == NULL) {
+            (void)EraseRange(AL,oldCount,AL->count);
+            AL->RaiseError("iStringList.AddRange",CONTAINER_ERROR_BADARG);
+            return CONTAINER_ERROR_BADARG;
+        }
         int r = Add_nd(AL,*p);
         if (r < 0) {
-        AL->Last = oldLast;
-        if (AL->Last) {
-        	LIST_ELEMENT(DATA_TYPE) *removed = oldLast->Next;
-        	while (removed) {
-        		LIST_ELEMENT(DATA_TYPE) *tmp = removed->Next;
-        		AL->Allocator->free(removed);
-        		removed = tmp;
-        	}
-        	AL->Last->Next = NULL;
-            }
+            (void)EraseRange(AL,oldCount,AL->count);
             return r;
         }
         p++;
@@ -1095,7 +1174,14 @@ static int Sort(LIST_TYPE(DATA_TYPE) *l)
         l->RaiseError("iStringList.Sort",CONTAINER_ERROR_READONLY);
         return CONTAINER_ERROR_READONLY;
     }
-    tab = l->Allocator->malloc(l->count * sizeof(LIST_ELEMENT(DATA_TYPE) *));
+    {
+        size_t bytes;
+        if (!SizeMul(l->count,sizeof(LIST_ELEMENT(DATA_TYPE) *),&bytes)) {
+            l->RaiseError("iStringList.Sort",CONTAINER_ERROR_NOMEMORY);
+            return CONTAINER_ERROR_NOMEMORY;
+        }
+        tab = l->Allocator->malloc(bytes);
+    }
     if (tab == NULL) {
         l->RaiseError("iStringList.Sort",CONTAINER_ERROR_NOMEMORY);
         return CONTAINER_ERROR_NOMEMORY;
@@ -1116,13 +1202,14 @@ static int Sort(LIST_TYPE(DATA_TYPE) *l)
     l->Last = tab[l->count-1];
     l->First = tab[0];
     l->Allocator->free(tab);
+    l->timestamp++;
     return 1;
 
 }
 static int Apply(LIST_TYPE(DATA_TYPE) *L,int (Applyfn)(CHARTYPE *,void *),void *arg)
 {
     LIST_ELEMENT(DATA_TYPE) *le;
-    size_t slen,bufsiz=256;
+    size_t slen,bufsiz=256,bytes;
     CHARTYPE *pElem=NULL;
 
     if (L == NULL || Applyfn == NULL) {
@@ -1134,7 +1221,9 @@ static int Apply(LIST_TYPE(DATA_TYPE) *L,int (Applyfn)(CHARTYPE *,void *),void *
     }
     le = L->First;
     if (L->Flags&CONTAINER_READONLY) {
-        pElem = L->Allocator->malloc(bufsiz+1);
+        if (!StringBytes(bufsiz+1,&bytes))
+            return CONTAINER_ERROR_NOMEMORY;
+        pElem = L->Allocator->malloc(bytes);
         if (pElem == NULL) {
             L->RaiseError("iStringList.Apply",CONTAINER_ERROR_NOMEMORY);
             return CONTAINER_ERROR_NOMEMORY;
@@ -1145,8 +1234,11 @@ static int Apply(LIST_TYPE(DATA_TYPE) *L,int (Applyfn)(CHARTYPE *,void *),void *
         	slen = STRLEN(le->Data);
         	if (slen >= bufsiz) {
         		L->Allocator->free(pElem);
-        		bufsiz = slen+20;
-        		pElem = L->Allocator->malloc(bufsiz);
+                if (!SizeAdd(slen,20,&bufsiz) || !StringBytes(bufsiz,&bytes)) {
+                    L->RaiseError("iStringList.Apply",CONTAINER_ERROR_NOMEMORY);
+                    return CONTAINER_ERROR_NOMEMORY;
+                }
+                pElem = L->Allocator->malloc(bytes);
         		if (pElem == NULL) {
         			L->RaiseError("iStringList.Apply",CONTAINER_ERROR_NOMEMORY);
         			return CONTAINER_ERROR_NOMEMORY;
@@ -1177,7 +1269,7 @@ static ErrorFunction SetErrorFunction(LIST_TYPE(DATA_TYPE) *l,ErrorFunction fn)
 
 static size_t Sizeof(LIST_TYPE(DATA_TYPE) *l)
 {
-    size_t sum=0,i;
+    size_t sum=0,i,chars,bytes,nodebytes;
     LIST_ELEMENT(DATA_TYPE) *rvp;
     if (l == NULL) {
         return sizeof(LIST_TYPE(DATA_TYPE));
@@ -1185,15 +1277,25 @@ static size_t Sizeof(LIST_TYPE(DATA_TYPE) *l)
 
     rvp=l->First;
     for (i=0; i<l->count;i++) {
-        sum += sizeof(*rvp->Data)+STRLEN(rvp->Data);
+        chars = STRLEN(rvp->Data);
+        if (!SizeAdd(chars,1,&chars) || !StringBytes(chars,&bytes) ||
+            !SizeAdd(offsetof(LIST_ELEMENT(DATA_TYPE),Data),bytes,&nodebytes) ||
+            !SizeAdd(sum,nodebytes,&sum))
+            return 0;
         rvp = rvp->Next;
     }
-    return sizeof(LIST_TYPE(DATA_TYPE)) + sum + l->count *sizeof(LIST_ELEMENT(DATA_TYPE));
+    if (!SizeAdd(sizeof(LIST_TYPE(DATA_TYPE)),sum,&sum))
+        return 0;
+    return sum;
 }
 
 static int UseHeap(LIST_TYPE(DATA_TYPE) *L, ContainerAllocator *m)
 {
-    return CONTAINER_ERROR_NOT_EMPTY;
+    if (L == NULL)
+        return NullPtrError("UseHeap");
+    (void)m;
+    L->RaiseError("iStringList.UseHeap",CONTAINER_ERROR_NOTIMPLEMENTED);
+    return CONTAINER_ERROR_NOTIMPLEMENTED;
 }
 
 /* ------------------------------------------------------------------------------ */
@@ -1212,6 +1314,10 @@ static void *Seek(Iterator *it,size_t idx)
 		iError.RaiseError("StringList.Seek",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
 	}
+    if (li->timestamp != li->L->timestamp) {
+        li->L->RaiseError("StringList.Seek",CONTAINER_ERROR_OBJECT_CHANGED);
+        return NULL;
+    }
     if (li->L->count == 0)
         return NULL;
     rvp = li->L->First;
@@ -1257,32 +1363,31 @@ static void *GetNext(Iterator *it)
 	if (li->Magic != STRINGLIST_MAGIC_NUMBER) {
 		iError.RaiseError("StringList.GetNext",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
-	}
+    }
     L = li->L;
-    if (li->L->count == 0)
-        return NULL;
-    if (li->index >= (L->count-1) || li->Current == NULL)
-        return NULL;
     if (li->timestamp != L->timestamp) {
         L->RaiseError("GetNext",CONTAINER_ERROR_OBJECT_CHANGED);
         return NULL;
     }
+    if (li->L->count == 0)
+        return NULL;
+    if (li->index >= (L->count-1) || li->Current == NULL)
+        return NULL;
     li->Current = li->Current->Next;
     li->index++;
     if (L->Flags & CONTAINER_READONLY) {
-        L->Allocator->free(li->ElementBuffer);
-        li->ElementBuffer = L->Allocator->malloc(1+STRLEN(li->Current->Data));
-        STRCPY(li->ElementBuffer,li->Current->Data);
-        return li->ElementBuffer;
+        return CopyToIteratorBuffer(li,li->Current->Data);
     }
     result = li->Current->Data;
     return result;
 }
 static size_t GetPosition(Iterator *it)
 {
-	struct ListIterator *li = (struct ListIterator *) it;
+	struct ITERATOR(DATA_TYPE) *li = (struct ITERATOR(DATA_TYPE) *) it;
+	if (li == NULL)
+	    return (size_t)NullPtrError("GetPosition");
 	if (li->Magic != STRINGLIST_MAGIC_NUMBER) {
-		iError.RaiseError("List.GetNext",CONTAINER_ERROR_WRONG_ITERATOR);
+		iError.RaiseError("StringList.GetPosition",CONTAINER_ERROR_WRONG_ITERATOR);
 		return (size_t)-1;
 	}
 	return li->index;
@@ -1304,15 +1409,15 @@ static void *GetPrevious(Iterator *it)
 		iError.RaiseError("StringList.GetPrevious",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
 	}
-	if (li->L->count == 0)
-	    return NULL;
 	L = li->L;
-	if (li->index >= L->count || li->index == 0)
-	    return NULL;
 	if (li->timestamp != L->timestamp) {
 	    L->RaiseError("GetPrevious",CONTAINER_ERROR_OBJECT_CHANGED);
 	    return NULL;
 	}
+	if (li->L->count == 0)
+	    return NULL;
+	if (li->index >= L->count || li->index == 0)
+	    return NULL;
 	rvp = L->First;
 	i=0;
 	li->index--;
@@ -1325,10 +1430,7 @@ static void *GetPrevious(Iterator *it)
 	li->Current = rvp;
 	if (rvp == NULL) return NULL;
 	if (rvp && (L->Flags & CONTAINER_READONLY)) {
-	    L->Allocator->free(li->ElementBuffer);
-	    li->ElementBuffer = L->Allocator->malloc(1+STRLEN(li->Current->Data));
-	    STRCPY(li->ElementBuffer,li->Current->Data);
-	    return li->ElementBuffer;
+	    return CopyToIteratorBuffer(li,li->Current->Data);
 	}
 	return rvp->Data;
 }
@@ -1345,14 +1447,20 @@ static void *GetCurrent(Iterator *it)
 		iError.RaiseError("StringList.GetCurrent",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
 	}
-	if (li->L->count == 0)
-	    return NULL;
 	if (li->index == (size_t)-1) {
 	    li->L->RaiseError("GetCurrent",CONTAINER_ERROR_BADARG);
 	    return NULL;
 	}
+	if (li->timestamp != li->L->timestamp) {
+	    li->L->RaiseError("GetCurrent",CONTAINER_ERROR_OBJECT_CHANGED);
+    return NULL;
+	}
+	if (li->L->count == 0)
+	    return NULL;
+	if (li->Current == NULL)
+	    return NULL;
 	if (li->L->Flags & CONTAINER_READONLY) {
-	    return li->ElementBuffer;
+	    return CopyToIteratorBuffer(li,li->Current->Data);
 	}
 	return li->Current->Data;
 }
@@ -1371,6 +1479,8 @@ static int ReplaceWithIterator(Iterator *it, void *data,int direction)
 	}
 	if (li->L->count == 0)
 	    return 0;
+	if (li->Current == NULL || li->index >= li->L->count)
+	    return CONTAINER_ERROR_BADARG;
 	if (li->L->Flags & CONTAINER_READONLY) {
 	    li->L->RaiseError("Replace",CONTAINER_ERROR_READONLY);
 	    return CONTAINER_ERROR_READONLY;
@@ -1410,24 +1520,16 @@ static void *GetFirst(Iterator *it)
 		return NULL;
 	}
 	L = li->L;
-	if (L->count == 0)
-	    return NULL;
 	if (li->timestamp != L->timestamp) {
 	    L->RaiseError("iStringList.GetFirst",CONTAINER_ERROR_OBJECT_CHANGED);
 	    return NULL;
 	}
+	if (L->count == 0)
+	    return NULL;
 	li->index = 0;
 	li->Current = L->First;
 	if (L->Flags & CONTAINER_READONLY) {
-	            size_t len = 1+STRLEN(L->First->Data);
-	            L->Allocator->free(li->ElementBuffer);
-	            li->ElementBuffer = L->Allocator->malloc(len);
-	            if (li->ElementBuffer == NULL) {
-	                L->RaiseError("iStringList.GetFirst",CONTAINER_ERROR_NOMEMORY);
-	                return NULL;
-	            }
-	    memcpy(li->ElementBuffer,L->First->Data,len);
-	    return li->ElementBuffer;
+        return CopyToIteratorBuffer(li,L->First->Data);
 	}
 	return L->First->Data;
 }
@@ -1445,17 +1547,21 @@ static Iterator *NewIterator(LIST_TYPE(DATA_TYPE) *L)
 	    L->RaiseError("iStringList.NewIterator",CONTAINER_ERROR_NOMEMORY);
 	    return NULL;
 	}
-	result->it.GetNext = GetNext;
-	result->it.GetPrevious = GetPrevious;
-	result->it.GetFirst = GetFirst;
-	result->it.GetCurrent = GetCurrent;
-	result->it.GetPosition = GetPosition;
-	result->it.Seek = Seek;
+    memset(result,0,sizeof(*result));
+    result->it.GetNext = GetNext;
+    result->it.GetPrevious = GetPrevious;
+    result->it.GetFirst = GetFirst;
+    result->it.GetCurrent = GetCurrent;
+    result->it.GetPosition = GetPosition;
+    result->it.Seek = Seek;
+    result->it.Replace = ReplaceWithIterator;
 	result->L = L;
 	result->Magic = STRINGLIST_MAGIC_NUMBER;
 	result->timestamp = L->timestamp;
 	result->index = (size_t)-1;
-	result->Current = NULL;
+    result->Current = NULL;
+    result->ElementBuffer = NULL;
+    result->ownsStorage = 1;
 	return &result->it;
 }
 static int InitIterator(LIST_TYPE(DATA_TYPE) *L,void *r)
@@ -1465,10 +1571,14 @@ static int InitIterator(LIST_TYPE(DATA_TYPE) *L,void *r)
 	if (L == NULL) {
 	    return sizeof(struct ITERATOR(DATA_TYPE));
 	}
+	if (result == NULL)
+	    return NullPtrError("InitIterator");
+	memset(result,0,sizeof(*result));
 	result->it.GetNext = GetNext;
 	result->it.GetPrevious = GetPrevious;
 	result->it.GetFirst = GetFirst;
 	result->it.GetCurrent = GetCurrent;
+	result->it.GetPosition = GetPosition;
 	result->it.Seek = Seek;
 	result->it.Replace = ReplaceWithIterator;
 	result->L = L;
@@ -1476,6 +1586,8 @@ static int InitIterator(LIST_TYPE(DATA_TYPE) *L,void *r)
 	result->timestamp = L->timestamp;
 	result->index = (size_t)-1;
 	result->Current = NULL;
+	result->ElementBuffer = NULL;
+	result->ownsStorage = 0;
 	return 1;
 }
 static int DeleteIterator(Iterator *it)
@@ -1487,25 +1599,37 @@ static int DeleteIterator(Iterator *it)
 	    return NullPtrError("DeleteIterator");
 	}
 	li = (struct ITERATOR(DATA_TYPE) *)it;
+	if (li->Magic != STRINGLIST_MAGIC_NUMBER)
+	    return iError.RaiseError("StringList.DeleteIterator",CONTAINER_ERROR_WRONG_ITERATOR),CONTAINER_ERROR_WRONG_ITERATOR;
 	L = li->L;
-	L->Allocator->free(it);
+	if (li->ElementBuffer)
+	    L->Allocator->free(li->ElementBuffer);
+	if (li->ownsStorage)
+	    L->Allocator->free(it);
 	return 1;
 }
 
 static int DefaultSaveFunction(const void *element,void *arg, FILE *Outfile)
 {
-	const unsigned char *str = element;
-	size_t len = STRLEN(element);
-	size_t r = fwrite(&len,1,sizeof(size_t),Outfile);
-	if (r  != sizeof(size_t))
-	    return -1;
-	return len == fwrite(str,1,len,Outfile);
+    const CHARTYPE *str = element;
+    size_t chars,bytes;
+    (void)arg;
+    chars = STRLEN(str);
+    if (!SizeAdd(chars,1,&chars) || !StringBytes(chars-1,&bytes))
+        return -1;
+    return bytes == fwrite(str,1,bytes,Outfile);
 }
 
 static int Save(LIST_TYPE(DATA_TYPE) *L,FILE *stream, SaveFunction saveFn,void *arg)
 {
-	size_t i;
-	LIST_ELEMENT(DATA_TYPE) *rvp;
+    size_t i,chars,bytes;
+    uint32_t magic = STRINGLIST_STREAM_MAGIC;
+    uint32_t version = STRINGLIST_STREAM_VERSION;
+    uint32_t encoding = STRINGLIST_STREAM_ENCODING;
+    uint32_t unit = (uint32_t)sizeof(CHARTYPE);
+    uint32_t flags;
+    uint64_t count;
+    LIST_ELEMENT(DATA_TYPE) *rvp;
 
 	if (L == NULL) return NullPtrError("Save");
 
@@ -1517,87 +1641,130 @@ static int Save(LIST_TYPE(DATA_TYPE) *L,FILE *stream, SaveFunction saveFn,void *
 	    saveFn = DefaultSaveFunction;
 	}
 
-	if (fwrite(&StringListGuid,sizeof(guid),1,stream) == 0)
-	    return EOF;
-
-	if (fwrite(L,1,sizeof(LIST_TYPE(DATA_TYPE)),stream) == 0)
-	    return EOF;
-	rvp = L->First;
-	for (i=0; i< L->count; i++) {
-
-	    if (saveFn(rvp->Data,arg,stream) <= 0)
-	        return EOF;
-	    rvp = rvp->Next;
-	}
-	return 1;
+    if (L->count > UINT64_MAX)
+        return CONTAINER_ERROR_FILE_WRITE;
+    flags = (uint32_t)(L->Flags & (CONTAINER_READONLY|CONTAINER_HAS_OBSERVER));
+    count = (uint64_t)L->count;
+    if (fwrite(&StringListGuid,sizeof(guid),1,stream) != 1 ||
+        fwrite(&magic,sizeof(magic),1,stream) != 1 ||
+        fwrite(&version,sizeof(version),1,stream) != 1 ||
+        fwrite(&encoding,sizeof(encoding),1,stream) != 1 ||
+        fwrite(&unit,sizeof(unit),1,stream) != 1 ||
+        fwrite(&flags,sizeof(flags),1,stream) != 1 ||
+        fwrite(&count,sizeof(count),1,stream) != 1)
+        return EOF;
+    rvp = L->First;
+    for (i=0; i< L->count; i++) {
+        chars = STRLEN(rvp->Data);
+        if (!StringBytes(chars,&bytes) || bytes > UINT64_MAX)
+            return CONTAINER_ERROR_FILE_WRITE;
+        {
+            uint64_t payload = (uint64_t)bytes;
+            if (fwrite(&payload,sizeof(payload),1,stream) != 1 ||
+                saveFn(rvp->Data,arg,stream) <= 0)
+                return EOF;
+        }
+        rvp = rvp->Next;
+    }
+    return 1;
 }
 
+static int ReadExact(FILE *stream,void *data,size_t size)
+{
+    return size == 0 || fread(data,1,size,stream) == size;
+}
 
 static LIST_TYPE(DATA_TYPE) *Load(FILE *stream, ReadFunction loadFn,void *arg)
 {
-	size_t i,sLen=4096,Len,bw;
-	LIST_TYPE(DATA_TYPE) *result=NULL,L;
-	CHARTYPE *buf;
-	int r;
-	guid Guid;
+    size_t i,chars,bytes;
+    LIST_TYPE(DATA_TYPE) *result = NULL;
+    CHARTYPE *buf = NULL;
+    uint32_t magic,version,encoding,unit,flags;
+    uint64_t count,payload;
+    guid Guid;
+    int r = CONTAINER_ERROR_FILE_READ;
 
-	if (stream == NULL) {
-	    NullPtrError("Load");
-	    return NULL;
-	}
-	if (fread(&Guid,sizeof(guid),1,stream) == 0) {
-	    iError.RaiseError("iStringList.Load",CONTAINER_ERROR_FILE_READ);
-	    return NULL;
-	}
-	if (memcmp(&Guid,&StringListGuid,sizeof(guid))) {
-	    iError.RaiseError("iStringList.Load",CONTAINER_ERROR_WRONGFILE);
-	    return NULL;
-	}
-	if (fread(&L,1,sizeof(LIST_TYPE(DATA_TYPE)),stream) == 0) {
-	    iError.RaiseError("iStringList.Load",CONTAINER_ERROR_FILE_READ);
-	    return NULL;
-	}
-	buf = malloc(sLen);
-	if (buf == NULL) {
-	    r = CONTAINER_ERROR_NOMEMORY;
-	    goto err;
-	}
-	result = Create();
-	if (result == NULL) {
-	    r = CONTAINER_ERROR_NOMEMORY;
-	    goto err;
-	}
-	result->Flags = L.Flags;
-
-	for (i=0; i < L.count; i++) {
-	    bw = fread(&Len,1,sizeof(size_t),stream);
-	    if (bw != sizeof(size_t))
-	        break;
-	    if (Len > sLen) {
-	        CHARTYPE *tmp = realloc(buf,Len);
-	        if (tmp == NULL) {
-	            r = CONTAINER_ERROR_NOMEMORY;
-	            goto err;
-	        }
-	        sLen = Len;
-	        buf = tmp;
-	    }
-	    bw = fread(buf,1,Len,stream);
-	    if (bw != Len) {
-	        r = CONTAINER_ERROR_FILE_READ;
-	        goto err;
-	    }
-	    if ((r=Add_nd(result,buf)) < 0) {
-	        goto err;
-	    }
-	}
-	free(buf);
-	return result;
+    if (stream == NULL) {
+        NullPtrError("Load");
+        return NULL;
+    }
+    if (!ReadExact(stream,&Guid,sizeof(Guid))) {
+        iError.RaiseError("iStringList.Load",CONTAINER_ERROR_FILE_READ);
+        return NULL;
+    }
+    if (memcmp(&Guid,&StringListGuid,sizeof(guid)) != 0 ||
+        !ReadExact(stream,&magic,sizeof(magic)) ||
+        !ReadExact(stream,&version,sizeof(version)) ||
+        !ReadExact(stream,&encoding,sizeof(encoding)) ||
+        !ReadExact(stream,&unit,sizeof(unit)) ||
+        !ReadExact(stream,&flags,sizeof(flags)) ||
+        !ReadExact(stream,&count,sizeof(count)) ||
+        magic != STRINGLIST_STREAM_MAGIC ||
+        version != STRINGLIST_STREAM_VERSION ||
+        encoding != STRINGLIST_STREAM_ENCODING ||
+        unit != sizeof(CHARTYPE) ||
+        count > SIZE_MAX) {
+        iError.RaiseError("iStringList.Load",CONTAINER_ERROR_WRONGFILE);
+        return NULL;
+    }
+    result = Create();
+    if (result == NULL)
+        return NULL;
+    for (i=0; i<(size_t)count; ++i) {
+        if (!ReadExact(stream,&payload,sizeof(payload)) || payload > SIZE_MAX) {
+            r = CONTAINER_ERROR_FILE_READ;
+            goto err;
+        }
+        bytes = (size_t)payload;
+        if (bytes % sizeof(CHARTYPE) != 0) {
+            r = CONTAINER_ERROR_WRONGFILE;
+            goto err;
+        }
+        chars = bytes/sizeof(CHARTYPE);
+        if (!SizeAdd(chars,1,&chars) || !StringBytes(chars,&bytes)) {
+            r = CONTAINER_ERROR_NOMEMORY;
+            goto err;
+        }
+        {
+            CHARTYPE *tmp = result->Allocator->realloc(buf,bytes);
+            if (tmp == NULL) {
+                r = CONTAINER_ERROR_NOMEMORY;
+                goto err;
+            }
+            buf = tmp;
+        }
+        if (buf == NULL) {
+            r = CONTAINER_ERROR_NOMEMORY;
+            goto err;
+        }
+        if (loadFn) {
+            if (loadFn(buf,arg,stream) <= 0) {
+                r = CONTAINER_ERROR_FILE_READ;
+                goto err;
+            }
+        } else if (!ReadExact(stream,buf,bytes-sizeof(CHARTYPE))) {
+            r = CONTAINER_ERROR_FILE_READ;
+            goto err;
+        }
+        buf[chars-1] = (CHARTYPE)0;
+        if (Add_nd(result,buf) < 0) {
+            r = CONTAINER_ERROR_NOMEMORY;
+            goto err;
+        }
+    }
+    result->Flags = flags & (CONTAINER_READONLY|CONTAINER_HAS_OBSERVER);
+    if (buf)
+        result->Allocator->free(buf);
+    return result;
 err:
-	free(buf);
-	iError.RaiseError("iStringList.Load",r);
-	if (result) Finalize(result);
-	return NULL;
+    if (buf)
+        result->Allocator->free(buf);
+    if (result) {
+        result->Flags &= ~CONTAINER_READONLY;
+        Finalize(result);
+    }
+    iError.RaiseError("iStringList.Load",r);
+    return NULL;
 }
 
 static size_t GetElementSize(LIST_TYPE(DATA_TYPE) *l)
@@ -1622,9 +1789,13 @@ static size_t GetElementSize(LIST_TYPE(DATA_TYPE) *l)
  ------------------------------------------------------------------------*/
 static LIST_TYPE(DATA_TYPE) *CreateWithAllocator(const ContainerAllocator *allocator)
 {
-	LIST_TYPE(DATA_TYPE) *result;
+    LIST_TYPE(DATA_TYPE) *result;
 
-	result = allocator->malloc(sizeof(LIST_TYPE(DATA_TYPE)));
+    if (allocator == NULL)
+        allocator = CurrentAllocator;
+    if (allocator == NULL || allocator->malloc == NULL)
+        return NULL;
+    result = allocator->malloc(sizeof(LIST_TYPE(DATA_TYPE)));
 	if (result == NULL) {
 	    iError.RaiseError("iStringList.Create",CONTAINER_ERROR_NOMEMORY);
 	    return NULL;
@@ -1632,9 +1803,11 @@ static LIST_TYPE(DATA_TYPE) *CreateWithAllocator(const ContainerAllocator *alloc
 	memset(result,0,sizeof(LIST_TYPE(DATA_TYPE)));
 	result->VTable = &iSTRINGLIST(DATA_TYPE);
 	result->Compare = DefaultStringListCompareFunction;
-	result->RaiseError = iError.RaiseError;
-	result->Allocator = allocator;
-	return result;
+    result->RaiseError = iError.RaiseError;
+    result->Allocator = allocator;
+    result->ElementSize = sizeof(CHARTYPE);
+    result->ownsStorage = 1;
+    return result;
 }
 
 static LIST_TYPE(DATA_TYPE) *Create(void)
@@ -1644,13 +1817,20 @@ static LIST_TYPE(DATA_TYPE) *Create(void)
 
 static LIST_TYPE(DATA_TYPE) *InitializeWith(size_t n,CHARTYPE **Data)
 {
-	LIST_TYPE(DATA_TYPE) *result = Create();
-	size_t i;
-	CHARTYPE **pData = Data;
-	if (result == NULL)
-	    return result;
-	for (i=0; i<n; i++) {
-	    Add_nd(result,*pData);
+    LIST_TYPE(DATA_TYPE) *result = Create();
+    size_t i;
+    CHARTYPE **pData = Data;
+    if (result == NULL)
+        return result;
+    if (n != 0 && Data == NULL) {
+        Finalize(result);
+        return NULL;
+    }
+    for (i=0; i<n; i++) {
+        if (Add_nd(result,*pData) < 0) {
+            Finalize(result);
+            return NULL;
+        }
 	    pData++;
 	}
 	return result;
@@ -1658,11 +1838,17 @@ static LIST_TYPE(DATA_TYPE) *InitializeWith(size_t n,CHARTYPE **Data)
 
 static LIST_TYPE(DATA_TYPE) *InitWithAllocator(LIST_TYPE(DATA_TYPE) *result,ContainerAllocator *allocator)
 {
-	memset(result,0,sizeof(LIST_TYPE(DATA_TYPE)));
+    if (result == NULL)
+        return NULL;
+    if (allocator == NULL)
+        allocator = CurrentAllocator;
+    memset(result,0,sizeof(LIST_TYPE(DATA_TYPE)));
 	result->VTable = &iSTRINGLIST(DATA_TYPE);
 	result->Compare = DefaultStringListCompareFunction;
-	result->RaiseError = iError.RaiseError;
-	result->Allocator = allocator;
+    result->RaiseError = iError.RaiseError;
+    result->Allocator = allocator;
+    result->ElementSize = sizeof(CHARTYPE);
+    result->ownsStorage = 0;
 	return result;
 }
 
@@ -1690,13 +1876,14 @@ static DestructorFunction SetDestructor(LIST_TYPE(DATA_TYPE) *cb,DestructorFunct
 }
 static size_t SizeofIterator(LIST_TYPE(DATA_TYPE) *l)
 {
-	return sizeof(struct ITERATOR(DATA_TYPE));
+    (void)l;
+    return sizeof(struct ITERATOR(DATA_TYPE));
 }
 
 static int Select(LIST_TYPE(DATA_TYPE) *src,const Mask *m)
 {
-	size_t i,offset=0;
-	LIST_ELEMENT(DATA_TYPE) *dst,*s,*removed;
+    size_t i,kept=0;
+    LIST_ELEMENT(DATA_TYPE) *dst = NULL,*current,*next;
 
 	if (src == NULL || m == NULL) {
 	    return NullPtrError("Select");
@@ -1708,50 +1895,29 @@ static int Select(LIST_TYPE(DATA_TYPE) *src,const Mask *m)
 	    return CONTAINER_ERROR_BADMASK;
 	}
 	if (src->count == 0) return 0;
-	i=0;
-	dst = src->First;
-	while (i < m->length) {
-	    if (m->data[i]) break;
-	    if (src->DestructorFn)
-	        src->DestructorFn(dst->Data);
-	    removed = dst;
-	    dst = dst->Next;
-	    if (src->Heap) {
-	            iHeap.FreeObject(src->Heap, removed);
-	    } else
-	            src->Allocator->free(removed);
-	    i++;
-	}
-	if (i >= m->length) {
-	    src->First = src->Last = NULL;
-	    src->count = 0;
-	    src->timestamp++;
-	    return 1;
-	}
-	src->First = dst;
-	i++;
-	offset++;
-	s = dst->Next;
-	for (; i<m->length;i++) {
-	    if (m->data[i]) {
-	        dst->Next = s;
-	        offset++;
-	        dst = s;
-	        s = s->Next;
-	    }
-	    else {
-	        if (src->DestructorFn) src->DestructorFn(s->Data);
-	        removed = s;
-	        s = s->Next;
-	        if (src->Heap) iHeap.FreeObject(src->Heap,removed);
-	        else src->Allocator->free(removed);
-	    }
-	}
-	dst->Next = NULL;
-	src->Last = dst;
-	src->count = offset;
-	src->timestamp++;
-	return 1;
+    current = src->First;
+    for (i=0; i<m->length && current; ++i) {
+        next = current->Next;
+        if (m->data[i]) {
+            if (dst)
+                dst->Next = current;
+            else
+                src->First = current;
+            dst = current;
+            ++kept;
+        } else {
+            ReleaseLink(src,current);
+        }
+        current = next;
+    }
+    if (dst)
+        dst->Next = NULL;
+    src->Last = dst;
+    src->count = kept;
+    if (!dst)
+        src->First = NULL;
+    src->timestamp++;
+    return 1;
 }
 
 
@@ -1770,14 +1936,20 @@ static LIST_TYPE(DATA_TYPE) *SelectCopy(const LIST_TYPE(DATA_TYPE) *src,const Ma
 	    iError.RaiseError("SelectCopy",CONTAINER_ERROR_INCOMPATIBLE,src,m);
 	    return NULL;
 	}
-	result = Create();
-	if (result == NULL) return NULL;
+    result = CreateWithAllocator(src->Allocator);
+    if (result == NULL) return NULL;
+    result->Flags = src->Flags;
+    result->Compare = src->Compare;
+    result->RaiseError = src->RaiseError;
+    result->ElementSize = src->ElementSize;
+    result->DestructorFn = src->DestructorFn;
 	rvp = src->First;
 	for (i=0; i<m->length;i++) {
 	    if (m->data[i]) {
 	        r = Add_nd(result,rvp->Data);
 	        if (r < 0) {
-	            Finalize(result);
+            result->Flags &= ~CONTAINER_READONLY;
+            Finalize(result);
 	            return NULL;
 	        }
 	    }
@@ -1827,31 +1999,35 @@ static void *ElementData(LIST_ELEMENT(DATA_TYPE) *le)
 
 static int SetElementData(LIST_TYPE(DATA_TYPE) *l,LIST_ELEMENT(DATA_TYPE) **pple,const CHARTYPE *data)
 {
-	LIST_ELEMENT(DATA_TYPE) *newle,*le,*rvp;
-	size_t len;
-	if (l == NULL || pple == NULL || data == NULL) {
-	    return iError.NullPtrError("iList.SetElementData");
+    LIST_ELEMENT(DATA_TYPE) *newle,*le,*rvp,*previous = NULL;
+    if (l == NULL || pple == NULL || data == NULL) {
+        return iError.NullPtrError("iList.SetElementData");
 	}
 	if (l->Flags&CONTAINER_READONLY) {
 	    return ErrorReadOnly(l,"SetElementData");
 	}
-	le = *pple;
-	rvp = l->First;
-	if (rvp != le) {
-	    while (rvp) {
-	        if (rvp->Next == le)
-	            break;
-	        rvp = rvp->Next;
-	    }
-	}
-	len = STRLEN(data)+1;
-	if (rvp == NULL) return CONTAINER_ERROR_WRONGELEMENT;
-	newle = l->Allocator->realloc(le,sizeof(*newle)+len);
-	STRCPY(newle->Data,data);
-	if (rvp == l->First) l->First = newle;
-	else rvp->Next = newle;
-	newle->Next = le->Next;
-	l->timestamp++;
+    le = *pple;
+    if (le == NULL)
+        return CONTAINER_ERROR_WRONGELEMENT;
+    rvp = l->First;
+    while (rvp && rvp != le) {
+        previous = rvp;
+        rvp = rvp->Next;
+    }
+    if (rvp == NULL)
+        return CONTAINER_ERROR_WRONGELEMENT;
+    newle = NewLink(l,data,"iStringList.SetElementData");
+    if (newle == NULL)
+        return CONTAINER_ERROR_NOMEMORY;
+    newle->Next = le->Next;
+    if (previous)
+        previous->Next = newle;
+    else
+        l->First = newle;
+    if (l->Last == le)
+        l->Last = newle;
+    ReleaseLink(l,le);
+    l->timestamp++;
 	*pple = newle;
 	return 1;
 }
@@ -1887,10 +2063,19 @@ static LIST_TYPE(DATA_TYPE) *SplitAfter(LIST_TYPE(DATA_TYPE) *l, LIST_ELEMENT(DA
 	LIST_TYPE(DATA_TYPE) *result;    
 	size_t count=0;
 
-	if (pt == NULL || l == NULL) {
+    if (pt == NULL || l == NULL) {
 	    iError.NullPtrError("iList.SplitAfter");
-	    return NULL;
-	}
+        return NULL;
+    }
+    if (l->Flags & CONTAINER_READONLY)
+        return ErrorReadOnly(l,"SplitAfter"),NULL;
+    {
+        LIST_ELEMENT(DATA_TYPE) *check = l->First;
+        while (check && check != pt)
+            check = check->Next;
+        if (check == NULL)
+            return l->RaiseError("iStringList.SplitAfter",CONTAINER_ERROR_WRONGELEMENT),NULL;
+    }
 	pNext = pt->Next;
 	if (pNext == NULL) return NULL;
 	result = CreateWithAllocator(l->Allocator);
@@ -1901,7 +2086,11 @@ static LIST_TYPE(DATA_TYPE) *SplitAfter(LIST_TYPE(DATA_TYPE) *l, LIST_ELEMENT(DA
 	    if (pNext->Next == NULL) result->Last = pNext;
 	    pNext = pNext->Next;
 	}
-	result->count = count;
+    result->count = count;
+    result->Compare = l->Compare;
+    result->RaiseError = l->RaiseError;
+    result->ElementSize = l->ElementSize;
+    result->DestructorFn = l->DestructorFn;
 	pt->Next = NULL;
 	l->Last = pt;
 	l->count -= count;

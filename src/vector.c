@@ -1,5 +1,6 @@
 #include "containers.h"
 #include "ccl_internal.h"
+#include <stdint.h>
 /* Number of elements by default */
 #ifndef DEFAULT_START_SIZE
 #define DEFAULT_START_SIZE 20
@@ -41,7 +42,34 @@ static int NoMemory(const Vector *AL,const char *fnName)
 	return doerror(AL,fnName,CONTAINER_ERROR_NOMEMORY);
 }
 
+/* Keep all element-count to byte-size conversions checked.  A vector with a
+ * zero-sized element type cannot represent a useful object and is rejected by
+ * the constructors below. */
+static int vector_bytes(size_t elementsize,size_t count,size_t *bytes)
+{
+	if (elementsize == 0 || count > SIZE_MAX / elementsize)
+		return 0;
+	*bytes = elementsize * count;
+	return 1;
+}
+
+static int vector_range_overlaps(const Vector *v,const void *ptr,size_t bytes)
+{
+	uintptr_t begin, end, source;
+
+	if (v == NULL || v->contents == NULL || ptr == NULL || bytes == 0)
+		return 0;
+	if (!vector_bytes(v->ElementSize,v->capacity,&bytes))
+		return 0;
+	begin = (uintptr_t)v->contents;
+	end = begin + bytes;
+	source = (uintptr_t)ptr;
+	return source >= begin && source < end;
+}
+
 static Vector *Create(size_t elementsize,size_t startsize);
+static Vector *CreateWithAllocator(size_t elementsize,size_t startsize,
+					   const ContainerAllocator *allocator);
 
 static void *DuplicateElement(const Vector *AL,void *str,size_t size,const char *functionName)
 {
@@ -99,20 +127,30 @@ static unsigned SetFlags(Vector *AL,unsigned newval)
 static int grow(Vector *AL)
 {
 	size_t newcapacity;
-	void **oldcontents;
+	void *oldcontents;
+	size_t bytes;
 	int r = 1;
 
-	newcapacity = AL->capacity + 1+AL->capacity/4;
-	oldcontents = (void **)AL->contents;
-	AL->contents = AL->Allocator->realloc(AL->contents,newcapacity*AL->ElementSize);
-	if (AL->contents == NULL) {
+	if (AL->capacity > (SIZE_MAX - 1) / 5)
+		return NoMemory(AL,"Resize");
+	newcapacity = AL->capacity + 1 + AL->capacity / 4;
+	if (newcapacity <= AL->capacity)
+		newcapacity = AL->capacity + 1;
+	if (!vector_bytes(AL->ElementSize,newcapacity,&bytes))
+		return NoMemory(AL,"Resize");
+	oldcontents = AL->contents;
+	{
+		void *newcontents = AL->Allocator->realloc(oldcontents,bytes);
+		if (newcontents == NULL) {
 		NoMemory(AL,"Resize");
 		AL->contents = oldcontents;
 		r = CONTAINER_ERROR_NOMEMORY;
-	}
-	else {
+		}
+		else {
+		AL->contents = newcontents;
 		AL->capacity = newcapacity;
 		AL->timestamp++;
+		}
 	}
 	return r;
 }
@@ -120,6 +158,7 @@ static int grow(Vector *AL)
 static int ResizeTo(Vector *AL,size_t newcapacity)
 {
 	void *oldcontents;
+	size_t bytes;
 
 	if (AL == NULL) {
 		return NullPtrError("ResizeTo");
@@ -128,10 +167,10 @@ static int ResizeTo(Vector *AL,size_t newcapacity)
 		return ErrorReadOnly(AL,"ResizeTo");
 	if (AL->capacity >= newcapacity)
 		return 0;
-	if (newcapacity <= AL->count)
-		return 0;
+	if (!vector_bytes(AL->ElementSize,newcapacity,&bytes))
+		return NoMemory(AL,"ResizeTo");
 	oldcontents = AL->contents;
-	AL->contents = AL->Allocator->realloc(AL->contents,newcapacity*AL->ElementSize);
+	AL->contents = AL->Allocator->realloc(oldcontents,bytes);
 	if (AL->contents == NULL) {
 		AL->contents = oldcontents;
 		return NoMemory(AL,"ResizeTo");
@@ -145,22 +184,32 @@ static int Resize(Vector *AL, size_t newSize)
 {
 	char *p;
 	size_t i;
-	if (AL == NULL) return iError.NullPtrError("iVector.Resize");
-	if (AL->count < newSize) return ResizeTo(AL,newSize);
+	if (AL == NULL) return NullPtrError("Resize");
+	if (AL->Flags & CONTAINER_READONLY)
+		return ErrorReadOnly(AL,"Resize");
+	if (newSize == AL->count)
+		return 0;
+	if (newSize > AL->count) {
+		size_t oldcount = AL->count;
+		if (newSize > AL->capacity) {
+			int r = ResizeTo(AL,newSize);
+			if (r < 0)
+				return r;
+		}
+		p = (char *)AL->contents;
+		memset(p + oldcount * AL->ElementSize,0,
+		       (newSize - oldcount) * AL->ElementSize);
+		AL->count = newSize;
+		AL->timestamp++;
+		return 1;
+	}
 	p = (char *)AL->contents;
 	if (AL->DestructorFn) {
-		for (i=newSize; i<AL->count; i++) {
+		for (i=newSize; i<AL->count; i++)
 			AL->DestructorFn(p + i*AL->ElementSize);
-		}
-	}
-	p = (char *)AL->Allocator->realloc(AL->contents,newSize*AL->ElementSize);
-	if (p == NULL) {
-		iError.RaiseError("iVector.Resize",CONTAINER_ERROR_NOMEMORY);
-		return CONTAINER_ERROR_NOMEMORY;
 	}
 	AL->count = newSize;
-	AL->capacity = newSize;
-	AL->contents = (newSize ? p : NULL);
+	AL->timestamp++;
 	return 1;
 }
 /*------------------------------------------------------------------------
@@ -212,7 +261,9 @@ static int Add(Vector *AL,const void *newval)
 static int AddRange(Vector * AL,size_t n,const void *data)
 {
 	unsigned char *p;
-	size_t newcapacity;
+	size_t newcount,bytes;
+	void *snapshot = NULL;
+	const void *notify_data = data;
 
 	if (n == 0)
 		return 1;
@@ -226,24 +277,37 @@ static int AddRange(Vector * AL,size_t n,const void *data)
 		AL->RaiseError("iVector.AddRange",CONTAINER_ERROR_BADARG);
 		return CONTAINER_ERROR_BADARG;
 	}
-	newcapacity = AL->count+n;
-	if (newcapacity >= AL->capacity-1) {
-		unsigned char *newcontents;
-		newcapacity += AL->count/4;
-		newcontents = (unsigned char *)AL->Allocator->realloc(AL->contents,newcapacity*AL->ElementSize);
-		if (newcontents == NULL) {
+	if (n > SIZE_MAX - AL->count)
+		return NoMemory(AL,"AddRange");
+	newcount = AL->count + n;
+	if (!vector_bytes(AL->ElementSize,n,&bytes))
+		return NoMemory(AL,"AddRange");
+	if (vector_range_overlaps(AL,data,bytes) && newcount > AL->capacity) {
+		snapshot = AL->Allocator->malloc(bytes);
+		if (snapshot == NULL)
+			return NoMemory(AL,"AddRange");
+		memcpy(snapshot,data,bytes);
+		data = snapshot;
+	}
+	if (newcount > AL->capacity) {
+		size_t newcapacity = newcount + newcount / 4 + 1;
+		if (newcapacity < newcount || !vector_bytes(AL->ElementSize,newcapacity,&bytes)) {
+			if (snapshot) AL->Allocator->free(snapshot);
 			return NoMemory(AL,"AddRange");
 		}
-		AL->capacity = newcapacity;
-		AL->contents = newcontents;
+		if (ResizeTo(AL,newcapacity) < 0) {
+			if (snapshot) AL->Allocator->free(snapshot);
+			return CONTAINER_ERROR_NOMEMORY;
+		}
 	}
 	p = (unsigned char *)AL->contents;
 	p += AL->count*AL->ElementSize;
-	memcpy(p,data,n*AL->ElementSize);
-	AL->count += n;
+	memmove(p,data,n*AL->ElementSize);
+	if (snapshot) AL->Allocator->free(snapshot);
+	AL->count = newcount;
 	AL->timestamp++;
 	if (AL->Flags & CONTAINER_HAS_OBSERVER)
-		iObserver.Notify(AL,CCL_ADDRANGE,(void *)n,data);
+		iObserver.Notify(AL,CCL_ADDRANGE,(void *)n,notify_data);
 
 	return 1;
 }
@@ -264,15 +328,15 @@ static Vector *GetRange(const Vector *AL, size_t start,size_t end)
 		end = AL->count-1;
 	if (start > end)
 		return result;
-	top = end-start;
-	result = AL->VTable->Create(AL->ElementSize,top);
+	top = end-start+1;
+	result = CreateWithAllocator(AL->ElementSize,top,AL->Allocator);
 	if (result == NULL) {
 		NoMemory(AL,"GetRange");
 		return NULL;
 	}
 	p = (char *)AL->contents;
-	memcpy(result->contents,p+start*AL->ElementSize,(top)*AL->ElementSize);
-	result->count = end-start;
+	memcpy(result->contents,p+start*AL->ElementSize,top*AL->ElementSize);
+	result->count = top;
 	return result;
 }
 
@@ -305,8 +369,7 @@ static int Clear(Vector *AL)
 		}
 	}
 	AL->count = 0;
-	AL->timestamp = 0;
-	AL->Flags = 0;
+	AL->timestamp++;
 
 	return 1;
 }
@@ -327,6 +390,10 @@ static int Contains(const Vector *AL,const void *data,void *ExtraArgs)
 	p = (char *)AL->contents;
 	if (ExtraArgs == NULL) {
 		ExtraArgs = &ci;
+		ci.ContainerLeft = AL;
+		ci.ContainerRight = NULL;
+		ci.ExtraArgs = NULL;
+	} else {
 		ci.ContainerLeft = AL;
 		ci.ContainerRight = NULL;
 		ci.ExtraArgs = ExtraArgs;
@@ -495,6 +562,8 @@ static int IndexOf(const Vector *AL,const void *data,void *ExtraArgs,size_t *res
 		AL->RaiseError("iVector.IndexOf",CONTAINER_ERROR_BADARG);
 		return CONTAINER_ERROR_BADARG;
 	}
+	if (result == NULL)
+		return CONTAINER_ERROR_BADARG;
 	p = AL->contents;
 	ci.ContainerLeft = (Vector *)AL;
 	ci.ContainerRight = NULL;
@@ -679,24 +748,18 @@ static int RemoveRange(Vector *AL,size_t start, size_t end)
 		return 0;
 	}
 	if (AL->Flags & CONTAINER_READONLY) {
-		return ErrorReadOnly(AL,"RemoceRange");
+		return ErrorReadOnly(AL,"RemoveRange");
 	}
-	p = AL->contents;
+	p = (char *)AL->contents;
 	if (AL->DestructorFn) {
 		for (i=start; i<end; i++) {
-			AL->DestructorFn(p);
-			AL->Allocator->free(p);
-			p += AL->ElementSize;
-		}
-	}
-	else {
-		for (i=start; i<end; i++) {
-			AL->Allocator->free(p);
-			p += AL->ElementSize;
+			AL->DestructorFn(p + i*AL->ElementSize);
 		}
 	}
 	if (end < AL->count)
-		memmove(p+start, p+end, (AL->count-end)*AL->ElementSize);
+		memmove(p + start*AL->ElementSize,
+		        p + end*AL->ElementSize,
+		        (AL->count-end)*AL->ElementSize);
 	AL->count -= end - start;
 	AL->timestamp++;
 	return 1;
@@ -813,7 +876,11 @@ static int Finalize(Vector *AL)
 	if (AL == NULL)
 		return CONTAINER_ERROR_BADARG;
 	Flags = AL->Flags;
+	/* Finalization is a lifetime operation and must remain valid for a
+	 * read-only vector.  Clear itself quite correctly rejects mutations. */
+	AL->Flags &= ~CONTAINER_READONLY;
 	result = Clear(AL);
+	AL->Flags = Flags;
 	if (result < 0)
 		return result;
 	if (Flags & CONTAINER_HAS_OBSERVER)
@@ -848,12 +915,12 @@ static int Mismatch(Vector *a1, Vector *a2,size_t *mismatch)
 	CompareInfo ci;
 	char *p1,*p2;
 
-	*mismatch = 0;
-	if (a1 == a2)
-		return 0;
 	if (a1 == NULL || a2 == NULL || mismatch == NULL) {
 		return NullPtrError("Mismatch");
 	}
+	*mismatch = 0;
+	if (a1 == a2)
+		return 0;
 	if (a1->CompareFn != a2->CompareFn || a1->ElementSize  != a2->ElementSize)
 		return CONTAINER_ERROR_INCOMPATIBLE;
 	siz = a1->count;
@@ -882,28 +949,37 @@ static int Mismatch(Vector *a1, Vector *a2,size_t *mismatch)
 
 static int SetCapacity(Vector *AL,size_t newCapacity)
 {
-	void **newContents;
+	void *newContents;
+	void *oldContents;
+	size_t bytes,copyCount;
 	if (AL == NULL) {
 		return NullPtrError("SetCapacity");
 	}
 	if (AL->Flags & CONTAINER_READONLY) {
 		return ErrorReadOnly(AL,"SetCapacity");
 	}
-	newContents = AL->Allocator->malloc(newCapacity*AL->ElementSize);
-	if (newContents == NULL) {
+	if (!vector_bytes(AL->ElementSize,newCapacity,&bytes))
 		return NoMemory(AL,"SetCapacity");
+	if (newCapacity == AL->capacity)
+		return 0;
+	newContents = bytes ? AL->Allocator->malloc(bytes) : NULL;
+	if (bytes && newContents == NULL)
+		return NoMemory(AL,"SetCapacity");
+	copyCount = AL->count < newCapacity ? AL->count : newCapacity;
+	if (copyCount)
+		memcpy(newContents,AL->contents,copyCount*AL->ElementSize);
+	if (AL->DestructorFn && newCapacity < AL->count) {
+		size_t i;
+		char *p = (char *)AL->contents;
+		for (i=newCapacity; i<AL->count; i++)
+			AL->DestructorFn(p + i*AL->ElementSize);
 	}
-	memset(AL->contents,0,AL->ElementSize*newCapacity);
-	AL->capacity = newCapacity;
-	if (newCapacity > AL->count)
-		newCapacity = AL->count;
-	else if (newCapacity < AL->count)
-		AL->count = newCapacity;
-	if (newCapacity > 0) {
-		memcpy(newContents,AL->contents,newCapacity*AL->ElementSize);
-	}
-	AL->Allocator->free(AL->contents);
+	oldContents = AL->contents;
 	AL->contents = newContents;
+	AL->capacity = newCapacity;
+	AL->count = copyCount;
+	if (oldContents)
+		AL->Allocator->free(oldContents);
 	AL->timestamp++;
 	return 1;
 }
@@ -933,6 +1009,8 @@ static int Apply(Vector *AL,int (*Applyfn)(void *,void *),void *arg)
 	}
 	if (pElem)
 		AL->Allocator->free(pElem);
+	if (AL->count)
+		AL->timestamp++;
 	return 1;
 }
 
@@ -1059,9 +1137,12 @@ static int Sort(Vector *AL)
 	if (AL == NULL) {
 		return NullPtrError("Sort");
 	}
+	if (AL->Flags & CONTAINER_READONLY)
+		return ErrorReadOnly(AL,"Sort");
 	ci.ContainerLeft = AL;
 	ci.ExtraArgs = NULL;
 	qsortEx(AL->contents,AL->count,AL->ElementSize,AL->CompareFn,&ci);
+	AL->timestamp++;
 	return 1;
 }
 
@@ -1071,6 +1152,8 @@ static int Append(Vector *AL1, Vector *AL2)
 {
 	size_t newCount;
 	char *p;
+	size_t bytes;
+	void *snapshot = NULL;
 
 	if (AL1 == NULL) {
 		return NullPtrError("Append");
@@ -1085,16 +1168,31 @@ static int Append(Vector *AL1, Vector *AL2)
 	if (AL2->ElementSize != AL1->ElementSize) {
 		return ErrorIncompatible(AL1,"Append");
 	}
+	if (AL2->count > SIZE_MAX - AL1->count ||
+	    !vector_bytes(AL1->ElementSize,AL2->count,&bytes))
+		return NoMemory(AL1,"Append");
 	newCount = AL1->count + AL2->count;
-	if (newCount >= AL1->capacity) {
-		int r = ResizeTo(AL1,newCount);
-		if (r <= 0)
-			return r;
+	/* A self-append (or an append from an alias into AL1) must retain the
+	 * source across a possible realloc. */
+	if (vector_range_overlaps(AL1,AL2->contents,bytes) && bytes) {
+		snapshot = AL1->Allocator->malloc(bytes);
+		if (snapshot == NULL)
+			return NoMemory(AL1,"Append");
+		memcpy(snapshot,AL2->contents,bytes);
 	}
-	AL1->count = newCount;
+	if (newCount > AL1->capacity) {
+		int r = ResizeTo(AL1,newCount);
+		if (r < 0) {
+			if (snapshot) AL1->Allocator->free(snapshot);
+			return r;
+		}
+	}
 	p = (char *)AL1->contents;
-	p += AL1->count*AL1->ElementSize;
-	memcpy(p,AL2->contents,AL2->ElementSize*AL2->count);
+	p += (newCount - AL2->count)*AL1->ElementSize;
+	memmove(p,snapshot ? snapshot : AL2->contents,bytes);
+	if (snapshot)
+		AL1->Allocator->free(snapshot);
+	AL1->count = newCount;
 	AL1->timestamp++;
 	if (AL1->Flags & CONTAINER_HAS_OBSERVER)
 		iObserver.Notify(AL1,CCL_APPEND,AL2,NULL);
@@ -1120,7 +1218,7 @@ static int Reverse(Vector *AL)
 	s = AL->ElementSize;
 	p = AL->contents;
 	q = p + s*(AL->count-1);
-	t = malloc(s);
+	t = AL->Allocator->malloc(s);
 	if (t == NULL) {
 		return NoMemory(AL,"Reverse");
 	}
@@ -1131,7 +1229,7 @@ static int Reverse(Vector *AL)
 		p += s;
 		q -= s;
 	}
-	free(t);
+	AL->Allocator->free(t);
 	AL->timestamp++;
 	return 1;
 }
@@ -1152,13 +1250,18 @@ static void *GetNext(Iterator *it)
 		NullPtrError("GetNext");
 		return NULL;
 	}
-	AL = ali->AL;
-	if (ali->index >= AL->count-1)
-		return NULL;
-	if (ali->timestamp != AL->timestamp) {
-		AL->RaiseError("GetNext",CONTAINER_ERROR_OBJECT_CHANGED);
+	if (ali->Magic != VECTOR_MAGIC_NUMBER) {
+		iError.RaiseError("vector.GetNext",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
 	}
+	AL = ali->AL;
+	if (ali->timestamp != AL->timestamp) {
+		AL->RaiseError("iVector.GetNext",CONTAINER_ERROR_OBJECT_CHANGED);
+		return NULL;
+	}
+	if (AL->count == 0 ||
+	    (ali->index != (size_t)-1 && ali->index >= AL->count-1))
+		return NULL;
 	p = AL->contents;
 	++ali->index;
 	p += ali->index*AL->ElementSize;
@@ -1181,6 +1284,8 @@ static size_t GetPosition(Iterator *it)
 		iError.RaiseError("vector.GetPosition",CONTAINER_ERROR_WRONG_ITERATOR);
 		return (size_t)-1;
 	}
+	if (ali->AL && ali->timestamp != ali->AL->timestamp)
+		return (size_t)-1;
 	return ali->index;
 }
 
@@ -1291,6 +1396,10 @@ static void *GetCurrent(Iterator *it)
 		iError.RaiseError("vector.GetCurrent",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
 	}
+	if (ali->AL && ali->timestamp != ali->AL->timestamp) {
+		ali->AL->RaiseError("iVector.GetCurrent",CONTAINER_ERROR_OBJECT_CHANGED);
+		return NULL;
+	}
 	return ali->Current;
 }
 
@@ -1345,6 +1454,10 @@ static void *GetFirst(Iterator *it)
 		iError.RaiseError("vector.GetFirst",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
 	}
+	if (ali->timestamp != ali->AL->timestamp) {
+		ali->AL->RaiseError("iVector.GetFirst",CONTAINER_ERROR_OBJECT_CHANGED);
+		return NULL;
+	}
 	if (ali->AL->count == 0) {
 		ali->Current = NULL;
 		return NULL;
@@ -1383,8 +1496,9 @@ static Iterator *NewIterator(Vector *AL)
 	result->AL = AL;
 	result->Current = NULL;
 	result->timestamp = AL->timestamp;
-	result->index = -1;
+	result->index = (size_t)-1;
 	result->Magic = VECTOR_MAGIC_NUMBER;
+	result->Flags = 1UL; /* heap-owned iterator */
 	return &result->it;
 }
 
@@ -1393,7 +1507,7 @@ static int InitIterator(Vector *AL,void *buf)
 	struct VectorIterator *result;
 
 	if (AL == NULL || buf == NULL) {
-		NullPtrError("NewIterator");
+		NullPtrError("InitIterator");
 		return CONTAINER_ERROR_BADARG;
 	}
 	result = buf;
@@ -1403,11 +1517,14 @@ static int InitIterator(Vector *AL,void *buf)
 	result->it.GetCurrent = GetCurrent;
 	result->it.GetLast = GetLast;
 	result->it.Seek = Seek;
+	result->it.GetPosition = GetPosition;
 	result->it.Replace = ReplaceWithIterator;
 	result->AL = AL;
 	result->Current = NULL;
 	result->timestamp = AL->timestamp;
-	result->index = -1;
+	result->index = (size_t)-1;
+	result->Magic = VECTOR_MAGIC_NUMBER;
+	result->Flags = 0; /* placement storage is owned by the caller */
 	return 1;
 }
 
@@ -1418,7 +1535,10 @@ static int DeleteIterator(Iterator * it)
 	if (ali == NULL) {
 		return NullPtrError("DeleteIterator");
 	}
-	ali->AL->Allocator->free(it);
+	if (ali->Magic != VECTOR_MAGIC_NUMBER)
+		return CONTAINER_ERROR_WRONG_ITERATOR;
+	if (ali->Flags & 1UL)
+		ali->AL->Allocator->free(it);
 	return 1;
 }
 
@@ -1437,9 +1557,23 @@ static int DefaultLoadFunction(void *element,void *arg, FILE *Infile)
 	return len == fread(element,1,len,Infile);
 }
 
+#define VECTOR_DISK_VERSION UINT32_C(1)
+
+static int write_disk_value(const void *value,size_t size,FILE *stream)
+{
+	return fwrite(value,1,size,stream) == size;
+}
+
+static int read_disk_value(void *value,size_t size,FILE *stream)
+{
+	return fread(value,1,size,stream) == size;
+}
+
 static int Save(const Vector *AL,FILE *stream, SaveFunction saveFn,void *arg)
 {
 	size_t i,elemsiz;
+	uint32_t version = VECTOR_DISK_VERSION;
+	uint64_t elementsize,count,flags;
 
 	if (AL == NULL) {
 		return NullPtrError("Save");
@@ -1453,16 +1587,21 @@ static int Save(const Vector *AL,FILE *stream, SaveFunction saveFn,void *arg)
 		elemsiz = AL->ElementSize;
 		arg = &elemsiz;
 	}
-	if (fwrite(&VectorGuid,sizeof(guid),1,stream) == 0)
-		return EOF;
-	if (fwrite(AL,1,sizeof(Vector),stream) == 0)
-		return EOF;
+	elementsize = (uint64_t)AL->ElementSize;
+	count = (uint64_t)AL->count;
+	flags = (uint64_t)AL->Flags;
+	if (!write_disk_value(&VectorGuid,sizeof(VectorGuid),stream) ||
+	    !write_disk_value(&version,sizeof(version),stream) ||
+	    !write_disk_value(&elementsize,sizeof(elementsize),stream) ||
+	    !write_disk_value(&count,sizeof(count),stream) ||
+	    !write_disk_value(&flags,sizeof(flags),stream))
+		return CONTAINER_ERROR_FILE_WRITE;
 	for (i=0; i< AL->count; i++) {
 		char *p = AL->contents;
 
 		p += i*AL->ElementSize;
 		if (saveFn(p,arg,stream) <= 0)
-			return EOF;
+			return CONTAINER_ERROR_FILE_WRITE;
 	}
 	return 1;
 }
@@ -1528,29 +1667,40 @@ static Vector *Load(FILE *stream, ReadFunction loadFn,void *arg)
 {
 	size_t i;
 	unsigned char *p;
-	Vector *result,AL;
+	Vector *result;
 	guid Guid;
+	uint32_t version;
+	uint64_t elementsize,count,flags;
 
 	if (stream == NULL) {
 		NullPtrError("Load");
 		return NULL;
 	}
-	if (loadFn == NULL) {
-		loadFn = DefaultLoadFunction;
-		arg = &AL.ElementSize;
-	}
-	if (fread(&Guid,sizeof(guid),1,stream) == 0)
+	if (!read_disk_value(&Guid,sizeof(Guid),stream))
 		return NULL;
 	if (memcmp(&Guid,&VectorGuid,sizeof(guid))) {
 		iError.RaiseError("iVector.Load",CONTAINER_ERROR_WRONGFILE);
 		return NULL;
 	}
-	if (fread(&AL,1,sizeof(Vector),stream) == 0)
+	if (!read_disk_value(&version,sizeof(version),stream) ||
+	    version != VECTOR_DISK_VERSION ||
+	    !read_disk_value(&elementsize,sizeof(elementsize),stream) ||
+	    !read_disk_value(&count,sizeof(count),stream) ||
+	    !read_disk_value(&flags,sizeof(flags),stream) ||
+	    elementsize == 0 || elementsize > SIZE_MAX || count > SIZE_MAX ||
+	    flags > UINT_MAX ||
+	    count > SIZE_MAX / (size_t)elementsize) {
+		iError.RaiseError("iVector.Load",CONTAINER_ERROR_FILE_READ);
 		return NULL;
-	result = Create(AL.ElementSize,AL.count);
+	}
+	result = Create((size_t)elementsize,(size_t)count);
 	if (result) {
+		if (loadFn == NULL) {
+			loadFn = DefaultLoadFunction;
+			arg = &result->ElementSize;
+		}
 		p = result->contents;
-		for (i=0; i< AL.count; i++) {
+		for (i=0; i< (size_t)count; i++) {
 			if (loadFn(p,arg,stream) <= 0) {
 				iError.RaiseError("iVector.Load",CONTAINER_ERROR_FILE_READ);
 				Finalize(result);
@@ -1559,7 +1709,7 @@ static Vector *Load(FILE *stream, ReadFunction loadFn,void *arg)
 			p += result->ElementSize;
 			result->count++;
 		}
-		result->Flags = AL.Flags;
+		result->Flags = (unsigned)flags;
 	}
 	else iError.RaiseError("iVector.Load",CONTAINER_ERROR_NOMEMORY);
 	return result;
@@ -1572,6 +1722,11 @@ static Vector *CreateWithAllocator(size_t elementsize,size_t startsize,const Con
 	Vector *result;
 	size_t es;
 
+	if (allocator == NULL || elementsize == 0 ||
+	    (startsize != 0 && !vector_bytes(elementsize,startsize,&es))) {
+		iError.RaiseError("iVector.Create",CONTAINER_ERROR_BADARG);
+		return NULL;
+	}
 	/* Allocate space for the array list header structure */
 	result = allocator->malloc(sizeof(*result));
 	if (result == NULL) {
@@ -1581,7 +1736,11 @@ static Vector *CreateWithAllocator(size_t elementsize,size_t startsize,const Con
 	memset(result,0,sizeof(*result));
 	if (startsize == 0)
 		startsize = DEFAULT_START_SIZE;
-	es = startsize * elementsize;
+	if (!vector_bytes(elementsize,startsize,&es)) {
+		iError.RaiseError("iVector.Create",CONTAINER_ERROR_BADARG);
+		allocator->free(result);
+		return NULL;
+	}
 	result->contents = allocator->malloc(es);
 	if (result->contents == NULL) {
 		iError.RaiseError("iVector.Create",CONTAINER_ERROR_NOMEMORY);
@@ -1607,10 +1766,16 @@ static Vector *Create(size_t elementsize,size_t startsize)
 
 static Vector *InitializeWith(size_t elementSize,size_t n,const void *data)
 {
-	Vector *result = Create(elementSize,n);
+	Vector *result;
+	if (elementSize == 0 || (n && data == NULL)) {
+		iError.RaiseError("iVector.InitializeWith",CONTAINER_ERROR_BADARG);
+		return NULL;
+	}
+	result = Create(elementSize,n);
 	if (result == NULL)
 		return result;
-	memcpy(result->contents,data,n*elementSize);
+	if (n)
+		memcpy(result->contents,data,n*elementSize);
 	result->count = n;
 	return result;
 }
@@ -1631,7 +1796,9 @@ static int SearchWithKey(Vector *vec,size_t startByte,size_t sizeKey,size_t star
 		sizeKey = vec->ElementSize-startByte;
 	if (startidx >= vec->count)
 		return 0;
-	p = vec->contents;
+	if (item == NULL)
+		return CONTAINER_ERROR_BADARG;
+	p = (char *)vec->contents + startidx * vec->ElementSize;
 	for (i=startidx; i<vec->count; i++) {
 		if (memcmp(p+startByte,item,sizeKey) == 0) {
 			*result = i;
@@ -1646,10 +1813,17 @@ static Vector *Init(Vector *result,size_t elementsize,size_t startsize)
 {
 	size_t es;
 
+	if (result == NULL || elementsize == 0) {
+		iError.RaiseError("iVector.Init",CONTAINER_ERROR_BADARG);
+		return NULL;
+	}
 	memset(result,0,sizeof(*result));
 	if (startsize == 0)
 		startsize = DEFAULT_START_SIZE;
-	es = startsize * elementsize;
+	if (!vector_bytes(elementsize,startsize,&es)) {
+		iError.RaiseError("iVector.Init",CONTAINER_ERROR_BADARG);
+		return NULL;
+	}
 	result->contents = CurrentAllocator->malloc(es);
 	if (result->contents == NULL) {
 		iError.RaiseError("iVector.Init",CONTAINER_ERROR_NOMEMORY);
@@ -1681,14 +1855,13 @@ static DestructorFunction SetDestructor(Vector *cb,DestructorFunction fn)
 	if (cb == NULL)
 		return NULL;
 	oldfn = cb->DestructorFn;
-	if (fn)
-		cb->DestructorFn = fn;
+	cb->DestructorFn = fn;
 	return oldfn;
 }
 
 static Vector * SelectCopy(Vector *src,Mask *m)
 {
-	size_t i,offset=0,siz;
+	size_t i,offset=0,siz,selected=0;
 	Vector *result;
 	char *dst,*s;
 
@@ -1701,7 +1874,10 @@ static Vector * SelectCopy(Vector *src,Mask *m)
 		return NULL;
 	}
 	siz = src->ElementSize;
-	result = Create(siz,src->count);
+	for (i=0; i<m->length; i++)
+		if (m->data[i])
+			selected++;
+	result = CreateWithAllocator(siz,selected,src->Allocator);
 	if (result == NULL) {
 		NoMemory(src,"SelectCopy");
 		return NULL;
@@ -1710,12 +1886,15 @@ static Vector * SelectCopy(Vector *src,Mask *m)
 	dst = result->contents;
 	for (i=0; i<m->length;i++) {
 	if (m->data[i]) {
-		if (i != offset)
-			memcpy(dst+offset*siz , s+i*siz,siz);
+		memcpy(dst+offset*siz , s+i*siz,siz);
 		offset++;
 	}
 	}
 	result->count = offset;
+	result->CompareFn = src->CompareFn;
+	result->RaiseError = src->RaiseError;
+	/* The result contains byte copies, not transferred ownership. */
+	result->DestructorFn = NULL;
 	return result;
 }
 
@@ -1821,6 +2000,7 @@ static int RotateLeft(Vector *AL, size_t n)
 		q -= AL->ElementSize;
 	}
 	AL->Allocator->free(t);
+	AL->timestamp++;
 	return 1;
 }
 
@@ -1874,6 +2054,7 @@ static int RotateRight(Vector *AL, size_t n)
 		q -= AL->ElementSize;
 	}
 	AL->Allocator->free(t);
+	AL->timestamp++;
 	return 1;
 }
 
@@ -1903,7 +2084,12 @@ static Mask *CompareEqual(const Vector *left,const Vector *right,Mask *bytearray
 			return NULL;
 		}
 	}
-	else iMask.Clear(bytearray);
+	else {
+		iMask.Clear(bytearray);
+		/* Clear is also used as a reset operation by the mask API and thus
+		 * drops its logical length.  The result owns the original capacity. */
+		bytearray->length = left_len;
+	}
 	pleft = left->contents;
 	pright = right->contents;
 	info.ContainerLeft = left;
@@ -1932,7 +2118,10 @@ static Mask *CompareEqualScalar(const Vector *left,const void *right,Mask *bytea
 		if (bytearray) iMask.Finalize(bytearray);
 		bytearray = iMask.Create(left_len);
 	}
-	else iMask.Clear(bytearray);
+	else {
+		iMask.Clear(bytearray);
+		bytearray->length = left_len;
+	}
 	if (bytearray == NULL) {
 		NoMemory(left,"CompareEqual");
 		return NULL;
@@ -1940,13 +2129,18 @@ static Mask *CompareEqualScalar(const Vector *left,const void *right,Mask *bytea
 	pleft = left->contents;
 	if (left->CompareFn == DefaultVectorCompareFunction) {
 		for (i=0; i<left_len; i++) {
-			bytearray->data[i] = !memcmp(left,right,left->ElementSize);
+			bytearray->data[i] = !memcmp(pleft,right,left->ElementSize);
 			pleft += left->ElementSize;
 		}
-	}
-	else for (i=0; i<left_len;i++) {
-		bytearray->data[i] = !left->CompareFn(left,right,NULL);
-		pleft += left->ElementSize;
+	} else {
+		CompareInfo info;
+		info.ContainerLeft = left;
+		info.ContainerRight = NULL;
+		info.ExtraArgs = NULL;
+		for (i=0; i<left_len;i++) {
+			bytearray->data[i] = !left->CompareFn(pleft,right,&info);
+			pleft += left->ElementSize;
+		}
 	}
 	return bytearray;
 }
@@ -1955,7 +2149,7 @@ static Mask *CompareEqualScalar(const Vector *left,const void *right,Mask *bytea
 static int Select(Vector *src,const Mask *m)
 {
 	size_t i,offset=0;
-	char *p,*q;
+	char *p;
 
 	if (src == NULL || m == NULL)
 		return NullPtrError("Select");
@@ -1963,23 +2157,29 @@ static int Select(Vector *src,const Mask *m)
 		iError.RaiseError("iVector.Select",CONTAINER_ERROR_BADMASK,src,m);
 		return CONTAINER_ERROR_BADMASK;
 	}
-	q = p = src->contents;
-	for (i=0; i<m->length;i++) {
+	if (src->Flags & CONTAINER_READONLY)
+		return ErrorReadOnly(src,"Select");
+	p = (char *)src->contents;
+	/* Destroy omitted logical elements before moving retained bytes.  This
+	 * preserves ownership when a selected value is compacted over a hole. */
+	if (src->DestructorFn) {
+		for (i=0; i<m->length; i++)
+			if (!m->data[i])
+				src->DestructorFn(p + i*src->ElementSize);
+	}
+	for (i=0; i<m->length; i++) {
 		if (m->data[i]) {
-			if (i != offset) {
-				if (src->DestructorFn)
-					src->DestructorFn(p);
-				memcpy(p , q, src->ElementSize);
-				p += src->ElementSize;
-			}
+			if (offset != i)
+				memmove(p + offset*src->ElementSize,
+				        p + i*src->ElementSize,src->ElementSize);
 			offset++;
-			q += src->ElementSize;
 		}
 	}
-	if (offset < i) {
-		memset((char *)(src->contents)+offset*src->ElementSize,0,src->ElementSize*(i-offset));
-	}
+	if (offset < src->count)
+		memset(p + offset*src->ElementSize,0,
+		       (src->count-offset)*src->ElementSize);
 	src->count = offset;
+	src->timestamp++;
 	return 1;
 }
 

@@ -85,7 +85,13 @@ recurse:
 
     swap(lo, higuy, width);
 
-    if (higuy - 1 - lo >= hi - loguy) 
+    /*
+     * Compare the two remaining ranges by their byte extents.  The old
+     * expression formed ``higuy - 1`` even when the pivot was the minimum
+     * element (higuy == lo), which creates a pointer before the array.  It
+     * also mixed an element-sized range with a byte-sized subtraction.
+     */
+    if (higuy - lo >= hi - loguy)
     {
       if (lo + width < higuy) 
       {
@@ -155,5 +161,3 @@ static void swap(char *a, char *b, size_t width)
     }
   }
 }
-
-

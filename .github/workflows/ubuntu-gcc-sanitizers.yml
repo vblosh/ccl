@@ -1,0 +1,35 @@
+name: Ubuntu GCC Sanitizers
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test (GCC, ASan/UBSan/LSan)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure
+        env:
+          CC: gcc
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_TESTING=ON
+          -DCCL_ENABLE_SANITIZERS=ON
+
+      - name: Build library and all tests
+        run: cmake --build build --parallel
+
+      - name: Run all tests with LeakSanitizer enabled
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:print_stacktrace=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure

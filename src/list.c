@@ -854,6 +854,10 @@ static int InsertIn(List * l, size_t idx, List * newData)
             insertedFirst = node;
         insertedLast = node;
     }
+    if (insertedLast == NULL) {
+        l->RaiseError("iList.InsertIn", CONTAINER_ERROR_BADARG);
+        return CONTAINER_ERROR_BADARG;
+    }
     if (idx == 0) {
         insertedLast->Next = l->First;
         l->First = insertedFirst;
@@ -1634,6 +1638,10 @@ static int ReplaceWithIterator(Iterator * it, void *data, int direction)
 	}
     if (li->L->count == 0)
         return 0;
+    if (li->Current == NULL) {
+        li->L->RaiseError("Replace", CONTAINER_ERROR_BADARG);
+        return CONTAINER_ERROR_BADARG;
+    }
     if (li->L->Flags & CONTAINER_READONLY) {
         li->L->RaiseError("Replace", CONTAINER_ERROR_READONLY);
         return CONTAINER_ERROR_READONLY;
@@ -1656,18 +1664,27 @@ static int ReplaceWithIterator(Iterator * it, void *data, int direction)
         } else if (data != NULL) {
             /* Replacement keeps the cursor on the same logical position. */
             li->Current = li->L->First;
-            for (size_t i = 0; i < pos; ++i)
+            for (size_t i = 0; i < pos; ++i) {
+                if (li->Current == NULL)
+                    return CONTAINER_ERROR_BADARG;
                 li->Current = li->Current->Next;
+            }
         } else if (direction && pos < li->L->count) {
             li->index = pos;
             li->Current = li->L->First;
-            for (size_t i = 0; i < pos; ++i)
+            for (size_t i = 0; i < pos; ++i) {
+                if (li->Current == NULL)
+                    return CONTAINER_ERROR_BADARG;
                 li->Current = li->Current->Next;
+            }
         } else {
             li->index = pos == 0 ? 0 : pos - 1;
             li->Current = li->L->First;
-            for (size_t i = 0; i < li->index; ++i)
+            for (size_t i = 0; i < li->index; ++i) {
+                if (li->Current == NULL)
+                    return CONTAINER_ERROR_BADARG;
                 li->Current = li->Current->Next;
+            }
         }
     }
     return result;
@@ -1852,7 +1869,7 @@ static List    *Load(FILE * stream, ReadFunction loadFn, void *arg)
         iError.RaiseError("iList.Load", CONTAINER_ERROR_FILE_READ);
         return NULL;
     }
-    if (memcmp(&Guid, &ListGuid, sizeof(guid))) {
+    if (memcmp(&Guid, &ListGuid, sizeof(guid)) != 0) {
         iError.RaiseError("iList.Load", CONTAINER_ERROR_WRONGFILE);
         return NULL;
     }

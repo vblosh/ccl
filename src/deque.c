@@ -724,9 +724,8 @@ static void *GetNext(Iterator *it)
 static void *GetPrevious(Iterator *it)
 {
     struct DequeIterator *iterator = (struct DequeIterator *)it;
-    Deque *d;
 
-    if (iterator == NULL || (d = iterator->D) == NULL)
+    if (iterator == NULL || iterator->D == NULL)
         return NULL;
     if (IteratorChanged(iterator, "iDeque.GetPrevious"))
         return NULL;

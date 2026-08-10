@@ -272,7 +272,11 @@ static void *failure_calloc(size_t count, size_t size)
 {
     if (size != 0 && count > SIZE_MAX / size)
         return NULL;
-    return failure_malloc(count * size);
+    ++failure_state.calls;
+    if (failure_state.fail_at != 0 &&
+        failure_state.calls >= failure_state.fail_at)
+        return NULL;
+    return calloc(count, size);
 }
 
 static void *failure_realloc(void *ptr, size_t size)

@@ -81,6 +81,8 @@ static size_t Hash(const void * key, size_t len, unsigned int seed )
 	case 2: h ^= (size_t)data[1] << 8;
 	case 1: h ^= (size_t)data[0];
 	        h *= m;
+	default:
+	        break;
 	};
 	/* Do a few final mixes of the hash to ensure the last few
 	   bytes are well-incorporated. */

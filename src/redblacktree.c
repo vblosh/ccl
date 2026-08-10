@@ -166,8 +166,10 @@ static void destroy_node(RedBlackTree *tree, RedBlackTreeNode *node)
         return;
     if (tree->DestructorFn != NULL)
         tree->DestructorFn(node->data);
-    tree->Allocator->free(node->data);
-    tree->Allocator->free(node);
+    if (tree->Allocator != NULL && tree->Allocator->free != NULL) {
+        tree->Allocator->free(node->data);
+        tree->Allocator->free(node);
+    }
 }
 
 static void destroy_nodes(RedBlackTree *tree, RedBlackTreeNode *node)

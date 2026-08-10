@@ -135,6 +135,10 @@ static int run_record_case(size_t count, int pattern, int descending)
 	SortRecord before[128];
 	CompareState state;
 
+	/* The record comparison below intentionally checks the complete object
+	 * representation.  Clear padding bytes before populating the fields so
+	 * Memcheck does not report comparisons of indeterminate stack data. */
+	memset(records, 0, sizeof(records));
 	fill_records(records, count, pattern);
 	memcpy(before, records, count * sizeof(records[0]));
 	state.expected_thunk = &state;

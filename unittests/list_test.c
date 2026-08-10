@@ -334,7 +334,6 @@ static int test_api_edges_and_navigation(void)
     (void)iList.UseHeap(NULL, NULL);
     (void)iList.GetHeap(NULL);
     (void)iList.AddRange(NULL, 1, &replacement);
-    (void)iList.CreateWithAllocator(sizeof(int), NULL);
     (void)iList.Init(NULL, sizeof(int));
     (void)iList.InitWithAllocator(NULL, sizeof(int), NULL);
     (void)iList.GetAllocator(NULL);
@@ -355,6 +354,13 @@ static int test_api_edges_and_navigation(void)
     (void)iList.Advance(NULL);
     (void)iList.Skip(NULL, 1);
     (void)iList.SplitAfter(NULL, NULL);
+
+    /* A NULL allocator selects the current allocator; release the returned
+     * header instead of discarding it in this argument-surface probe. */
+    heap = iList.CreateWithAllocator(sizeof(int), NULL);
+    TEST_REQUIRE(heap != NULL);
+    iList.Finalize(heap);
+    heap = NULL;
 
     /* Exercise the observer notifications emitted by each mutation family. */
     observed = iList.InitializeWith(sizeof(int), 2, values);
@@ -487,6 +493,8 @@ static int test_api_edges_and_navigation(void)
     selected = NULL;
     iMask.Finalize(mask);
     mask = NULL;
+    iList.Finalize(range);
+    range = NULL;
     iList.Finalize(list);
     list = NULL;
 

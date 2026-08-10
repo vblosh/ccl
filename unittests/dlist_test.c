@@ -414,6 +414,8 @@ static int test_api_edges_and_error_paths(void)
     range = iDlist.GetRange(a, 0, iDlist.Size(a) + 10);
     TEST_REQUIRE(copy != NULL && range != NULL);
     TEST_REQUIRE(iDlist.Equal(a, copy) == 1);
+    iDlist.Finalize(copy);
+    copy = NULL;
     selected = iDlist.GetRange(a, 4, 2);
     TEST_REQUIRE(selected != NULL);
     iDlist.Finalize(selected);
@@ -663,9 +665,14 @@ static int test_full_branch_matrix(void)
                  CONTAINER_READONLY) == 0);
     tmp = iDlist.Copy(other);
     TEST_REQUIRE(tmp != NULL);
+    /* Copy preserves READONLY; make the temporary writable before Finalize,
+     * whose contract requires a mutable container. */
+    iDlist.SetFlags(tmp, 0);
     iDlist.Finalize(tmp);
     tmp = NULL;
     TEST_REQUIRE((iDlist.SetFlags(other, 0) & CONTAINER_READONLY) != 0);
+    iDlist.Finalize(other);
+    other = NULL;
 
     TEST_REQUIRE(iDlist.EraseAt(list, list->count - 1) == 1);
     TEST_REQUIRE(iDlist.EraseAt(list, 0) == 1);

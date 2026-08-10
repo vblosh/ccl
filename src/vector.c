@@ -300,9 +300,15 @@ static int AddRange(Vector * AL,size_t n,const void *data)
 			return CONTAINER_ERROR_NOMEMORY;
 		}
 	}
-	p = (unsigned char *)AL->contents;
-	p += AL->count*AL->ElementSize;
-	memmove(p,data,n*AL->ElementSize);
+	if (AL->ElementSize != 0 && AL->contents == NULL) {
+		if (snapshot) AL->Allocator->free(snapshot);
+		return NoMemory(AL,"AddRange");
+	}
+	if (AL->ElementSize != 0) {
+		p = (unsigned char *)AL->contents;
+		p += AL->count*AL->ElementSize;
+		memmove(p,data,n*AL->ElementSize);
+	}
 	if (snapshot) AL->Allocator->free(snapshot);
 	AL->count = newcount;
 	AL->timestamp++;
@@ -389,7 +395,6 @@ static int Contains(const Vector *AL,const void *data,void *ExtraArgs)
 	}
 	p = (char *)AL->contents;
 	if (ExtraArgs == NULL) {
-		ExtraArgs = &ci;
 		ci.ContainerLeft = AL;
 		ci.ContainerRight = NULL;
 		ci.ExtraArgs = NULL;
@@ -966,7 +971,13 @@ static int SetCapacity(Vector *AL,size_t newCapacity)
 	if (bytes && newContents == NULL)
 		return NoMemory(AL,"SetCapacity");
 	copyCount = AL->count < newCapacity ? AL->count : newCapacity;
-	if (copyCount)
+	if (copyCount && AL->ElementSize != 0)
+		if (newContents == NULL || AL->contents == NULL) {
+			if (newContents != NULL)
+				AL->Allocator->free(newContents);
+			return NoMemory(AL,"SetCapacity");
+		}
+	if (copyCount && AL->ElementSize != 0)
 		memcpy(newContents,AL->contents,copyCount*AL->ElementSize);
 	if (AL->DestructorFn && newCapacity < AL->count) {
 		size_t i;
@@ -1187,9 +1198,15 @@ static int Append(Vector *AL1, Vector *AL2)
 			return r;
 		}
 	}
-	p = (char *)AL1->contents;
-	p += (newCount - AL2->count)*AL1->ElementSize;
-	memmove(p,snapshot ? snapshot : AL2->contents,bytes);
+	if (bytes != 0 && (AL1->contents == NULL || AL2->contents == NULL)) {
+		if (snapshot) AL1->Allocator->free(snapshot);
+		return NoMemory(AL1,"Append");
+	}
+	if (bytes != 0) {
+		p = (char *)AL1->contents;
+		p += (newCount - AL2->count)*AL1->ElementSize;
+		memmove(p,snapshot ? snapshot : AL2->contents,bytes);
+	}
 	if (snapshot)
 		AL1->Allocator->free(snapshot);
 	AL1->count = newCount;
@@ -1678,7 +1695,7 @@ static Vector *Load(FILE *stream, ReadFunction loadFn,void *arg)
 	}
 	if (!read_disk_value(&Guid,sizeof(Guid),stream))
 		return NULL;
-	if (memcmp(&Guid,&VectorGuid,sizeof(guid))) {
+	if (memcmp(&Guid,&VectorGuid,sizeof(guid)) != 0) {
 		iError.RaiseError("iVector.Load",CONTAINER_ERROR_WRONGFILE);
 		return NULL;
 	}

@@ -2060,7 +2060,7 @@ static Dlist *Load(FILE *stream, ReadFunction loadFn,void *arg)
         iError.RaiseError("iDlist.Load",CONTAINER_ERROR_FILE_READ);
         return NULL;
     }
-    if (memcmp(&Guid,&DlistGuid,sizeof(guid))) {
+    if (memcmp(&Guid,&DlistGuid,sizeof(guid)) != 0) {
         iError.RaiseError("iDlist.Load",CONTAINER_ERROR_WRONGFILE);
         return NULL;
     }

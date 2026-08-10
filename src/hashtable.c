@@ -488,6 +488,7 @@ static HashTable *Copy( const HashTable *orig,Pool *pool)
     HashEntry *new_vals;
     size_t entry_bytes, total_entry_bytes, array_bytes, total_bytes;
     size_t base_offset;
+    size_t bucket_count;
     unsigned int i;
     size_t j = 0;
 
@@ -498,12 +499,17 @@ static HashTable *Copy( const HashTable *orig,Pool *pool)
     if (pool == NULL)
         pool = orig->pool;
     if (pool == NULL || !entry_stride(orig->ElementSize, &entry_bytes) ||
-        orig->max == UINT_MAX ||
-        (size_t)(orig->max + 1u) > SIZE_MAX / sizeof(*ht->array)) {
+        orig->max == UINT_MAX) {
         iError.RaiseError("iHashTable.Copy",CONTAINER_ERROR_BADARG);
         return NULL;
     }
-    array_bytes = (size_t)(orig->max + 1u) * sizeof(*ht->array);
+    bucket_count = orig->max;
+    ++bucket_count;
+    if (bucket_count > SIZE_MAX / sizeof(*ht->array)) {
+        iError.RaiseError("iHashTable.Copy", CONTAINER_ERROR_BADARG);
+        return NULL;
+    }
+    array_bytes = bucket_count * sizeof(*ht->array);
     if (orig->count > SIZE_MAX / entry_bytes) {
         iError.RaiseError("iHashTable.Copy",CONTAINER_ERROR_BADARG);
         return NULL;
@@ -708,6 +714,10 @@ static HashTable * Merge(Pool *p, const HashTable *overlay, const HashTable *bas
 
     for (k = 0; k <= base->max; k++) {
         for (iter = base->array[k]; iter; iter = iter->next) {
+            if (new_vals == NULL) {
+                iError.RaiseError("iHashTable.Merge", CONTAINER_ERROR_BADARG);
+                return NULL;
+            }
             HashEntry *copy = (HashEntry *)((char *)new_vals + j * stride);
             i = iter->hash & res->max;
             copy->klen = iter->klen;
@@ -740,6 +750,10 @@ static HashTable * Merge(Pool *p, const HashTable *overlay, const HashTable *bas
                 }
                 memcpy(ent->val, merged, res->ElementSize);
             } else {
+                if (new_vals == NULL) {
+                    iError.RaiseError("iHashTable.Merge", CONTAINER_ERROR_BADARG);
+                    return NULL;
+                }
                 HashEntry *copy = (HashEntry *)((char *)new_vals + j * stride);
                 copy->klen = key_len;
                 copy->key = iter->key;
@@ -952,7 +966,7 @@ static HashTable *Load(FILE *stream, ReadFunction readFn,void *arg)
         iError.RaiseError("iHashTable.Load",CONTAINER_ERROR_FILE_READ);
         return NULL;
     }
-    if (memcmp(&Guid,&HashTableGuid,sizeof(guid))) {
+    if (memcmp(&Guid,&HashTableGuid,sizeof(guid)) != 0) {
         iError.RaiseError("iHashTable.Load",CONTAINER_ERROR_WRONGFILE);
         return NULL;
     }

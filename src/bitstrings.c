@@ -1197,6 +1197,9 @@ static BitString *create_with_allocator(size_t bits,
     size_t bytes;
     if (allocator == NULL)
         allocator = CurrentAllocator;
+    if (allocator == NULL || allocator->malloc == NULL ||
+        allocator->free == NULL)
+        return NULL;
     if (checked_capacity(bits, &bytes) < 0)
         return NULL;
     result = allocator->malloc(sizeof(*result));

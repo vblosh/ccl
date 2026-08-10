@@ -281,7 +281,8 @@ static void destroy_nodes(BinarySearchTree *tree, BinarySearchTreeNode *node)
     destroy_nodes(tree, node->right);
     if (tree->DestructorFn != NULL)
         tree->DestructorFn(node->data);
-    tree->Allocator->free(node);
+    if (tree->Allocator != NULL && tree->Allocator->free != NULL)
+        tree->Allocator->free(node);
 }
 
 static BinarySearchTreeNode *detach_min(BinarySearchTreeNode *node,

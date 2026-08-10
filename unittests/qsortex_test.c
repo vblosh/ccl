@@ -131,6 +131,9 @@ static int run_record_case(const int *keys, size_t count, int descending)
 	static const int right_tag = 2;
 
 	if (count > sizeof(records) / sizeof(records[0])) return -1;
+	/* same_records compares the complete record representation, including
+	 * alignment padding; initialize that padding before filling fields. */
+	memset(records, 0, sizeof(records));
 	fill_records(records, keys, count);
 	memcpy(before, records, count * sizeof(records[0]));
 	state.expected = &info;
@@ -203,6 +206,7 @@ static int test_large_partitions_and_records(void)
 	unsigned seed = 0x9e3779b9U;
 	int i;
 
+	memset(records, 0, sizeof(records));
 	for (i = 0; i < 96; ++i) {
 		if (i < 48) keys[i] = i % 9;
 		else keys[i] = (95 - i) % 17;

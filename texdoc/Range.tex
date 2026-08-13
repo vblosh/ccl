@@ -17,6 +17,10 @@ opened from it.  Finalizing a range destroys only the range recipe; it never
 destroys the source container or array.  A pipeline may be evaluated more than
 once because each terminal operation opens an independent cursor.
 
+The context pointers passed as \verb|arg| to lazy adaptors are also borrowed.
+They must remain valid while any cursor or terminal operation can invoke the
+corresponding callback.
+
 Include \verb|range.h| directly, or include \verb|containers.h|, which also
 exposes this interface.
 
@@ -91,8 +95,8 @@ extern RangeInterface iRange;
 
 \subsection{Return and callback protocol}
 
-Range functions use signed integer status values so that normal termination
-cannot be confused with an error:
+Range operations that return \verb|int| use signed status values so that normal
+termination cannot be confused with an error:
 
 \begin{center}
 \begin{tabular}{|c|p{10.5cm}|}
@@ -114,13 +118,19 @@ protocol violation, represented by:
 \end{center}
 Negative callback errors pass through unchanged.
 
-The interface reports errors through both the return value and an error
-function.  New ranges initially use \verb|iError.RaiseError|.
-\verb|SetErrorFunction| installs a handler on the complete pipeline and
-returns the former handler.  Invalid calls that have no usable range instance
-are reported through the global \verb|iError| handler.  Applications should
-always check negative return values even when they replace the reporting
-callback.
+Library-detected argument and protocol failures are returned as negative error
+codes and are normally also sent to an error function.  New ranges initially
+use the value of \verb|iError.RaiseError| in effect when they are created.
+Called on the outermost handle, \verb|SetErrorFunction| installs a handler on
+the complete pipeline and returns the former handler.  Passing \Null as the
+new function queries the current handler without changing it.  Invalid calls
+that have no usable range instance are reported through the global
+\verb|iError| handler.
+
+A negative result returned by an application callback is already a complete
+error report from that callback.  The range propagates it unchanged and does
+not invoke the range error function a second time.  Applications must always
+check negative return values, regardless of the configured reporting callback.
 
 Errors encountered while advancing a cursor are sticky.  Once \verb|Next|
 returns a negative value, later calls on that cursor return the same value.
@@ -146,7 +156,7 @@ count is zero.  The array is borrowed, not copied.
 The \verb|WithAllocator| variants use the supplied allocator for all recipe,
 cursor and transformation storage derived from that source.  The allocator
 object and its functions must remain valid until the range and its cursors are
-destroyed.
+destroyed.  Passing a \Null allocator selects \verb|CurrentAllocator|.
 
 All source constructors set \verb|*result| to \Null on failure.  They return
 a positive value on success and a negative error code otherwise.
@@ -174,6 +184,9 @@ handle with the new outer recipe node, which owns the previous node.  On any
 failure the original handle and pipeline remain unchanged.  Range handles
 therefore have unique ownership: do not copy a handle and later adapt, open,
 or finalize the retained alias.  Finalize only the current outermost handle.
+The callback and \verb|arg| supplied to \verb|Filter|, \verb|Transform|,
+\verb|TakeWhile| or \verb|DropWhile| are stored in the lazy recipe; their
+lifetimes must cover every evaluation that can call them.
 
 \verb|Concat| requires two ranges with the same element size.  On success it
 replaces \verb|*left| with the combined pipeline and sets \verb|*right| to
@@ -208,7 +221,7 @@ while (status > 0 && (status = iRange.Next(cursor, &element)) > 0) {
 
 if (cursor != NULL) {
     int deleteStatus = iRange.DeleteCursor(cursor);
-    if (status >= 0)
+    if (deleteStatus < 0 && status >= 0)
         status = deleteStatus;
 }
 /* status == 0 means normal end; status < 0 is an error. */
@@ -226,9 +239,11 @@ and do not consume or modify the range recipe.
 zero.  Source exhaustion returns one; a visitor-requested stop returns zero.
 Both are normal outcomes. \\\hline
 \verb|Fold| & Calls the fold function for every value, updating the
-caller-owned accumulator. \\\hline
+caller-owned accumulator.  If evaluation later fails, earlier accumulator
+updates are not rolled back. \\\hline
 \verb|FindIf| & Copies the first matching value to \verb|result|.  Returns one
-if found, zero if absent, or a negative error. \\\hline
+if found, zero if absent, or a negative error.  The caller must provide at
+least \verb|GetElementSize(range)| writable bytes. \\\hline
 \verb|AnyOf| & Returns one if any value matches, zero otherwise, or a negative
 error. \\\hline
 \verb|AllOf| & Returns one if every value matches, zero otherwise, or a
@@ -289,7 +304,7 @@ int main(void)
 
     if (range != NULL) {
         int finalizeStatus = iRange.Finalize(range);
-        if (status >= 0)
+        if (finalizeStatus < 0 && status >= 0)
             status = finalizeStatus;
     }
     return status < 0;
@@ -298,5 +313,7 @@ int main(void)
 
 \verb|GetElementSize| returns the current output element size, including the
 new size established by \verb|Transform|.  \verb|Finalize| recursively
-destroys the complete recipe.  Both operations reject invalid or stale inner
-handles; this guards the unique-ownership rule described above.
+destroys the complete recipe and rejects a retained inner handle.  In contrast,
+\verb|GetElementSize| validates only that its argument is non-null; callers
+must still obey the unique-ownership rule and query the current outermost
+handle.

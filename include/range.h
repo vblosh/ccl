@@ -11,12 +11,14 @@ typedef struct Range Range;
 typedef struct RangeCursor RangeCursor;
 
 /* Predicates return a positive value for true, zero for false, or a
- * negative CONTAINER_ERROR_* value. */
+ * negative CONTAINER_ERROR_* value.  Negative callback results are propagated
+ * without being reported again through the range error function. */
 typedef int (*RangePredicate)(const void *element, void *arg);
 
 /* Transform and fold callbacks return a positive value on success or a
  * negative CONTAINER_ERROR_* value.  Transform output storage is supplied
- * by the range cursor. */
+ * by the range cursor and has the outputElementSize passed to Transform.
+ * Callbacks must not write beyond their supplied storage. */
 typedef int (*RangeTransformFunction)(const void *input, void *output,
                                       void *arg);
 typedef int (*RangeFoldFunction)(void *accumulator, const void *element,
@@ -28,7 +30,7 @@ typedef int (*RangeVisitFunction)(const void *element, void *arg);
 
 typedef struct tagRangeInterface {
     /* Sources borrow their container or array storage.  Result is set to NULL
-     * on failure. */
+     * on failure.  A NULL allocator selects CurrentAllocator. */
     int (*FromSequential)(SequentialContainer *source, Range **result);
     int (*FromSequentialWithAllocator)(SequentialContainer *source,
                                        const ContainerAllocator *allocator,
@@ -48,7 +50,8 @@ typedef struct tagRangeInterface {
 
     /* Unary adaptors replace *range only after successful construction. Range
      * handles have unique ownership; retained aliases of wrapped inner nodes
-     * must not be passed to adaptors or Finalize. */
+     * must not be passed to adaptors or Finalize.  Callback arg pointers are
+     * borrowed and must remain valid while the pipeline can invoke them. */
     int (*Filter)(Range **range, RangePredicate predicate, void *arg);
     int (*Transform)(Range **range, size_t outputElementSize,
                      RangeTransformFunction transform, void *arg);
@@ -67,10 +70,15 @@ typedef struct tagRangeInterface {
     int (*Next)(RangeCursor *cursor, const void **element);
     int (*DeleteCursor)(RangeCursor *cursor);
 
+    /* GetElementSize validates only that range is non-NULL; callers must pass
+     * the current outermost handle.  Passing NULL as function queries the
+     * current error handler without changing it. */
     size_t (*GetElementSize)(const Range *range);
     ErrorFunction (*SetErrorFunction)(Range *range, ErrorFunction function);
 
-    /* Terminal algorithms open their own cursor and do not consume range. */
+    /* Terminal algorithms open their own cursor and do not consume range.
+     * FindIf result must point to at least GetElementSize(range) writable
+     * bytes. */
     int (*ForEach)(const Range *range, RangeVisitFunction function, void *arg);
     int (*Fold)(const Range *range, void *accumulator,
                 RangeFoldFunction function, void *arg);

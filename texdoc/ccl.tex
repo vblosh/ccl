@@ -1743,7 +1743,7 @@ the out of bounds index.
 \item
 \doerror{INCOMPATIBLE} The operation requires compatible element sizes or representations, but the supplied objects do not provide them.
 \item
-\doerror{WRONGELEMENT} A callback did not follow the element-processing protocol. For example, range transform and fold callbacks must return a positive value on success rather than zero.
+\doerror{WRONGELEMENT} An operation received an element that does not belong to the expected container or a callback did not follow its element-processing protocol. For example, range transform and fold callbacks must return a positive value on success rather than zero.
 \item
 \doerror{INTERNAL} Unspecified error provoked by a problem in the implementation.
 \item

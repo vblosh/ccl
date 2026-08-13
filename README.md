@@ -131,9 +131,11 @@ int main(void)
 
 Unary adaptors accept `Range **` and replace the handle only after successful
 construction, so allocation failures leave the existing pipeline valid.
-`Concat` similarly consumes its right handle only on success. Cursor and
-callback operations use `1` for success or an element, `0` for normal end or
-an ordinary false result, and negative `CONTAINER_ERROR_*` values for errors.
+`Concat` similarly consumes its right handle only on success. `Next` returns
+`1` for an element, `0` for normal end, or a negative error. Callbacks may use
+any positive value for true, success, or continuation; zero means false or a
+normal visitor stop, and negative `CONTAINER_ERROR_*` values are propagated as
+errors without being reported a second time through the range error handler.
 Terminal algorithms open independent cursors and do not consume the range.
 Only the outermost range in a pipeline needs to be finalized.
 Range handles have unique ownership and should not be copied; after an adaptor

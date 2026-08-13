@@ -106,6 +106,7 @@ set(CCL_SOURCES
     src/qsortex.c
     src/qsort_r.c
     src/queue.c
+    src/range.c
     src/redblacktree.c
     src/scapegoat.c
     src/searchtree.c

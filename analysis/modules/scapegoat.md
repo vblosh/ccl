@@ -33,7 +33,10 @@ Duplicate handling must reclaim an unused candidate node. Iterator-buffer
 initialization is borrowed storage; a heap-created iterator is tree-allocator
 owned.
 
-## Confirmed compatibility and correctness defects
+## Historical pre-fix compatibility and correctness defects (resolved)
+
+SG1-SG11 below record the pre-fix audit baseline. The completion evidence and
+dedicated suite later in this document describe the current implementation.
 
 ### SG1 - the default comparator cannot insert distinct values (critical)
 
@@ -166,20 +169,20 @@ count/byte/max-size arithmetic.
   the caller's unchanged `ExtraArgs`; changing ordering on a live tree is not a
   harmless setter operation.
 
-## Existing coverage and probe result
+## Current coverage and probe result
 
-`tests/test.c` contains a print-oriented legacy smoke routine using ten
-ascending doubles and a custom comparator. It is not in the focused unit-test
-target, asserts little beyond size, disables its `Equal` check with `#if 0`,
-and has no duplicates, range insertion, persistence, iterator, destructor,
-failure, readonly, or boundary coverage.
+The legacy `tests/test.c` routine remains only a print-oriented smoke test, but
+the active focused coverage is `unittests/scapegoat_test.c`. That dedicated
+suite covers the repaired comparator, odd-size values, ranges, duplicates,
+equality/copy, ownership, iterators, readonly/argument paths, rebalance/delete
+stress, and persistence failures.
 
 An isolated aligned custom-comparator stress probe inserted 1000 ascending
 values, traversed all 1000 in order, erased every even value, and traversed a
 reported 500-node tree cleanly under ASan/UBSan with leak detection disabled.
-That supports the basic scapegoat rebalance/delete mechanics for this path; it
-does not cover SG1-SG11. Separate probes confirmed SG1-SG4 and the SG2 ASan
-overflow.
+That supports the basic scapegoat rebalance/delete mechanics for this path.
+The SG1-SG11 labels above refer to the historical baseline; the dedicated
+suite and completion evidence cover the repaired paths.
 
 ## Required test matrix
 
@@ -269,5 +272,6 @@ fatal error`); no sanitizer memory or undefined-behavior report was observed.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The final untraced integration run passed with ASan and UBSan. LeakSanitizer is
+unavailable in the current ptrace-restricted environment, so no leak-enabled
+pass is claimed here.

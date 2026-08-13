@@ -21,13 +21,17 @@ The private `DefaultAllocatorObject` maps directly to `malloc`, `free`, `realloc
 - `Change(NULL)` is a query, not a request to restore the default allocator.
 - Memory must be released/resized by the allocator family that originally allocated it. Changing the global allocator does not migrate existing objects.
 
-## Confirmed defects
+## Defect status
 
 No functional defect was confirmed in this unit. The mutable process-global state is not synchronized and therefore is not safe for concurrent allocator changes, but the API makes no thread-safety promise; record this as a design constraint, not a production fix.
 
-## Existing coverage
+## Current coverage
 
-There is no dedicated unit test. `tests/test.c:637` assigns `CurrentAllocator = &iDebugMalloc` directly, but that legacy executable is not registered by the current CTest configuration and it does not exercise either `iAllocator` method. The current `unittests` target contains only ValArray tests.
+`unittests/memorymanager_test.c` is the dedicated four-test suite and is
+auto-discovered by `unittests/CMakeLists.txt`. It exercises the default
+allocator lifecycle, allocator exchange/restore, and the NULL query semantics;
+the normal CTest run passes `test_memorymanager`. The legacy `tests/test.c:637`
+assignment to `CurrentAllocator` remains an indirect, non-CTest smoke path.
 
 ## Required tests
 

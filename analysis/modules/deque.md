@@ -23,7 +23,11 @@
 | Persistence | `Save` writes a header and elements directly or through a callback; `Load` reconstructs with direct/callback reads. |
 | Iteration | heap/placement iterator creation, first/next/previous/current, deletion, and footprint. Iterator snapshots the deque timestamp. |
 
-## Confirmed defects
+## Historical pre-fix defects
+
+The D1-D12 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The implementation status later in this document describes
+the current source and test state.
 
 ### D1 - empty `PushFront` creates an unreachable node (critical)
 
@@ -121,10 +125,12 @@ destructor setting and error operation names are inconsistent; the destructor
 cannot be cleared because NULL is ignored. Add a table-driven validation pass
 after core invariants are fixed.
 
-## Existing coverage
+## Historical coverage baseline and current coverage
 
-No current `tests/` or `unittests/` file references `iDeque`. The unit has no
-meaningful automated coverage.
+The pre-fix implementation had no meaningful automated coverage: no test
+referenced `iDeque`. The current `unittests/deque_test.c` is registered as
+`test_deque` and covers endpoint/lifetime, mutation, copy, reverse, iterators,
+callbacks, observers, persistence, and bad-argument behavior.
 
 ## Required test matrix
 
@@ -178,4 +184,5 @@ search/apply/equality/copy/reverse, heap and placement iterators,
 invalidation, callbacks, observer notifications, persistence failures, and
 bad arguments. The focused suite passes under ASan/UBSan. GCOV reports 85.61%
 line coverage, 100% branch execution, and 71.51% of branches taken at least
-once for `src/deque.c`.
+once for `src/deque.c`. LeakSanitizer cannot initialize in this
+ptrace-restricted workspace, so no local LSan pass is claimed.

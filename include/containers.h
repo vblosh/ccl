@@ -240,9 +240,9 @@ typedef struct tagSequentialContainerInterface {
     int (*Save)(const SequentialContainer *Gen,FILE *stream, SaveFunction saveFn,void *arg);
 
     /* Concrete sequential containers retain these two generic-prefix
-       extensions between Save and their mutating operations.  They are not
-       exposed as adapter operations, but reserving the slots keeps a
-       SequentialContainer view ABI-compatible with List, Dlist, and Vector. */
+       extensions between Save and their mutating operations.  Load remains
+       reserved while GetElementSize is exposed by the adapter.  Keeping both
+       slots preserves ABI compatibility with List, Dlist, and Vector. */
     SequentialContainer *(*Load)(FILE *stream, ReadFunction readFn, void *arg);
     size_t (*GetElementSize)(const SequentialContainer *Gen);
 
@@ -1195,6 +1195,7 @@ typedef struct tagObserverInterface {
     size_t (*Unsubscribe)(void *ObservedObject,ObserverFunction callback);
 } ObserverInterface;
 extern ObserverInterface iObserver;
+#include "range.h"
 #ifdef __cplusplus
 }
 #endif

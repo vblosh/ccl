@@ -20,8 +20,9 @@ The wrappers contain no behavior beyond macro selection and distinct GUIDs.
 Most diagnostic strings nevertheless say `iStringList`, `StringList`, or even
 `iList` in both instantiations, making wide-list reports ambiguous. The coverage
 manifest correctly treats the three physical files as one `stringlistgen`
-family and `src/stringlistgen.c` as its coverage source. There is currently no
-dedicated unit test for it.
+family and `src/stringlistgen.c` as its coverage source.
+`unittests/stringlist_family_test.c` is the dedicated active suite for both
+instantiations.
 
 ## Representation, invariants, allocation, and ownership
 
@@ -46,9 +47,9 @@ The intended invariants are:
   is discarded or overwritten.
 - Heap-created headers from `Create*`, `InitializeWith`, `Copy`, `GetRange`,
   `SelectCopy`, `Load`, and `SplitAfter` are caller-owned until `Finalize`.
-  `Init*` initializes caller storage; because no ownership marker exists,
-  `Finalize` incorrectly also frees placement headers, so only `Clear` can be
-  used safely on them today.
+  `Init*` initializes caller storage and records non-owning placement state;
+  `Finalize` releases owned node storage without freeing a caller-provided
+  header.
 - `Copy`, `GetRange`, `SelectCopy`, and `InsertIn` should duplicate strings.
   `Append` and `SplitAfter` transfer nodes and consume or alter the source as
   described below; transfer is safe only when allocator/heap provenance is
@@ -62,9 +63,9 @@ The intended invariants are:
 - Read-only blocks every operation that changes strings, links, order, count,
   ownership, or callbacks. It may return defensive copies where an API would
   otherwise expose mutable storage.
-- `ElementSize` should consistently describe the character unit or documented
-  variable-sized nature of an element. It is currently left zero by every
-  constructor, so `GetElementSize` is not useful.
+- `ElementSize` consistently describes the character unit: current narrow and
+  wide constructors initialize it to `sizeof(CHARTYPE)`, and
+  `GetElementSize` reports that value.
 
 `NO_GC` is defined by `containers.h` in the supported build, so `Clear_nd`
 walks and frees nodes or finalizes `Heap`. Without `NO_GC`, it simply drops all
@@ -79,8 +80,8 @@ is the public slot backed by the function named `RemoveAt`.
 
 | Area | Operations | Implemented behavior and important boundaries |
 | --- | --- | --- |
-| Construction | `Create`, `CreateWithAllocator`, `Init`, `InitWithAllocator`, `InitializeWith` | Zero a header and install the generated vtable, default comparator, global error callback, and selected allocator. Bulk initialization repeatedly calls unchecked `Add_nd`. |
-| Lifetime | `Clear`, `Finalize` | `Clear` releases nodes, resets count/links/heap, and also resets all flags and timestamp. `Finalize` calls `Clear`, optionally frees a non-global vtable, then frees the header. Both reject a read-only object. |
+| Construction | `Create`, `CreateWithAllocator`, `Init`, `InitWithAllocator`, `InitializeWith` | Zero a header and install the generated vtable, default comparator, global error callback, selected allocator, character-unit size, and owned/placement-header state. Bulk initialization validates its input and finalizes a partial result on failure. |
+| Lifetime | `Clear`, `Finalize` | `Clear` releases nodes, resets count/links/heap and flags, and advances the timestamp. `Finalize` calls `Clear`, releases an owned custom vtable, and frees only an allocator-owned header. Both reject a read-only object. |
 | Metadata/configuration | `Size`, `Sizeof`, `GetElementSize`, `GetFlags`, `SetFlags`, `GetAllocator`, `SetAllocator`, `SetErrorFunction`, `SetCompareFunction`, `SetDestructor`, `UseHeap` | Query accounting/policy, replace callbacks, or move an empty heap header to a new allocator. Null callback means query for compare/error/destructor. `UseHeap` is unimplemented. |
 | Add/replace | `Add`, `PushFront`, `InsertAt`, `AddRange`, `ReplaceAt`, `SetElementData` | Duplicate strings at tail/front/index/in bulk or replace a value. `InsertAt(count)` delegates to `Add_nd`; `SetElementData` may relocate a node and updates the caller's node pointer. |
 | Remove | `PopFront`, `Erase`, `EraseAt`, `EraseRange`, `Clear` | Remove first, first compare-equal, indexed, ranged, or all nodes. Empty pop returns zero; absent erase returns `CONTAINER_ERROR_NOTFOUND`. |
@@ -90,8 +91,8 @@ is the public slot backed by the function named `RemoveAt`.
 | Filtering | `Select`, `SelectCopy` | Retain mask-selected nodes in place or make a selected deep copy. Mask length must equal list count. |
 | Callback traversal | `Apply` | Calls the callback for every string and ignores callback return values. A read-only list supplies a temporary copy intended to prevent mutation. |
 | Raw node traversal | `FirstElement`, `LastElement`, `NextElement`, `ElementData`, `Advance`, `Skip` | Expose links/data directly, advance a caller-held link, or skip up to `n` links. First/last reject read-only because they expose mutable nodes. |
-| Iterators | `NewIterator`, `InitIterator`, `DeleteIterator`, `SizeofIterator`; iterator `GetFirst`, `GetNext`, `GetPrevious`, `GetCurrent`, `Seek`, `GetPosition`, `Replace` | Heap or placement iterator, traversal, clamped seek, current position, replace/delete current, and timestamp checking on some movements. The two constructors populate different subsets of dispatch entries. |
-| Persistence | `Save`, `Load` | Write/read the family GUID, a raw list header, and length-prefixed string records. A saver callback may replace record output; the loader callback is accepted but never called. |
+| Iterators | `NewIterator`, `InitIterator`, `DeleteIterator`, `SizeofIterator`; iterator `GetFirst`, `GetNext`, `GetPrevious`, `GetCurrent`, `Seek`, `GetPosition`, `Replace` | Heap or placement iterator, traversal, clamped seek, current position, replace/delete current, and timestamp validation. Both constructors initialize the same supported dispatch entries; `GetLast` is not implemented. |
+| Persistence | `Save`, `Load` | Write/read the family GUID, versioned fixed-width stream metadata, and length-prefixed string payloads. A saver callback may replace record output; a loader callback may supply each payload. |
 
 Return conventions are mostly `1` for success rather than the new count stated
 by several comments. Empty `Clear` and successful `Finalize` also return one;
@@ -117,14 +118,18 @@ defined for an empty, heap-created list.
 - `Seek`, `GetNext`, `GetPosition`, `GetPrevious`, `GetCurrent`, `GetFirst`,
   and `ReplaceWithIterator` implement iterator behavior. `NewIterator`,
   `InitIterator`, and `DeleteIterator` manage iterator storage.
-- `DefaultSaveFunction` writes a `size_t` character count followed by that many
-  bytes. There is no corresponding default read helper; `Load` performs raw
-  reads itself.
+- `DefaultSaveFunction` writes the string payload bytes; `Save` writes the
+  explicit payload byte length before invoking it, and `Load` performs exact
+  default reads (or delegates each payload to `loadFn`).
 - Forward declarations for `IndexOf_nd`, `RemoveAt_nd`, `Create*`, and
   `Finalize` allow their earlier callers. Every other static function is
   installed directly in the public vtable or catalogued above.
 
-## Narrow versus wide behavior
+## Historical pre-fix narrow versus wide behavior
+
+The following table records the pre-fix audit baseline. Current allocation and
+persistence behavior is described in the operation and persistence sections;
+the dedicated family suite is authoritative for regressions.
 
 The intended difference is only `char` versus `wchar_t` and the matching C
 library routines. The implementation frequently treats character counts as
@@ -147,44 +152,42 @@ overflow under ASan.
 
 ## Persistence and compatibility
 
-`Save` writes, in order:
+Current `Save` writes, in order:
 
 1. The 16-byte narrow or wide GUID.
-2. A raw `sizeof(list header)` memory image, including pointers to the vtable,
-   nodes, callbacks, heap, allocator, and destructor.
-3. For each element, the default saver writes native `size_t len = STRLEN(s)`
-   followed by exactly `len` bytes, excluding the terminator.
+2. Fixed-width magic, version, encoding, character-unit size, flags, and an
+   element count.
+3. For each element, a fixed-width payload byte length followed by the payload;
+   the default saver writes the string bytes without its terminator.
 
-`Load` checks the GUID, reads the raw header into a stack object, creates a new
-list with `CurrentAllocator`, copies only the saved flags, then reads a native
-`size_t Len` and `Len` bytes for each saved element before passing the buffer to
-`Add_nd`.
+`Load` validates the GUID and stream metadata, creates a new list with
+`CurrentAllocator`, checks payload-unit and size bounds, reads each payload
+exactly (or invokes `loadFn`), appends a reconstructed terminated string, and
+unwinds the partial result on failure.
 
 Consequences:
 
-- The format is ABI-, pointer-width-, endianness-, `size_t`-, and (for wide
-  data) `wchar_t`-representation-dependent and leaks process addresses.
-- Neither narrow nor wide default records include a terminator. `Add_nd` calls
-  `strlen`/`wcslen` on the nonterminated input, so even an otherwise valid
-  narrow round trip has undefined out-of-bounds reads.
-- Wide records confuse characters with bytes and cannot represent normal wide
-  strings.
-- Saved counts and lengths have no sanity limits or overflow validation.
-- EOF while reading a record length merely breaks the loop and returns a
-  partially loaded list as success. Other short reads go through an error path.
-- `loadFn` and `arg` are ignored completely. A custom `saveFn` is called but
-  must invent a format that the fixed loader nevertheless assumes begins with
-  native `size_t` length and raw payload.
-- Read-only flags survive. A successfully loaded read-only list cannot be
-  finalized without first changing its flags.
+- The current metadata and payload lengths are fixed-width and pointer-free;
+  encoding and character-unit fields let `Load` reject incompatible streams.
+- Default records omit the terminator intentionally; `Load` allocates one and
+  appends it after reading the declared payload.
+- Saved counts and lengths are range-checked before allocation and iteration,
+  and short reads fail and clean up the partial list.
+- `loadFn` is called for each payload when supplied; `arg` is passed through to
+  both callbacks.
+- Read-only flags survive loading; because `Clear` rejects read-only lists,
+  callers must clear that flag before finalizing a loaded read-only list.
 
-Compatibility work should preserve the GUIDs only as legacy identifiers,
-strictly reject malformed legacy input, and introduce a versioned,
-pointer-free, fixed-width format with explicit payload byte lengths and an
-encoding/`wchar_t` policy. Tests must not treat the current unsafe default
-round trip as a contract to preserve.
+The current format preserves the existing family GUIDs as type identifiers but
+does not accept the old raw-header representation. The versioned,
+pointer-free metadata and explicit payload byte lengths are the current stream
+contract; malformed, legacy, wrong-character-width, and truncated input is
+rejected rather than partially published.
 
-## Confirmed correctness concerns
+## Historical pre-fix correctness concerns
+
+SL1-SL16 below record the pre-fix audit baseline. The implementation evidence
+and dedicated suite later in this document describe current behavior.
 
 ### SL1 - wide strings overflow nearly every allocated destination (critical)
 
@@ -346,8 +349,9 @@ failed mutation. Run the suite under ASan/UBSan and through the coverage gate.
 1. **Construction and lifetime:** narrow/wide `Create`, custom allocator
    creation, placement `Init*`, `InitializeWith` for zero/one/many, allocator
    identity, flags, `Size`, `Sizeof`, `GetElementSize`, clear/reuse, and
-   heap-header finalize. Use clear rather than finalize for placement storage.
-   Cover null/failing allocators once fixed.
+   heap-header finalize. Placement finalization must release only owned
+   storage; caller-provided placement headers must not be freed. Cover
+   null/failing allocator behavior.
 2. **Basic sequence operations:** add empty/short/long/non-ASCII strings,
    push front, insert at zero/middle/count and beyond count, replace shorter/
    equal/longer, copy element, get/front/back, pop with and without output,
@@ -444,5 +448,6 @@ assertions and sanitizer-safe teardown paths.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The final untraced integration run passed with ASan and UBSan. LeakSanitizer is
+unavailable in the current ptrace-restricted environment, so no leak-enabled
+pass is claimed here.

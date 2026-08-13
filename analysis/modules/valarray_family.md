@@ -1,10 +1,5 @@
 # ValArray family implementation and verification
 
-## Final integration verification
-
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled after correcting the test-owned mask cleanup. This supersedes the
-focused-run environment limitation above.
 ## Scope
 
 The ValArray implementation is a macro-instantiated generator family.  The
@@ -89,3 +84,9 @@ detection enabled, the process aborts with `LeakSanitizer has encountered a
 fatal error` and reports that LeakSanitizer does not work under ptrace.  This
 is an environment limitation rather than a passing leak report; the
 non-leak sanitizer checks pass as stated above.
+
+## Final integration verification
+
+The final untraced integration run passed with ASan and UBSan after correcting
+the test-owned mask cleanup. LeakSanitizer is unavailable in the current
+ptrace-restricted environment, so no leak-enabled pass is claimed here.

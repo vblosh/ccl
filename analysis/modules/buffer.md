@@ -32,7 +32,11 @@
 | Circular `Clear`, `Finalize` | Destroy every live item once, zero/reset the ring, then release allocations. |
 | Both `SetDestructor` | Return the old callback and install the requested callback. |
 
-## Confirmed defects
+## Historical pre-fix defects
+
+The B1-B7 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The implementation status later in this document describes
+the current source and test state.
 
 ### B1 - shrinking a stream leaves an out-of-range cursor (critical)
 
@@ -93,13 +97,14 @@ than disabling destruction, unlike the natural setter contract. Either make
 NULL assignment clear the callback or document/query this behavior uniformly
 across all containers; tests should lock the chosen compatibility rule.
 
-## Existing coverage
+## Historical coverage baseline and current coverage
 
-Only `tests/test.c` lines 591-608 lightly exercise stream Create, several
-writes, position reset, direct data access, Size, and Finalize. It has no
-assertions and is not a dedicated CTest suite. Circular buffers, file I/O,
-resize, allocation failures, error paths, wraparound, and destructors have no
-coverage.
+Only `tests/test.c` lines 591-608 historically exercised stream Create, several
+writes, position reset, direct data access, Size, and Finalize. It had no
+assertions and was not a dedicated CTest suite. The current
+`unittests/buffer_test.c` is registered as `test_buffer` and covers circular
+buffers, file I/O, resize, allocation failures, error paths, wraparound, and
+destructors.
 
 ## Required test matrix
 
@@ -154,7 +159,8 @@ cannot initialize in this container because the runner is under ptrace. The
 gcov gate reports 257/282 lines (91.13%) and 132/162 taken branches (81.48%),
 above the required 80%/70% thresholds.
 
-## Final integration verification
+## Current local integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The current unsanitized CTest run passes all 36 registered tests. The focused
+ASan/UBSan run passes with `detect_leaks=0`; LeakSanitizer cannot initialize in
+this ptrace-restricted workspace, so no local LSan pass is claimed.

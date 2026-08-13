@@ -59,6 +59,7 @@ static int test_operations(void)
     generic_list = NULL;
 
     TEST_REQUIRE(iSequentialContainer.Size(sc) == 2);
+    TEST_REQUIRE(iSequentialContainer.GetElementSize(sc) == sizeof(int));
     TEST_REQUIRE(iSequentialContainer.Add(sc, &(int){4}) == 1);
     TEST_REQUIRE(*(int *)iSequentialContainer.GetElement(sc, 2) == 4);
     TEST_REQUIRE(iSequentialContainer.Push(sc, &(int){1}) == 1);
@@ -172,6 +173,10 @@ static int test_dlist_and_vector_iterators(void)
                  iDlist.SizeofIterator(dlist));
     TEST_REQUIRE(iSequentialContainer.SizeofIterator((SequentialContainer *)vector) ==
                  iVector.SizeofIterator(vector));
+    TEST_REQUIRE(iSequentialContainer.GetElementSize((SequentialContainer *)dlist) ==
+                 sizeof(int));
+    TEST_REQUIRE(iSequentialContainer.GetElementSize((SequentialContainer *)vector) ==
+                 sizeof(int));
     iSequentialContainer.Finalize((SequentialContainer *)vector);
     iSequentialContainer.Finalize((SequentialContainer *)dlist);
     vector = NULL;
@@ -189,15 +194,18 @@ static int test_unsupported_variable_strings(void)
 {
     strCollection *left = NULL;
     strCollection *right = NULL;
+    WstrCollection *wide = NULL;
     SequentialContainer *left_sc;
     SequentialContainer *right_sc;
     char *values[] = {(char *)"a"};
+    wchar_t *wide_values[] = {(wchar_t *)L"a"};
     char output[8];
     size_t index = 0;
 
     left = istrCollection.InitializeWith(1, values);
     right = istrCollection.InitializeWith(1, values);
-    TEST_REQUIRE(left != NULL && right != NULL);
+    wide = iWstrCollection.InitializeWith(1, wide_values);
+    TEST_REQUIRE(left != NULL && right != NULL && wide != NULL);
     left_sc = (SequentialContainer *)left;
     right_sc = (SequentialContainer *)right;
     TEST_REQUIRE(iSequentialContainer.Add(left_sc, "b") == CONTAINER_ERROR_INCOMPATIBLE);
@@ -209,15 +217,20 @@ static int test_unsupported_variable_strings(void)
     TEST_REQUIRE(iSequentialContainer.ReplaceAt(left_sc, 0, "b") == CONTAINER_ERROR_INCOMPATIBLE);
     TEST_REQUIRE(iSequentialContainer.IndexOf(left_sc, "a", NULL, &index) == CONTAINER_ERROR_INCOMPATIBLE);
     TEST_REQUIRE(iSequentialContainer.Append(left_sc, right_sc) == CONTAINER_ERROR_INCOMPATIBLE);
+    TEST_REQUIRE(iSequentialContainer.GetElementSize(left_sc) == 0);
+    TEST_REQUIRE(iSequentialContainer.GetElementSize((SequentialContainer *)wide) == 0);
     iSequentialContainer.Finalize(left_sc);
     iSequentialContainer.Finalize(right_sc);
+    iSequentialContainer.Finalize((SequentialContainer *)wide);
     left = NULL;
     right = NULL;
+    wide = NULL;
     return 0;
 
 cleanup:
     if (left) iSequentialContainer.Finalize((SequentialContainer *)left);
     if (right) iSequentialContainer.Finalize((SequentialContainer *)right);
+    if (wide) iSequentialContainer.Finalize((SequentialContainer *)wide);
     return -1;
 }
 
@@ -246,6 +259,7 @@ static int test_null_arguments(void)
     TEST_REQUIRE(iSequentialContainer.DeleteIterator(iterator) < 0);
     TEST_REQUIRE(iSequentialContainer.SizeofIterator(null_sc) == 0);
     TEST_REQUIRE(iSequentialContainer.Save(null_sc, NULL, NULL, NULL) < 0);
+    TEST_REQUIRE(iSequentialContainer.GetElementSize(null_sc) == 0);
     TEST_REQUIRE(iSequentialContainer.Add(null_sc, &value) < 0);
     TEST_REQUIRE(iSequentialContainer.GetElement(null_sc, 0) == NULL);
     TEST_REQUIRE(iSequentialContainer.Push(null_sc, &value) < 0);

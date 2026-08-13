@@ -1,0 +1,319 @@
+%--------------------------------------------------------------------------------------------------------------------------
+%                    The range interface
+%--------------------------------------------------------------------------------------------------------------------------
+\section{The lazy range interface: iRange}
+\index{iRange}
+\index{range}
+\renewcommand{\container}{Range}
+
+A range is a read-only, lazy recipe for visiting values from a container or a
+C array.  Adaptors such as \verb|Filter|, \verb|Transform| and \verb|Take|
+do not copy or traverse the source.  Work starts only when a cursor is opened
+or a terminal algorithm is called.  This is similar to a C++ ranges pipeline,
+but the C interface makes status, ownership and element sizes explicit.
+
+The source storage is borrowed.  It must outlive the range and every cursor
+opened from it.  Finalizing a range destroys only the range recipe; it never
+destroys the source container or array.  A pipeline may be evaluated more than
+once because each terminal operation opens an independent cursor.
+
+The context pointers passed as \verb|arg| to lazy adaptors are also borrowed.
+They must remain valid while any cursor or terminal operation can invoke the
+corresponding callback.
+
+Include \verb|range.h| directly, or include \verb|containers.h|, which also
+exposes this interface.
+
+\subsection{Callback and interface types}
+
+\begin{verbatim}
+typedef struct Range Range;
+typedef struct RangeCursor RangeCursor;
+
+typedef int (*RangePredicate)(const void *element, void *arg);
+typedef int (*RangeTransformFunction)(const void *input, void *output,
+                                      void *arg);
+typedef int (*RangeFoldFunction)(void *accumulator, const void *element,
+                                 void *arg);
+typedef int (*RangeVisitFunction)(const void *element, void *arg);
+
+typedef struct tagRangeInterface {
+    int (*FromSequential)(SequentialContainer *source, Range **result);
+    int (*FromSequentialWithAllocator)(
+        SequentialContainer *source,
+        const ContainerAllocator *allocator, Range **result);
+    int (*FromGeneric)(GenericContainer *source, size_t elementSize,
+                       Range **result);
+    int (*FromGenericWithAllocator)(
+        GenericContainer *source, size_t elementSize,
+        const ContainerAllocator *allocator, Range **result);
+    int (*FromArray)(const void *data, size_t count, size_t elementSize,
+                     Range **result);
+    int (*FromArrayWithAllocator)(const void *data, size_t count,
+                                  size_t elementSize,
+                                  const ContainerAllocator *allocator,
+                                  Range **result);
+
+    int (*Filter)(Range **range, RangePredicate predicate, void *arg);
+    int (*Transform)(Range **range, size_t outputElementSize,
+                     RangeTransformFunction transform, void *arg);
+    int (*Take)(Range **range, size_t count);
+    int (*Drop)(Range **range, size_t count);
+    int (*TakeWhile)(Range **range, RangePredicate predicate,
+                     void *arg);
+    int (*DropWhile)(Range **range, RangePredicate predicate,
+                     void *arg);
+    int (*Concat)(Range **left, Range **right);
+
+    int (*Open)(const Range *range, RangeCursor **result);
+    int (*Next)(RangeCursor *cursor, const void **element);
+    int (*DeleteCursor)(RangeCursor *cursor);
+
+    size_t (*GetElementSize)(const Range *range);
+    ErrorFunction (*SetErrorFunction)(Range *range,
+                                      ErrorFunction function);
+
+    int (*ForEach)(const Range *range, RangeVisitFunction function,
+                   void *arg);
+    int (*Fold)(const Range *range, void *accumulator,
+                RangeFoldFunction function, void *arg);
+    int (*FindIf)(const Range *range, RangePredicate predicate,
+                  void *arg, void *result);
+    int (*AnyOf)(const Range *range, RangePredicate predicate,
+                 void *arg);
+    int (*AllOf)(const Range *range, RangePredicate predicate,
+                 void *arg);
+    int (*CountIf)(const Range *range, RangePredicate predicate,
+                   void *arg, size_t *result);
+    int (*ToVector)(const Range *range, Vector **result);
+
+    int (*Finalize)(Range *range);
+} RangeInterface;
+
+extern RangeInterface iRange;
+\end{verbatim}
+
+\subsection{Return and callback protocol}
+
+Range operations that return \verb|int| use signed status values so that normal
+termination cannot be confused with an error:
+
+\begin{center}
+\begin{tabular}{|c|p{10.5cm}|}
+\hline
+\textbf{Status} & \textbf{Meaning} \\\hline
+positive & Success, an available element, a true predicate, or continuation. \\\hline
+zero & Normal end, not found, false, or a visitor request to stop. \\\hline
+negative & A \verb|CONTAINER_ERROR_*| value. \\\hline
+\end{tabular}
+\end{center}
+
+A \verb|RangePredicate| returns positive for true, zero for false, or a
+negative error.  A \verb|RangeVisitFunction| returns positive to continue,
+zero to stop normally, or a negative error.  Transform and fold callbacks
+must return a positive value on success.  Returning zero from either is a
+protocol violation, represented by:
+\begin{center}
+\verb|CONTAINER_ERROR_WRONGELEMENT|
+\end{center}
+Negative callback errors pass through unchanged.
+
+Library-detected argument and protocol failures are returned as negative error
+codes and are normally also sent to an error function.  New ranges initially
+use the value of \verb|iError.RaiseError| in effect when they are created.
+Called on the outermost handle, \verb|SetErrorFunction| installs a handler on
+the complete pipeline and returns the former handler.  Passing \Null as the
+new function queries the current handler without changing it.  Invalid calls
+that have no usable range instance are reported through the global
+\verb|iError| handler.
+
+A negative result returned by an application callback is already a complete
+error report from that callback.  The range propagates it unchanged and does
+not invoke the range error function a second time.  Applications must always
+check negative return values, regardless of the configured reporting callback.
+
+Errors encountered while advancing a cursor are sticky.  Once \verb|Next|
+returns a negative value, later calls on that cursor return the same value.
+The cursor must still be released with \verb|DeleteCursor|.
+
+\subsection{Sources}
+
+\verb|FromSequential| reads the element size from the sequential interface.
+The generic adapter \verb|iSequentialContainer.GetElementSize| is supported
+by List, Dlist and Vector.  A sequential implementation that cannot expose a
+fixed element size is rejected with \verb|CONTAINER_ERROR_INCOMPATIBLE|.
+
+\verb|FromGeneric| can adapt another iterator-based container when the caller
+supplies its fixed \verb|elementSize|.  An element size of zero denotes an
+opaque element representation.  Opaque ranges can be traversed and tested,
+but operations that must copy an element, including \verb|FindIf| and
+\verb|ToVector|, return \verb|CONTAINER_ERROR_INCOMPATIBLE|.
+
+\verb|FromArray| reads \verb|count| adjacent elements of \verb|elementSize|
+bytes starting at \verb|data|.  A null data pointer is accepted only when the
+count is zero.  The array is borrowed, not copied.
+
+The \verb|WithAllocator| variants use the supplied allocator for all recipe,
+cursor and transformation storage derived from that source.  The allocator
+object and its functions must remain valid until the range and its cursors are
+destroyed.  Passing a \Null allocator selects \verb|CurrentAllocator|.
+
+All source constructors set \verb|*result| to \Null on failure.  They return
+a positive value on success and a negative error code otherwise.
+
+\subsection{Adaptors and ownership}
+
+The unary adaptors build the following lazy operations:
+
+\begin{center}
+\begin{tabular}{|l|p{10.2cm}|}
+\hline
+\verb|Filter| & Emits elements for which the predicate is true. \\\hline
+\verb|Transform| & Produces one output value of
+\verb|outputElementSize| bytes for each input value. \\\hline
+\verb|Take| & Emits at most the first \verb|count| values. \\\hline
+\verb|Drop| & Skips at most the first \verb|count| values. \\\hline
+\verb|TakeWhile| & Emits values until its predicate first becomes false. \\\hline
+\verb|DropWhile| & Skips values while its predicate is true, then emits all
+remaining values. \\\hline
+\end{tabular}
+\end{center}
+
+Each unary adaptor accepts \verb|Range **|.  On success it replaces the
+handle with the new outer recipe node, which owns the previous node.  On any
+failure the original handle and pipeline remain unchanged.  Range handles
+therefore have unique ownership: do not copy a handle and later adapt, open,
+or finalize the retained alias.  Finalize only the current outermost handle.
+The callback and \verb|arg| supplied to \verb|Filter|, \verb|Transform|,
+\verb|TakeWhile| or \verb|DropWhile| are stored in the lazy recipe; their
+lifetimes must cover every evaluation that can call them.
+
+\verb|Concat| requires two ranges with the same element size.  On success it
+replaces \verb|*left| with the combined pipeline and sets \verb|*right| to
+\Null.  On failure both handles remain unchanged.  This makes allocation and
+element-size failures transactional and gives the caller an unambiguous
+cleanup path.
+
+\subsection{Cursors}
+
+\verb|Open| creates a new cursor for a pipeline.  \verb|Next| returns one and
+places an element pointer in \verb|*element|, returns zero and sets the pointer
+to \Null at normal end, or returns a negative error.  The pointer is borrowed
+from the cursor and remains valid only until the next call to \verb|Next| or
+until \verb|DeleteCursor|.  Copy the value when it must be retained.
+
+Container-backed cursors detect structural source changes.  If the container
+changes after the cursor is opened, \verb|Next| returns
+\verb|CONTAINER_ERROR_OBJECT_CHANGED| and the error remains sticky.  Do not
+modify source storage while a cursor or terminal operation is using it.
+
+For example, manual cursor traversal keeps end and failure distinct:
+
+\begin{verbatim}
+RangeCursor *cursor = NULL;
+const void *element;
+int status = iRange.Open(range, &cursor);
+
+while (status > 0 && (status = iRange.Next(cursor, &element)) > 0) {
+    const int value = *(const int *)element;
+    /* use value */
+}
+
+if (cursor != NULL) {
+    int deleteStatus = iRange.DeleteCursor(cursor);
+    if (deleteStatus < 0 && status >= 0)
+        status = deleteStatus;
+}
+/* status == 0 means normal end; status < 0 is an error. */
+\end{verbatim}
+
+\subsection{Terminal algorithms}
+
+Terminal algorithms evaluate a pipeline using their own independent cursor
+and do not consume or modify the range recipe.
+
+\begin{center}
+\begin{tabular}{|l|p{10.2cm}|}
+\hline
+\verb|ForEach| & Visits values until the source ends or the visitor returns
+zero.  Source exhaustion returns one; a visitor-requested stop returns zero.
+Both are normal outcomes. \\\hline
+\verb|Fold| & Calls the fold function for every value, updating the
+caller-owned accumulator.  If evaluation later fails, earlier accumulator
+updates are not rolled back. \\\hline
+\verb|FindIf| & Copies the first matching value to \verb|result|.  Returns one
+if found, zero if absent, or a negative error.  The caller must provide at
+least \verb|GetElementSize(range)| writable bytes. \\\hline
+\verb|AnyOf| & Returns one if any value matches, zero otherwise, or a negative
+error. \\\hline
+\verb|AllOf| & Returns one if every value matches, zero otherwise, or a
+negative error.  It returns one for an empty range. \\\hline
+\verb|CountIf| & Stores the number of matching values in \verb|*result| and
+returns one.  The output is valid only after success. \\\hline
+\verb|ToVector| & Copies every produced value into a new Vector allocated with
+the range allocator.  The caller owns the Vector. \\\hline
+\end{tabular}
+\end{center}
+
+\subsection{Pipeline example}
+
+The following pipeline prints 4 and 16.  Each construction step is checked;
+because adaptors are transactional, \verb|range| always remains valid for the
+single cleanup at the end.
+
+\begin{verbatim}
+#include <stdio.h>
+#include "range.h"
+
+static int is_even(const void *element, void *arg)
+{
+    (void)arg;
+    return (*(const int *)element % 2) == 0;
+}
+
+static int square(const void *input, void *output, void *arg)
+{
+    int value = *(const int *)input;
+    (void)arg;
+    *(int *)output = value * value;
+    return 1;
+}
+
+static int print_int(const void *element, void *arg)
+{
+    (void)arg;
+    printf("%d\n", *(const int *)element);
+    return 1;
+}
+
+int main(void)
+{
+    int values[] = { 1, 2, 3, 4, 5, 6 };
+    Range *range = NULL;
+    int status;
+
+    status = iRange.FromArray(values, 6, sizeof(int), &range);
+    if (status > 0)
+        status = iRange.Filter(&range, is_even, NULL);
+    if (status > 0)
+        status = iRange.Transform(&range, sizeof(int), square, NULL);
+    if (status > 0)
+        status = iRange.Take(&range, 2);
+    if (status > 0)
+        status = iRange.ForEach(range, print_int, NULL);
+
+    if (range != NULL) {
+        int finalizeStatus = iRange.Finalize(range);
+        if (finalizeStatus < 0 && status >= 0)
+            status = finalizeStatus;
+    }
+    return status < 0;
+}
+\end{verbatim}
+
+\verb|GetElementSize| returns the current output element size, including the
+new size established by \verb|Transform|.  \verb|Finalize| recursively
+destroys the complete recipe and rejects a retained inner handle.  In contrast,
+\verb|GetElementSize| validates only that its argument is non-null; callers
+must still obey the unique-ownership rule and query the current outermost
+handle.

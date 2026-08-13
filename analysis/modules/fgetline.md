@@ -23,7 +23,11 @@ buffer is freed and `*LinePointer` is set to NULL.
 `GetLine` is the narrow wrapper around `GetDelim(..., '\n', ...)`.
 `WGetLine` is the wide wrapper around `WGetDelim(..., L'\n', ...)`.
 
-## Confirmed defects
+## Historical pre-fix defects
+
+The F1-F4 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The implementation and test evidence later in this
+document describes the current source and test state.
 
 ### F1 — Exact-capacity wide final line causes heap-buffer-overflow (critical)
 
@@ -63,13 +67,15 @@ and signed negative sizes are converted to huge `size_t` allocation requests.
 `*n <= 0` is valid only for the conventional empty state where capacity is
 zero; negative values must return `CONTAINER_ERROR_BADARG`.
 
-## Existing coverage
+## Historical coverage baseline and current coverage
 
-There is no direct unit test. Collection file-loading tests may transitively
-read ordinary short narrow lines, but no test targets wide input, boundary
-growth, EOF-without-newline, caller buffers, invalid arguments, or allocator
-failure. The disabled `#ifdef TEST` main is narrow-only, uses an obsolete
-four-argument call, and is not part of CMake.
+Before the dedicated suite, collection file-loading tests only transitively
+read ordinary short narrow lines; no test targeted wide input, boundary growth,
+EOF-without-newline, caller buffers, invalid arguments, or allocator failure.
+The disabled `#ifdef TEST` main remains narrow-only, uses an obsolete
+four-argument call, and is not part of CMake. The current
+`unittests/fgetline_test.c` is registered as `test_fgetline` and covers the
+documented narrow/wide, boundary, allocator, and invalid-argument cases.
 
 ## Required test matrix
 
@@ -137,7 +143,9 @@ exceeding the unit gates of 80% and 70%.
 LeakSanitizer itself could not attach in this environment (`LeakSanitizer has
 encountered a fatal error`; it reports that it does not work under ptrace).
 
-## Final integration verification
+## Current local integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The current unsanitized CTest run passes all 36 registered tests. The focused
+ASan/UBSan run passes with leak detection disabled; LeakSanitizer cannot
+initialize in this ptrace-restricted workspace, so no local LSan pass is
+claimed.

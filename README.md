@@ -11,6 +11,7 @@ The library includes:
   scapegoat trees;
 - bit strings, Bloom filters, suffix trees, heaps, and masks;
 - string and wide-string collections;
+- lazy ranges, adaptors, and collection algorithms;
 - memory pools, custom allocators, observers, and stream/circular buffers;
 - generated, type-specific containers for common numeric and string types.
 
@@ -71,6 +72,74 @@ int main(void)
     return 0;
 }
 ```
+
+### Lazy ranges
+
+Ranges provide read-only, lazy pipelines over sequential containers and
+arrays. An adaptor changes only the range recipe; elements are read when a
+cursor or terminal algorithm is opened. The source storage must therefore
+outlive the range and must not be modified while a cursor is active.
+
+```c
+#include <stdio.h>
+
+#include <containers.h>
+
+static int is_even(const void *element, void *arg)
+{
+    (void)arg;
+    return (*(const int *)element % 2) == 0;
+}
+
+static int square(const void *input, void *output, void *arg)
+{
+    int value = *(const int *)input;
+
+    (void)arg;
+    *(int *)output = value * value;
+    return 1;
+}
+
+static int print_int(const void *element, void *arg)
+{
+    (void)arg;
+    printf("%d\n", *(const int *)element);
+    return 1;
+}
+
+int main(void)
+{
+    int values[] = { 1, 2, 3, 4, 5, 6 };
+    Range *range = NULL;
+    int result;
+
+    result = iRange.FromArray(values, 6, sizeof(int), &range);
+    if (result > 0)
+        result = iRange.Filter(&range, is_even, NULL);
+    if (result > 0)
+        result = iRange.Transform(&range, sizeof(int), square, NULL);
+    if (result > 0)
+        result = iRange.Take(&range, 2);
+    if (result > 0)
+        result = iRange.ForEach(range, print_int, NULL);
+
+    if (range != NULL)
+        iRange.Finalize(range);
+    return result < 0;
+}
+```
+
+Unary adaptors accept `Range **` and replace the handle only after successful
+construction, so allocation failures leave the existing pipeline valid.
+`Concat` similarly consumes its right handle only on success. `Next` returns
+`1` for an element, `0` for normal end, or a negative error. Callbacks may use
+any positive value for true, success, or continuation; zero means false or a
+normal visitor stop, and negative `CONTAINER_ERROR_*` values are propagated as
+errors without being reported a second time through the range error handler.
+Terminal algorithms open independent cursors and do not consume the range.
+Only the outermost range in a pipeline needs to be finalized.
+Range handles have unique ownership and should not be copied; after an adaptor
+succeeds, any previously retained alias refers to an owned inner recipe node.
 
 ### ValArray examples
 

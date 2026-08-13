@@ -1257,6 +1257,7 @@ These interfaces are used by all the containers in the rest of the library. They
 \item Memory management with the \texttt{Allocator} object.
 \item Observer and circulation of notifications with \texttt{iObserver}.
 \item Error handling with the \texttt{iError} interface.
+\item Lazy, composable traversal with the \texttt{iRange} interface.
 \item Masks used to select items
 \end{itemize}
 \includegraphics[scale=0.63]{Basic.png}
@@ -1740,6 +1741,10 @@ the out of bounds index.
 \item
 \doerror{READONLY} The object is read-only and the operation would modify it \footnote{The most similar error code using the POSIX standard would be {\footnotesize EPERM} here.}.
 \item
+\doerror{INCOMPATIBLE} The operation requires compatible element sizes or representations, but the supplied objects do not provide them.
+\item
+\doerror{WRONGELEMENT} An operation received an element that does not belong to the expected container or a callback did not follow its element-processing protocol. For example, range transform and fold callbacks must return a positive value on success rather than zero.
+\item
 \doerror{INTERNAL} Unspecified error provoked by a problem in the implementation.
 \item
 \doerror{OBJECT\_CHANGED} A change in the underlying object has invalidated an iterator. If an implementation uses \texttt{errno} it can set 
@@ -1941,6 +1946,8 @@ element, if any.
 \doerror{WRONG\_ITERATOR} The iterator passed is not the expected type.
 \returns A positive value if the element was changed or erased, zero if the container was empty, or a negative error code if an error occurred.
 
+%--------------------------------------------------------------------------------------------------------------------------
+\input{Range.tex}
 %--------------------------------------------------------------------------------------------------------------------------
 %                    The observer interface
 %--------------------------------------------------------------------------------------------------------------------------
@@ -12436,10 +12443,6 @@ together since they implement exactly the same functions: all the \verb,ValArray
 \showrowcolors
 
 \input{table}
-
-
-\hline
-\hline
 \end{longtable}
 }
 \end{landscape}

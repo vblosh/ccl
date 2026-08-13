@@ -23,7 +23,10 @@ entry order and compatible function types. `Append(dst, src)` intends to copy
 each source element through an iterator and `Add`, leaving the source intact.
 Any iterator it allocates must be released on all exits.
 
-## Confirmed defects
+## Historical pre-fix defects
+
+S1-S7 below describe the pre-fix audit baseline. The resolution and active
+adapter suite later in this document are authoritative for current behavior.
 
 ### S1 — Every sequential-specific dispatch is shifted into the wrong concrete
 vtable entry (critical)
@@ -94,11 +97,13 @@ vtable-prefix assumptions and leaves most NULL arguments unchecked. Fixes must
 share one common protocol implementation to prevent the two adapters drifting
 again.
 
-## Existing coverage
+## Current coverage
 
-No test calls `iSequentialContainer`. All current tests use concrete ValArray
-or other concrete tables. Thus the catastrophic shifted dispatch and iterator
-paths have no direct coverage.
+`unittests/sequential_test.c` is the active adapter suite. It directly calls
+`iSequentialContainer` across List, Dlist, and Vector, including generic
+operations, iterators, cross-container append, NULL handling, readonly and
+incompatible cases. Variable-sized string tables are explicitly rejected by
+the fixed-size adapter ABI.
 
 ## Required test matrix
 
@@ -126,13 +131,12 @@ paths have no direct coverage.
 Use counting/failing allocators and run every iterator/append case with leak
 detection. Coverage gates should include all cleanup and error branches.
 
-## Implementation handoff
+## Historical implementation handoff
 
-S1 is the architectural blocker and must be resolved before local Append
-fixes can execute correctly. Align the common interface prefix (including
-`Load` and `GetElementSize`, or remove them consistently), then fix S2/S3.
-Finally add structured cleanup and validation to Append. Reuse the corrected
-generic-prefix machinery instead of maintaining a second copy.
+The repair first aligned the common interface prefix, including the `Load` and
+`GetElementSize` slots, then corrected S2/S3 and added structured cleanup and
+validation to `Append`. The current adapter reuses the corrected generic-prefix
+machinery instead of maintaining a second copy.
 
 ## Resolution in this pass
 
@@ -150,8 +154,10 @@ collections are explicitly rejected by the fixed-size sequential ABI rather
 than being called with the wrong Pop/GetElement signatures.  The test suite
 covers List/Dlist/Vector operations, cross-container append, source
 preservation, incompatible/read-only/self cases, iterator cleanup, string
-rejection, all generic entries, and null handling.  Coverage is 96.20% lines
-and 70.93% branches for `sequential.c` (gcov; required 80%/70%).
+rejection, all generic entries, and null handling. `GetElementSize` returns
+the fixed element size for supported concrete tables and reports
+`CONTAINER_ERROR_INCOMPATIBLE` for variable-sized string tables. Coverage is
+96.39% lines and 71.91% branches for `sequential.c` (gcov; required 80%/70%).
 
 Direct ASan/UBSan test runs pass with `ASAN_OPTIONS=detect_leaks=0` and
 `UBSAN_OPTIONS=halt_on_error=1`.  This runner's LeakSanitizer cannot attach to
@@ -161,5 +167,6 @@ environment-level failure.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The final untraced integration run passed with ASan and UBSan. LeakSanitizer is
+unavailable in the current ptrace-restricted environment, so no leak-enabled
+pass is claimed here.

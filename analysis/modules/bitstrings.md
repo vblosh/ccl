@@ -32,7 +32,11 @@
   deletion. The public base iterator also declares previous/last/seek/position/
   replace slots.
 
-## Confirmed defects
+## Historical pre-fix defects
+
+The BS1-BS14 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The implementation and verification sections later in this
+document describe the current source and test state.
 
 ### BS1 — `Or` reads beyond the shorter operand (critical)
 
@@ -149,12 +153,14 @@ the count is byte-aligned. These create extra-byte reads/writes and inconsistent
 unequal-length semantics. Consolidate all operations around helpers for
 `ceil(count/8)`, a last-byte mask, and zero-extension.
 
-## Existing coverage
+## Historical coverage baseline and current coverage
 
-The legacy manual test parses/prints one long value, grows by repeated Add,
-copies, erases/inserts, shifts, ranges, searches, counts, and performs one AND,
-but it mostly prints diagnostics and does not fail on mismatches. There is no
-dedicated sanitizer/coverage suite and none of BS1-BS14 is reliably guarded.
+The historical manual test parsed/printed one long value, grew by repeated Add,
+copied, erased/inserted, shifted, ranged, searched, counted, and performed one
+AND, but mostly printed diagnostics and did not fail on mismatches. The current
+`unittests/bitstrings_test.c` is registered as `test_bitstrings` and covers the
+boundary, algebra, persistence, iterator, allocator, and read-only cases listed
+in the implementation status below.
 
 ## Required test matrix
 
@@ -198,9 +204,8 @@ partially created object on truncated input.
 `unittests/bitstrings_test.c` covers lifetime and boundary sizes, copy
 independence, custom allocators, range/append aliasing, algebra truth cases,
 padding, search, shifts, persistence, iterators, read-only behavior, and
-invalid arguments.  Isolated GCC gcov results for this unit are 86.97% line
-coverage and 73.58% of branches taken (97.87% of branch sites executed), from
-the eight-suite run in `/tmp/bitstrings-cov`.
+invalid arguments. The current GCC/gcov checker reports 86.89% line coverage
+and 73.33% of branches taken (97.87% of branch sites executed).
 
 The isolated ASan+UBSan run passes with `ASAN_OPTIONS=detect_leaks=0` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.  LeakSanitizer itself is
@@ -216,7 +221,9 @@ Finally normalize validation/read-only/timestamps, iterators, and persistence
 (BS11-BS13). Re-run the same sanitizer target after each stage because many
 symptoms share the broken byte-count arithmetic.
 
-## Final integration verification
+## Current local integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The current unsanitized CTest run passes all 36 registered tests. The focused
+ASan/UBSan run passes with `detect_leaks=0`. LeakSanitizer cannot initialize in
+this ptrace-restricted workspace, so no local LSan pass is claimed; run the
+leak-enabled suite outside that restriction for final leak verification.

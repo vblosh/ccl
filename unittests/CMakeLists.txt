@@ -96,7 +96,7 @@ if(CCL_ENABLE_COVERAGE)
             SuffixTree bitstrings bloom buffer deque dlist error fgetline
             generic hashtable heap iMask list malloc_debug memorymanager
             observer pool pooldebug priorityqueue qsort_r qsortex queue
-            redblacktree scapegoat searchtree sequential smallpool vector)
+            range redblacktree scapegoat searchtree sequential smallpool vector)
         add_custom_target("coverage-${unit_entry}"
             COMMAND "${Python3_EXECUTABLE}" "${CCL_COVERAGE_CHECKER}"
                     --source-root "${PROJECT_SOURCE_DIR}"

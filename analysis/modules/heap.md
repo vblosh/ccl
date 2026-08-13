@@ -22,7 +22,7 @@
 | Accounting | `Sizeof`/`GetHeapSize` reports heap storage. |
 | Iteration | create/delete iterator and first/next/previous/last/current/position access, skipping freed objects and validating magic. |
 
-## Confirmed defects
+## Historical pre-fix defects (confirmed at the audit baseline)
 
 ### H1 - object stride is not aligned (critical)
 
@@ -90,11 +90,14 @@ double counts the partial block, and reports pointer-table capacity rather than
 the recorded `MemoryUsed`. Growth and block-size products can overflow. Use a
 single checked stride/allocation formula and return actual owned bytes.
 
-## Existing coverage
+## Current coverage
 
-No dedicated heap tests exist. Priority queue and list-like containers use it
-indirectly, but do not verify free-list reuse, alignment, iteration, clearing,
-multiple blocks, or allocation failures.
+`unittests/heap_test.c` is the dedicated heap suite and is auto-discovered by
+`unittests/CMakeLists.txt`. Its six cases cover alignment/reuse, free-slot
+iteration and mutation invalidation, clear/reuse, the 1000-slot boundary and
+pointer-table growth, allocator failures/invalid arguments, and bad iterators.
+The normal CTest run passes `test_heap`; the historical pre-fix coverage gap no
+longer describes the current tree.
 
 ## Required test matrix
 
@@ -145,5 +148,7 @@ cannot initialize under this execution environment's ptrace setup.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+LeakSanitizer cannot initialize in the current local workspace because of its
+ptrace restriction, so a current local ASan/UBSan+LSan integration pass cannot
+be claimed. The earlier untraced pass is historical campaign evidence recorded
+on 2026-08-08 and does not supersede the current focused-run limitation.

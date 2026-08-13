@@ -22,7 +22,7 @@
 | Value operations | `Copy`, `Equal`, `Union`, `Sizeof`. |
 | Dependencies | node allocation/iteration/free through `iHeap`; dynamic `lognTable` for consolidation. |
 
-## Confirmed defects
+## Historical pre-fix defects (confirmed at the audit baseline)
 
 ### P1 - popping an empty queue dereferences NULL (critical)
 
@@ -117,10 +117,14 @@ double/unsigned union with hardcoded endianness and assumes 32-bit unsigned;
 degree/table shifts use signed `1 << Log2N`. Use `intptr_t` throughout and a
 portable integer ceiling-log implementation with checked table bounds.
 
-## Existing coverage
+## Current coverage
 
-No current source in `tests/` or `unittests/` references `iPQueue`. Fibonacci
-link/consolidate/cut paths and all public methods are untested.
+`unittests/priorityqueue_test.c` is the dedicated seven-test suite and is
+auto-discovered by `unittests/CMakeLists.txt`. It covers lifecycle and empty
+operations, ordering/value association, clamping/reuse, consolidation,
+copy/equality, randomized reference sequences, union, and allocator failures.
+The normal CTest run passes `test_priorityqueue`; the no-test statement was
+historical pre-fix coverage information.
 
 ## Required test matrix
 
@@ -182,5 +186,7 @@ suite.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+LeakSanitizer cannot initialize in the current local workspace because of its
+ptrace restriction, so a current local ASan/UBSan+LSan integration pass cannot
+be claimed. The earlier untraced pass is historical campaign evidence recorded
+on 2026-08-08 and does not supersede the current focused-run limitation.

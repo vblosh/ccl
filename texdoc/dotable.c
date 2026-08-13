@@ -1,4 +1,5 @@
 #include "containers.h"
+#include <ctype.h>
 static char *ContainerNames[] ={
 	"List",
 	"Dlist",
@@ -178,14 +179,14 @@ static int ScanOneLine(unsigned char *line)
 
 static int comp(const void **s1,const void **s2, CompareInfo *info)
 {
-	const char *p = strstr(*s1,"(*");
-	const char *q = strstr(*s2,"(*");
+	const char *left = *s1;
+	const char *right = *s2;
+	const char *p = strstr(left,"(*");
+	const char *q = strstr(right,"(*");
 	if (p == NULL || q == NULL) {
 		if (p == NULL && q == NULL) return 0;
 		if (p == NULL) return -1;
 		return 1;
-		fprintf(stderr,"BUG*** in %s compare to %s\n",*s1,*s2);
-		exit(-1);
 	}
 	return strcmp(p,q);
 }
@@ -241,7 +242,7 @@ static int trim(strCollection *sc,int idx,char *p)
 static void doFile(char *name,Iterator *it)
 {
 	FILE *f;
-	const char *p;
+	char *p;
 	char *q,buf[4096];
 	int counter = 0;
 	Iterator *It;
@@ -271,6 +272,10 @@ static void doFile(char *name,Iterator *it)
 		if (strlen(p) > 70) counter += trim(sc,counter,p);
 		else counter++;
 	}
+	/* The manual includes this generated interface with a lower-case file
+	 * name.  Keep generation portable on case-sensitive file systems. */
+	if (strcmp(name,"strCollection") == 0)
+		strcpy(name,"strcollection");
 	strcat(name,".tex");
 	istrCollection.WriteToFile(sc,name);
 }
@@ -344,9 +349,9 @@ int main(void)
 	memset(totals,0,sizeof(totals));
 	Exceptions = istrCollection.InitializeWith(sizeof(ExceptionsTable)/sizeof(ExceptionsTable[0]),ExceptionsTable);
 	ContainerTable = istrCollection.InitializeWith(NbContainers,ContainerNames);
-	ExtractIds("../containers.h");
-	ExtractIds("../valarraygen.h");
-	ExtractIds("../stringlistgen.h");
+	ExtractIds("../include/containers.h");
+	ExtractIds("../include/valarraygen.h");
+	ExtractIds("../include/stringlistgen.h");
 	it = iDictionary.NewIterator(Data);
 	iDictionary.SetDestructor(Data,destroyDataPoint);
 	for (d = it->GetFirst(it); d != NULL; d = it->GetNext(it)) {
@@ -366,26 +371,28 @@ int main(void)
 			if (j != NbContainers-1)
 				strcat(buf,"&");
 		}
-		strcat(buf,"\\\\\n");
+		strcat(buf,"\\\\");
 		istrCollection.Add(Output,buf);
 	}
 	istrCollection.Sort(Output);
-	istrCollection.Add(Output,"\\hline\n");
+	istrCollection.Add(Output,"\\hline");
 	sprintf(buf,"%-20s\t&","Totals");
 	for (j=0; j<NbContainers;j++) {
 		sprintf(buf+strlen(buf),"%3d&",totals[j]);
 		APITotals += totals[j];
 	}
 	buf[strlen(buf)-1]=0; /* Eliminate the last '&' */
-	strcat(buf,"\\\\\n");
+	strcat(buf,"\\\\");
 	istrCollection.Add(Output,buf);
 
 	sprintf(buf,"%-20s\t& %d & ","Total APIs",APITotals);
 	for (j=0; j<NbContainers-2;j++) {
 		sprintf(buf+strlen(buf)," & ");
 	}
-	strcat(buf,"\\\\\n");
+	strcat(buf,"\\\\");
 	istrCollection.Add(Output,buf);
+	istrCollection.Add(Output,"\\hline");
+	istrCollection.Add(Output,"\\hline");
 	istrCollection.WriteToFile(Output,"table.tex");
 	istrCollection.Finalize(Output);
 	iDictionary.DeleteIterator(it);

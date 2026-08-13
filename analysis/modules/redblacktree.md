@@ -7,11 +7,11 @@
 - Dependencies: `CurrentAllocator`, `iError`, caller comparison/error/
   destructor callbacks, and C byte-copy routines. The representation and all
   node helpers are private to this source.
-- The intended structure is an external-leaf red-black tree: an internal node
-  has two node children, a leaf has `right == NULL`, stores its owned data
-  pointer in `left`, and carries a copied key. The root must exist as an empty
-  sentinel, every path must have equal black height, red nodes must have black
-  children, keys must remain ordered, and `count` must equal live leaves.
+- The current structure is a conventional red-black tree with ordinary NULL
+  child links. Each node owns a separately allocated copied key and value;
+  `root == NULL` denotes an empty tree. Every path must have equal black
+  height, red nodes must have black children, keys must remain ordered, and
+  `count` must equal live nodes.
 
 ## API, helper, and ownership inventory
 
@@ -19,17 +19,22 @@
 | --- | --- |
 | Construction/metadata | `Create`, `GetElementSize`, `GetCount`, flag getters/setter, error/compare/destructor setters, and `Sizeof`. |
 | Data operations | `Add`, extended `Insert`, `Find`, and `Erase`/`Remove`; keys and fixed-size values are copied. |
-| Tree mechanics | `get_node`, `return_node`, left/right rotations, default byte comparator, and `CopyObject`. |
+| Tree mechanics | `new_node`, `destroy_node`/`destroy_nodes`, left/right rotations, fixups, and the default byte comparator. |
 | Traversal/lifetime | `Apply`, `Clear`, `Finalize`, `NewIterator`, and `DeleteIterator`. |
 
-The tree captures `CurrentAllocator` for its header, nodes, and element copies.
-On successful insertion it should own exactly one `ElementSize` value and one
-`KeySize` key per leaf. `Find` returns a borrowed pointer to the owned value;
-erase/clear/finalize must call the destructor once on that value and release it
-through the captured allocator. Node blocks also belong to the tree and must be
-recoverable at clear/finalize. No public operation may expose internal nodes.
+The tree captures `CurrentAllocator` for its header, nodes, keys, and element
+copies. On successful insertion it owns exactly one `ElementSize` value and
+one `KeySize` key per node. `Find` returns a borrowed pointer to the owned
+value; erase/clear/finalize call the destructor once on that value and release
+both allocations through the captured allocator. No public operation exposes
+internal nodes.
 
-## Confirmed compatibility and correctness defects
+## Historical pre-fix compatibility and correctness defects
+
+RB1-RB7 below describe the implementation at the original audit baseline.
+The current source uses the NULL-child representation above and the dedicated
+suite exercises the repaired constructor, ownership, balancing, lifecycle,
+and iterator paths. The one current iterator limitation is called out in RB6.
 
 ### RB1 - the public constructor produces an unusable tree (critical, ASan/UBSan)
 
@@ -81,15 +86,14 @@ future implementation of `Clear`/`Finalize` can recover all node blocks from
 the existing fields. Keep explicit block ownership, preserve allocator
 failure atomicity, and test failure at header, root, block, and value stages.
 
-### RB6 - core lifecycle and traversal APIs are stubs (critical)
+### RB6 - historical lifecycle/traversal stubs; iterator replacement remains limited
 
-`Apply`, `Finalize`, and `Clear` immediately return zero without traversing,
-destroying values, releasing blocks, or freeing the header (lines 673-676).
-`NewIterator` always returns NULL and `DeleteIterator` reports success without
-validation. Every normally created object leaks, destructors are skipped on
-clear/finalize, clear cannot provide reusable empty state, and the advertised
-iterator/API behavior is absent. This is an implementation gap, not an edge
-case; preserving the public ABI means implementing these entries.
+At the audit baseline, `Apply`, `Finalize`, `Clear`, and iterator construction
+were stubs. The current `Apply`, `Clear`, `Finalize`, `NewIterator`, and
+`DeleteIterator` implementations are active and covered by the dedicated
+suite. `IteratorReplace` remains intentionally unimplemented and returns
+`CONTAINER_ERROR_NOTIMPLEMENTED` (`src/redblacktree.c:719-725`); document that
+single limitation rather than describing the whole lifecycle as absent.
 
 ### RB7 - defensive, readonly, and setter contracts are not enforced (high)
 
@@ -115,13 +119,13 @@ query/clear behavior without accessing invalid state.
 - Read-only trees must reject every structural/value mutation without invoking
   a destructor or allocator.
 
-## Existing coverage
+## Current coverage (the following replaces the pre-fix baseline)
 
-There is no active red-black test. The source contains an obsolete integer
-driver and invariant printer under `#if 0`, and `tests/test.c` only has a
-commented construction placeholder. Nothing currently reaches insertion,
-rotations, removal, allocator failure, destructor paths, stubs, or sanitizer
-behavior.
+`unittests/redblacktree_test.c` is the active focused suite. It covers
+lifecycle/ordered operations, variable key sizes, deletion stress, custom
+comparison and readonly/error paths, iterator invalidation, and allocation
+failures. CMake discovers it through the `_test.c` suite glob; the old
+`tests/test.c` placeholder is not the current coverage source.
 
 ## Required test matrix
 
@@ -150,17 +154,23 @@ behavior.
 8. Long stress runs crossing the 256-node block boundary multiple times, then
    delete/reinsert through the free list and finalize with no leaks.
 
-The many insertion and especially deletion rebalance branches require the
-deterministic shape corpus plus randomized differential runs to reach 80% line
-and 70% branch coverage. Run the focused suite under ASan/UBSan and leak
-checking; coverage is not meaningful until RB1/RB2/RB6 make the public object
-constructible and destructible.
+The historical plan required a deterministic shape corpus plus randomized
+differential runs for the insertion and deletion rebalance branches. The
+current suite implements that plan and exceeds the 80% line/70% branch gates;
+retain the corpus for ASan/UBSan and future leak-enabled regression runs.
 
-## Compatibility-preserving handoff
+## Historical compatibility-preserving handoff
 
-Keep the opaque type and existing interface signatures. First establish a
-size-aware node representation, fully initialize the sentinel/header, and add
-recoverable block ownership. Then repair rotations and committed accounting,
-implement clear/finalize/traversal, and only afterward validate the complex
-delete cases. These changes restore advertised behavior; they do not require a
-public ABI break.
+Keep the opaque type and existing interface signatures. The historical repair
+order was size-aware node storage, header initialization, allocator-safe
+ownership, rotations/accounting, and lifecycle/traversal before deletion-case
+validation. Those repairs are present in the current source; future work is
+limited to the documented iterator replacement behavior and any additional
+coverage expansion.
+
+## Current status (2026-08-13)
+
+The focused GCC/gcov run reports 93.66% line coverage and 76.74% branch
+coverage for `src/redblacktree.c`. The dedicated ASan/UBSan suite passes with
+leak detection disabled. LeakSanitizer is unavailable in the current
+ptrace-restricted environment, so no leak-enabled pass is claimed here.

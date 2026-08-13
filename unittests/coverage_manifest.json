@@ -90,6 +90,10 @@
       "physical_sources": ["src/queue.c"],
       "coverage_sources": ["src/queue.c"]
     },
+    "range": {
+      "physical_sources": ["src/range.c"],
+      "coverage_sources": ["src/range.c"]
+    },
     "redblacktree": {
       "physical_sources": ["src/redblacktree.c"],
       "coverage_sources": ["src/redblacktree.c"]

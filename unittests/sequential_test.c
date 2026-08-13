@@ -59,6 +59,7 @@ static int test_operations(void)
     generic_list = NULL;
 
     TEST_REQUIRE(iSequentialContainer.Size(sc) == 2);
+    TEST_REQUIRE(iSequentialContainer.GetElementSize(sc) == sizeof(int));
     TEST_REQUIRE(iSequentialContainer.Add(sc, &(int){4}) == 1);
     TEST_REQUIRE(*(int *)iSequentialContainer.GetElement(sc, 2) == 4);
     TEST_REQUIRE(iSequentialContainer.Push(sc, &(int){1}) == 1);
@@ -246,6 +247,7 @@ static int test_null_arguments(void)
     TEST_REQUIRE(iSequentialContainer.DeleteIterator(iterator) < 0);
     TEST_REQUIRE(iSequentialContainer.SizeofIterator(null_sc) == 0);
     TEST_REQUIRE(iSequentialContainer.Save(null_sc, NULL, NULL, NULL) < 0);
+    TEST_REQUIRE(iSequentialContainer.GetElementSize(null_sc) == 0);
     TEST_REQUIRE(iSequentialContainer.Add(null_sc, &value) < 0);
     TEST_REQUIRE(iSequentialContainer.GetElement(null_sc, 0) == NULL);
     TEST_REQUIRE(iSequentialContainer.Push(null_sc, &value) < 0);

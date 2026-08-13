@@ -2,10 +2,9 @@
 #include "ccl_internal.h"
 
 /* The concrete sequential interfaces put Load and GetElementSize between the
- * generic Save entry and Add.  The two reserved fields in
- * SequentialContainerInterface mirror that layout; generic operations are
- * delegated to iGeneric so NULL handling and iterator ownership stay in one
- * implementation. */
+ * generic Save entry and Add.  SequentialContainerInterface mirrors that
+ * layout; generic operations are delegated to iGeneric so NULL handling and
+ * iterator ownership stay in one implementation. */
 struct SequentialContainer {
 	SequentialContainerInterface *vTable;
 	size_t Size;
@@ -173,6 +172,19 @@ static int Save(const SequentialContainer *sc, FILE *stream,
 	return iGeneric.Save((const GenericContainer *)sc, stream, saveFn, arg);
 }
 
+static size_t GetElementSize(const SequentialContainer *sc)
+{
+	if (sc == NULL || sc->vTable == NULL) {
+		BadArg("iSequentialContainer.GetElementSize");
+		return 0;
+	}
+	if (IsStringTable(sc)) {
+		Unsupported("iSequentialContainer.GetElementSize");
+		return 0;
+	}
+	return sc->ElementSize;
+}
+
 /*-------------------------------------------------------------------------*/
 /* Sequential operations                                                   */
 
@@ -311,7 +323,7 @@ SequentialContainerInterface iSequentialContainer = {
 	SizeofIterator,
 	Save,
 	NULL, /* Load: reserved for concrete-prefix alignment */
-	NULL, /* GetElementSize: reserved for concrete-prefix alignment */
+	GetElementSize,
 	Add,
 	GetElement,
 	Push,

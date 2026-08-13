@@ -1,6 +1,7 @@
 #include "test_support.h"
 
 #include "containers.h"
+#include "ccl_internal.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -9,6 +10,9 @@ static int captured_errors;
 static int captured_code;
 static int fail_malloc;
 static int fail_calloc;
+static size_t allocator_calloc_calls;
+static size_t allocator_free_calls;
+static size_t allocator_malloc_calls;
 
 static void *capture_error(const char *name, int code, ...)
 {
@@ -20,11 +24,13 @@ static void *capture_error(const char *name, int code, ...)
 
 static void *range_test_malloc(size_t size)
 {
+    ++allocator_malloc_calls;
     return fail_malloc ? NULL : malloc(size);
 }
 
 static void range_test_free(void *memory)
 {
+    ++allocator_free_calls;
     free(memory);
 }
 
@@ -35,6 +41,7 @@ static void *range_test_realloc(void *memory, size_t size)
 
 static void *range_test_calloc(size_t count, size_t size)
 {
+    ++allocator_calloc_calls;
     return fail_calloc ? NULL : calloc(count, size);
 }
 
@@ -124,6 +131,101 @@ static int collect_values(const void *element, void *arg)
 
     state->Values[state->Count++] = *(const int *)element;
     return state->StopAfter == 0 || state->Count < state->StopAfter;
+}
+
+typedef struct ProtocolSource ProtocolSource;
+
+typedef struct ProtocolIterator {
+    Iterator Iterator;
+    ProtocolSource *Source;
+    size_t Position;
+} ProtocolIterator;
+
+struct ProtocolSource {
+    GenericContainer Container;
+    int Values[4];
+    size_t ReportedSize;
+    size_t YieldedSize;
+    int ReturnNullIterator;
+    int MissingFirst;
+    int MissingNext;
+    int DeleteResult;
+};
+
+static void *protocol_first(Iterator *iterator)
+{
+    ProtocolIterator *current = (ProtocolIterator *)iterator;
+
+    current->Position = 0;
+    if (current->Source->YieldedSize == 0)
+        return NULL;
+    return &current->Source->Values[0];
+}
+
+static void *protocol_next(Iterator *iterator)
+{
+    ProtocolIterator *current = (ProtocolIterator *)iterator;
+
+    if (current->Position + 1 >= current->Source->YieldedSize)
+        return NULL;
+    ++current->Position;
+    return &current->Source->Values[current->Position];
+}
+
+static size_t protocol_position(Iterator *iterator)
+{
+    return ((ProtocolIterator *)iterator)->Position;
+}
+
+static size_t protocol_size(const GenericContainer *container)
+{
+    return ((const ProtocolSource *)container)->ReportedSize;
+}
+
+static Iterator *protocol_new_iterator(GenericContainer *container)
+{
+    ProtocolSource *source = (ProtocolSource *)container;
+    ProtocolIterator *iterator;
+
+    if (source->ReturnNullIterator)
+        return NULL;
+    iterator = calloc(1, sizeof(*iterator));
+    if (iterator == NULL)
+        return NULL;
+    iterator->Iterator.GetFirst = source->MissingFirst ? NULL : protocol_first;
+    iterator->Iterator.GetNext = source->MissingNext ? NULL : protocol_next;
+    iterator->Iterator.GetPosition = protocol_position;
+    iterator->Source = source;
+    return &iterator->Iterator;
+}
+
+static int protocol_delete_iterator(Iterator *iterator)
+{
+    ProtocolIterator *current = (ProtocolIterator *)iterator;
+    int result = current->Source->DeleteResult;
+
+    free(current);
+    return result < 0 ? result : 1;
+}
+
+static GenericContainerInterface protocol_interface = {
+    .Size = protocol_size,
+    .NewIterator = protocol_new_iterator,
+    .DeleteIterator = protocol_delete_iterator,
+};
+
+static void init_protocol_source(ProtocolSource *source, size_t reported,
+                                 size_t yielded)
+{
+    size_t index;
+
+    memset(source, 0, sizeof(*source));
+    source->Container.vTable = &protocol_interface;
+    source->ReportedSize = reported;
+    source->YieldedSize = yielded;
+    for (index = 0; index < sizeof(source->Values) / sizeof(source->Values[0]);
+         ++index)
+        source->Values[index] = (int)(index + 10);
 }
 
 static int test_lazy_pipeline_and_reuse(void)
@@ -259,6 +361,155 @@ cleanup:
     if (generic) iRange.Finalize(generic);
     if (range) iRange.Finalize(range);
     if (vector) iVector.Finalize(vector);
+    return -1;
+}
+
+static int test_allocator_aware_container_sources(void)
+{
+    int values[] = {3, 4};
+    Dlist *dlist = NULL;
+    Vector *vector = NULL;
+    Range *range = NULL;
+    RangeCursor *cursor = NULL;
+    const void *element = NULL;
+
+    fail_malloc = 0;
+    fail_calloc = 0;
+    dlist = iDlist.InitializeWith(sizeof(int), 2, values);
+    vector = iVector.InitializeWith(sizeof(int), 2, values);
+    TEST_REQUIRE(dlist != NULL && vector != NULL);
+
+    allocator_calloc_calls = 0;
+    allocator_free_calls = 0;
+    allocator_malloc_calls = 0;
+    TEST_REQUIRE(iRange.FromSequentialWithAllocator(
+                     (SequentialContainer *)dlist, &range_test_allocator,
+                     &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &element) == 1 &&
+                 *(const int *)element == 3);
+    TEST_REQUIRE(iRange.DeleteCursor(cursor) == 1);
+    cursor = NULL;
+    TEST_REQUIRE(iRange.Finalize(range) == 1);
+    range = NULL;
+    TEST_REQUIRE(allocator_calloc_calls == 2);
+    TEST_REQUIRE(allocator_free_calls == 2);
+    TEST_REQUIRE(allocator_malloc_calls == 0);
+
+    allocator_calloc_calls = 0;
+    allocator_free_calls = 0;
+    TEST_REQUIRE(iRange.FromGenericWithAllocator(
+                     (GenericContainer *)vector, sizeof(int),
+                     &range_test_allocator, &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &element) == 1 &&
+                 *(const int *)element == 3);
+    TEST_REQUIRE(iRange.DeleteCursor(cursor) == 1);
+    cursor = NULL;
+    TEST_REQUIRE(iRange.Finalize(range) == 1);
+    range = NULL;
+    TEST_REQUIRE(allocator_calloc_calls == 2);
+    TEST_REQUIRE(allocator_free_calls == 2);
+
+    iVector.Finalize(vector);
+    vector = NULL;
+    iDlist.Finalize(dlist);
+    return 0;
+
+cleanup:
+    fail_malloc = 0;
+    fail_calloc = 0;
+    if (cursor) iRange.DeleteCursor(cursor);
+    if (range) iRange.Finalize(range);
+    if (vector) iVector.Finalize(vector);
+    if (dlist) iDlist.Finalize(dlist);
+    return -1;
+}
+
+static int test_generic_protocol_contract(void)
+{
+    ProtocolSource source;
+    Range *range = NULL;
+    RangeCursor *cursor = NULL;
+    const void *element = NULL;
+
+    init_protocol_source(&source, 2, 2);
+    TEST_REQUIRE(iRange.FromGeneric(&source.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &element) == 1 &&
+                 *(const int *)element == 10);
+    TEST_REQUIRE(iRange.Next(cursor, &element) == 1 &&
+                 *(const int *)element == 11);
+    TEST_REQUIRE(iRange.Next(cursor, &element) == 0);
+    TEST_REQUIRE(iRange.DeleteCursor(cursor) == 1);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    init_protocol_source(&source, 2, 3);
+    TEST_REQUIRE(iRange.FromGeneric(&source.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &element) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &element) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &element) ==
+                 CONTAINER_ERROR_OBJECT_CHANGED);
+    TEST_REQUIRE(iRange.Next(cursor, &element) ==
+                 CONTAINER_ERROR_OBJECT_CHANGED);
+    TEST_REQUIRE(iRange.DeleteCursor(cursor) == 1);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    init_protocol_source(&source, 3, 2);
+    TEST_REQUIRE(iRange.FromGeneric(&source.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &element) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &element) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &element) ==
+                 CONTAINER_ERROR_OBJECT_CHANGED);
+    TEST_REQUIRE(iRange.DeleteCursor(cursor) == 1);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    init_protocol_source(&source, 1, 1);
+    source.MissingFirst = 1;
+    TEST_REQUIRE(iRange.FromGeneric(&source.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) ==
+                 CONTAINER_ERROR_WRONG_ITERATOR);
+    TEST_REQUIRE(cursor == NULL);
+    iRange.Finalize(range);
+    range = NULL;
+
+    init_protocol_source(&source, 1, 1);
+    source.MissingNext = 1;
+    TEST_REQUIRE(iRange.FromGeneric(&source.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) ==
+                 CONTAINER_ERROR_WRONG_ITERATOR);
+    TEST_REQUIRE(cursor == NULL);
+    iRange.Finalize(range);
+    range = NULL;
+
+    init_protocol_source(&source, 1, 1);
+    source.ReturnNullIterator = 1;
+    TEST_REQUIRE(iRange.FromGeneric(&source.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == CONTAINER_ERROR_NOMEMORY);
+    TEST_REQUIRE(cursor == NULL);
+    iRange.Finalize(range);
+    range = NULL;
+
+    init_protocol_source(&source, 1, 1);
+    source.DeleteResult = CONTAINER_ERROR_WRONG_ITERATOR;
+    TEST_REQUIRE(iRange.FromGeneric(&source.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.DeleteCursor(cursor) == CONTAINER_ERROR_WRONG_ITERATOR);
+    cursor = NULL;
+    iRange.Finalize(range);
+    return 0;
+
+cleanup:
+    if (cursor) iRange.DeleteCursor(cursor);
+    if (range) iRange.Finalize(range);
     return -1;
 }
 
@@ -509,6 +760,8 @@ static const TestCase tests[] = {
     {"lazy pipeline and reuse", test_lazy_pipeline_and_reuse},
     {"while, concat, and terminals", test_while_concat_and_terminals},
     {"container source and mutation", test_container_source_and_mutation},
+    {"allocator-aware container sources", test_allocator_aware_container_sources},
+    {"generic protocol contract", test_generic_protocol_contract},
     {"callback and transaction errors", test_callback_and_transaction_errors},
     {"allocator failures and empty range", test_allocator_failures_and_empty_range},
     {"bad arguments", test_bad_arguments},

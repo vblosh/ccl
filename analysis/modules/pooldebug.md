@@ -38,7 +38,7 @@ helper.
 - `Finalize` additionally frees the allocator bookkeeping and pool object.
 - `Calloc` must reject multiplication overflow.
 
-## Confirmed defects
+## Historical pre-fix defects (confirmed at the audit baseline)
 
 ### Critical: tracking nodes are freed by the wrong allocator
 
@@ -70,7 +70,7 @@ Compiling this translation unit with `-DTHREAD_VERSION` fails: `Mutex` and `thre
 
 `CheckIntegrity` being empty and `SetMaxFree` having no effect on the separate-allocation strategy are incomplete diagnostics, but no promised externally observable behavior is clear enough to classify them as confirmed functional defects.
 
-## Existing coverage
+## Current coverage
 
 `unittests/pooldebug_test.c` is picked up by the unit-test glob and exercises
 the public `iPoolDebug` table. The local `#ifdef TEST` smoke main also builds

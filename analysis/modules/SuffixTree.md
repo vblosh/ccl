@@ -78,7 +78,11 @@ public C-string API inherently stops at the first NUL, so embedded zero bytes
 cannot be represented even though the internal algorithm is described in
 terms of byte sequences.
 
-## Confirmed correctness defects and compatibility concerns
+## Historical pre-fix defects and compatibility concerns
+
+The ST1-ST14 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The implementation and verification sections later in this
+document describe the current source and test state.
 
 ### ST1 - one-character trees cannot find their only character (high,
 confirmed under ASan/UBSan)
@@ -221,13 +225,14 @@ distinct from every valid result.
 fails. Remove the redundant argument after allocator flow remains sourced from
 the tree.
 
-## Existing test status
+## Historical test baseline and current coverage
 
-`tests/test.c` has one legacy smoke function that creates
-`"mississippi"`, prints it, finds `"ssis"`, prints the returned position, and
-finalizes. It has no assertions and is not a dedicated CTest suite. No current
-unit test covers `iSuffixTree`; the coverage manifest lists `SuffixTree` but
-has no owning test capable of meeting its thresholds.
+The historical `tests/test.c` smoke function creates `"mississippi"`, prints
+it, finds `"ssis"`, prints the returned position, and finalizes. It has no
+assertions and was not a dedicated CTest suite. The current
+`unittests/suffixtree_test.c` is registered as `test_suffixtree` and is the
+`SuffixTree` owner in `unittests/coverage_manifest.json`; its current coverage
+and sanitizer results are recorded below.
 
 ## Required ASan/UBSan and coverage test matrix
 
@@ -308,7 +313,9 @@ ASan/UBSan passes with leak detection disabled. LeakSanitizer itself cannot run
 in this workspace because its ptrace restriction reports `LeakSanitizer has
 encountered a fatal error`; this is reported as unavailable rather than passed.
 
-## Final integration verification
+## Current local integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The current unsanitized CTest run passes all 36 registered tests. The focused
+ASan/UBSan run passes with leak detection disabled. LeakSanitizer cannot
+initialize in this ptrace-restricted workspace, so no local LSan pass is claimed;
+run the leak-enabled suite outside that restriction for final leak verification.

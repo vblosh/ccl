@@ -23,8 +23,10 @@ The public interfaces are `DictionaryInterface` and `WDictionaryInterface` in
 - `istrCollection` or `iWstrCollection` for key extraction and persistence;
 - C string/wide-string, memory, stdio, and GUID operations.
 
-There is no production diff in these three sources in the current shared
-worktree, so this audit describes the `develop` implementation.
+There is no production diff in these three sources relative to the original
+remediation commit. This recheck nevertheless describes their current
+`feature/ranges` behavior together with the current dependencies, focused
+suite, and coverage result.
 
 ## Representation, invariants, and ownership
 
@@ -109,7 +111,12 @@ unreported stub returning null. The base `Iterator` also has `GetCurrent` and
 - All remaining static functions are installed directly in one of the two
   public interface objects.
 
-## Confirmed defects
+## Historical pre-fix defects
+
+The DF1-DF15 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The implementation status later in this document records
+which findings are addressed in the current source and suite, including the
+remaining dependency-owned wide persistence limitation.
 
 ### DF1 - NULL data corrupts owning entries and causes a null write (critical)
 
@@ -355,13 +362,15 @@ The family and the full static library build cleanly with GCC 15.2 using
 The probes used temporary build artifacts under `/tmp`; no probe source or
 production/test/build file was added to the repository.
 
-## Unit-test and coverage design
+## Historical test plan and current coverage
 
-Add one family suite, conventionally `unittests/dictionary_test.c`, and exercise
-both `iDictionary` and `iWDictionary`. A small macro/type adapter can share
-scenario structure, but keep explicit wide persistence and non-ASCII hash
-cases visible. Use constant and bucket-selecting custom hash functions to make
-collision and sparse-bucket paths deterministic.
+The pre-fix plan called for one family suite exercising both `iDictionary` and
+`iWDictionary`, with explicit wide persistence and non-ASCII hash cases. That
+plan is now implemented by `unittests/dictionary_family_test.c`, registered as
+`test_dictionary_family`; the current suite and coverage status are recorded
+below. A macro/type adapter shares scenario structure while keeping wide cases
+visible, and constant/bucket-selecting hashes make collision paths
+deterministic.
 
 Suggested test groups:
 
@@ -445,10 +454,9 @@ format, and read-only `GetElement` behavior unchanged. Implement in this order:
    persistence, reject before writing until a versioned representation is
    selected; do not reinterpret the legacy sequence ambiguously.
 
-After each stage, run the family test normally and under ASan/UBSan, then the
-full CTest suite. Finally run the dictionary coverage gate and inspect missed
-branches in both generated objects, targeting at least 80% line and 70% branch
-coverage for the generator family.
+The historical matrix required normal and ASan/UBSan runs, the full CTest
+suite, and at least 80% line/70% branch coverage for the generator family.
+Those checks are now run by the repository's dictionary coverage target.
 
 ## Implementation status (dictionary-family handoff)
 
@@ -482,10 +490,11 @@ replacement, Apply/Clear mutation detection, read-only/copy behavior,
 allocator failure, persistence, observer events, and the set-mode persistence
 policy. Under GCC ASan/UBSan the suite passes with leak detection disabled;
 the environment's ptrace policy prevents LeakSanitizer from starting. A
-manual GCC coverage build measured the narrow instantiation at 83.78% lines
-and 96.86% branches executed (70.78% taken); aggregate reports should be
-collected by the repository coverage checker once its dictionary target is
-available.
+The historical manual GCC coverage build measured the narrow instantiation at
+83.78% lines
+and 96.86% branches executed (70.78% taken). The current repository coverage
+checker reports 84.20% line coverage and 71.46% taken branches for the
+`dictionary` unit.
 
 The wide dictionary Save/Load round trip remains intentionally isolated from
 this handoff. With the current WstrCollection dependency, its Load allocation
@@ -504,8 +513,8 @@ passes; this environment cannot start LeakSanitizer itself because its ptrace
 policy rejects LSan startup, so the mandatory external LSan runner should be
 used for the final confirmation.
 
-## Final integration verification
+## Current local integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled after correcting read-only test cleanup. This supersedes the focused
-environment limitation above.
+The current unsanitized CTest run passes all 36 registered tests. The focused
+ASan/UBSan run passes with leak detection disabled; LeakSanitizer cannot start
+under this workspace's ptrace restriction, so no local LSan pass is claimed.

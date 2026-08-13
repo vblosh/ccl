@@ -57,7 +57,11 @@ allocates through CurrentAllocator, and does not restore comparator,
 destructor, error callback, heap, allocator, or derived vtable. There is no
 format version, endian/ABI declaration, or element-type identity.
 
-## Confirmed correctness defects and compatibility hazards
+## Historical pre-fix defects and compatibility hazards
+
+The DL1-DL16 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The validation status later in this document describes the
+current source and test state.
 
 ### DL1 - PopFront/PopBack leak every direct-allocated node (critical
 ownership)
@@ -215,14 +219,14 @@ IndexOf results to false, while IndexOf dereferences a NULL result on a match.
 SizeofIterator's unused parameter prevents a strict `-Werror` build. Normalize
 these without changing intentional empty/not-found semantics accidentally.
 
-## Existing test status
+## Historical test baseline and current coverage
 
-There is no standalone `unittests/dlist_test.c`. The typed
-`dlist_family_test.c` exercises some generic delegate behavior and a generic
-persistence compatibility case, but does not cover standalone ownership,
-FreeList, heap, transfer, direct-node, error, or generic iterator contracts.
-The coverage manifest lists `dlist` separately, so its 80/70 gate is not
-currently demonstrated by an owning suite.
+Before the standalone suite was added, only the typed
+`dlist_family_test.c` exercised some generic delegate behavior and persistence;
+standalone ownership, FreeList, heap, transfer, direct-node, error, and generic
+iterator contracts were uncovered. The current `unittests/dlist_test.c` is
+registered as `test_dlist` and covers those standalone paths; current coverage
+is reported below.
 
 ## Required ASan/UBSan and 80%/70% test matrix
 
@@ -264,12 +268,15 @@ currently demonstrated by an owning suite.
 The standalone `unittests/dlist_test.c` suite now covers lifecycle and
 destructor ownership, direct and heap nodes, range and transfer boundaries,
 iterators, read-only buffers, persistence, and allocation-failure rollback.
-`src/dlist.c` coverage is 82.06% of lines and 70.04% of taken branches in the
-dedicated `dlist` coverage run. The standalone suite passes under GCC ASan and
-UBSan; LeakSanitizer cannot initialize in the ptrace-restricted execution
-environment. The typed dlist family suite also passes under the sanitizers.
+`src/dlist.c` coverage is currently 82.00% of lines and 69.94% of taken
+branches in the dedicated `dlist` coverage run, so the branch gate is not met.
+The standalone suite passes under GCC ASan and UBSan with leak detection
+disabled; LeakSanitizer cannot initialize in the ptrace-restricted execution
+environment. The typed dlist family suite also passes under the sanitizers
+with leak detection disabled.
 
-## Final integration verification
+## Current local integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The current unsanitized CTest run passes all 36 registered tests. No local LSan
+pass is claimed because LeakSanitizer cannot initialize under the workspace's
+ptrace restriction.

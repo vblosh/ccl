@@ -27,7 +27,11 @@
 | Persistence | ULEB128 key-length helpers, default value callbacks, `Save`, and `Load`. |
 | Iteration | bucket cursor `first`/`next`; first/next/current/replace; allocated and caller-buffer iterator construction/deletion. Reverse traversal is intentionally aliased to forward traversal. |
 
-## Confirmed defects
+## Historical pre-fix defects
+
+The HT1-HT9 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The implementation status later in this document records
+the current source and test state.
 
 ### HT1 - missing lookup dereferences a null entry and returns a bogus pointer
 (critical)
@@ -126,12 +130,14 @@ inputs, exact read lengths, arithmetic, and encoded length termination before
 allocating. Preserve the existing on-disk format unless a versioned format is
 introduced separately.
 
-## Existing coverage
+## Historical coverage baseline and current coverage
 
-There is no dedicated hashtable unit suite. Documentation examples do not
-exercise this implementation. The sanitizer reproducers above establish HT1
-and HT3 directly; source-path inspection establishes the undersized entry,
-iterator/header, load-lifetime, and wrong-copy defects.
+Before the dedicated suite, documentation examples did not exercise this
+implementation; the sanitizer reproducers above established HT1 and HT3, with
+source inspection establishing the remaining pre-fix defects. The current
+`unittests/hashtable_test.c` is registered as `test_hashtable` and covers lookup,
+storage sizing, resize, iterators, copy/merge, persistence, ownership, and
+argument validation.
 
 ## Required test matrix
 
@@ -187,13 +193,13 @@ and release allocated iterator storage. `Copy`, `Merge`, and empty merges
 initialize complete table headers. `Load` copies serialized keys into the
 result pool and fails atomically on short/malformed records.
 
-The focused suite passes under ASan/UBSan and reports 86.00% line coverage
-and 70.12% taken-branch coverage (359/512 branches) for `src/hashtable.c`
-(GCC/gcov, 2026-08-08).
-LeakSanitizer remains subject to this environment's ptrace restriction; the
-reported sanitizer run therefore uses `detect_leaks=0`.
+The focused suite passes under ASan/UBSan with leak detection disabled. The
+current GCC/gcov checker reports 85.41% line coverage and 69.88% taken branches
+for `src/hashtable.c`, so the branch gate is not met. LeakSanitizer remains
+subject to this environment's ptrace restriction.
 
-## Final integration verification
+## Current local integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The current unsanitized CTest run passes all 36 registered tests. No local LSan
+pass is claimed because LeakSanitizer cannot initialize under the workspace's
+ptrace restriction.

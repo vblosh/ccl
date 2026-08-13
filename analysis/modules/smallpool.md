@@ -30,7 +30,10 @@ Declarations for `newPool_debug` exist but have no definition/use. The `#ifdef T
 - A failed creation or growth allocation must not leak or corrupt list state.
 - Byte thresholds must not silently truncate on platforms where `size_t` exceeds 32 bits.
 
-## Confirmed defects
+## Historical pre-fix defects (resolved)
+
+The findings below describe the pre-fix audit baseline; the implementation
+status and dedicated private-prototype suite below are current.
 
 ### High: initial-node allocation failure leaks the allocator
 
@@ -40,9 +43,14 @@ Declarations for `newPool_debug` exist but have no definition/use. The `#ifdef T
 
 Line 133 casts `size_t in_size` to `uint32_t` before alignment. On 64-bit targets, any threshold above `UINT32_MAX` silently wraps, and near-`UINT32_MAX` alignment itself wraps to zero. The externally emitted function therefore cannot represent its declared `size_t` input domain.
 
-## Integration status and existing coverage
+## Integration status and current coverage
 
-No repository test references these symbols. Because the public header exposes only `iPool`, normal users cannot call this implementation without private declarations; nevertheless the functions remain linkable from the static archive. This is separate shipped code, not generated code and not an alias of `iPool`, so it requires its own test target or an explicit removal/deprecation decision.
+`unittests/smallpool_test.c` references these symbols through private
+prototypes. Because the public header exposes only `iPool`, normal users still
+cannot call this implementation without private declarations; nevertheless
+the functions remain linkable from the static archive. This is separate
+shipped code, not generated code and not an alias of `iPool`, so the dedicated
+private-prototype suite remains the appropriate ownership unit.
 
 ## Required tests
 
@@ -56,7 +64,9 @@ No repository test references these symbols. Because the public header exposes o
 
 ## Recommended disposition and order
 
-Decide whether this undocumented legacy API is intentionally shipped. If retained, fix the creation leak and threshold width, add private declarations in a deliberate header, and test it after `pool.c` so the shared algorithmic cases can be reused. If not retained, remove it from the library source list and document that decision; do not leave untested externally linkable allocator code.
+The legacy API is retained. Its creation-leak and threshold-width findings are
+resolved, private prototypes are exercised by the dedicated suite, and the
+implementation remains separately covered from `pool.c`.
 
 ## Implementation status
 
@@ -76,5 +86,6 @@ without sanitizer diagnostics.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The final untraced integration run passed with ASan and UBSan. LeakSanitizer is
+unavailable in the current ptrace-restricted environment, so no leak-enabled
+pass is claimed here.

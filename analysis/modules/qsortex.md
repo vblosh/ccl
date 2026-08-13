@@ -18,7 +18,11 @@
   stacks one side in fixed arrays, processes the other, and drains the stack.
   `num < 2` or `width == 0` is an intentional no-op.
 
-## Confirmed defect
+## Historical pre-fix defect (resolved)
+
+The following finding records the pre-fix baseline from the audit commit. The
+current source and dedicated regression suite resolve it; it is retained for
+traceability rather than as an open defect.
 
 ### QE1 — partition-size comparison forms a pointer before the array (medium)
 
@@ -40,11 +44,12 @@ was reproduced. NULL `base`/`comp`, overflowed `num*width`, and inconsistent
 comparators remain caller-precondition/hardening concerns rather than claimed
 defects because this qsort-like API has no error return.
 
-## Existing coverage
+## Current coverage
 
-Many container Sort operations exercise `qsortEx` indirectly, but there is no
-direct suite proving record preservation, CompareInfo forwarding, cutoff and
-partition branches, or the minimum-pivot QE1 case.
+Many container Sort operations exercise `qsortEx` indirectly. The dedicated
+`unittests/qsortex_test.c` suite also directly proves record preservation,
+CompareInfo forwarding, cutoff and partition branches, and the minimum-pivot
+QE1 case.
 
 ## Required test matrix
 
@@ -65,7 +70,7 @@ These tests force `shortsort`, both partition-stack branches, swaps/no-swaps,
 and stack draining, sufficient for 80% line/70% branch coverage. Run with
 ASan/UBSan; there should be no allocation/leak work in this unit.
 
-## Luna handoff
+## Historical Luna handoff
 
 Apply the small QE1 pointer-arithmetic fix and add the minimum-pivot regression
 first, then the direct branch matrix. Preserve the public signature and the
@@ -82,5 +87,6 @@ duplicate-heavy and large partitions, record permutation at widths 1, 3,
 and vector/list/dlist/string-collection integration.
 
 The isolated GCC coverage run reports 100.00% line coverage and 100.00%
-branch execution (92.11% of branches taken). The ASan+UBSan run with
-`ASAN_OPTIONS=detect_leaks=1` passes all five tests with no leaks.
+branch execution (92.11% of branches taken). The focused ASan+UBSan run passes
+all five tests. LeakSanitizer is unavailable in the current ptrace-restricted
+environment, so this document makes no leak-enabled pass claim.

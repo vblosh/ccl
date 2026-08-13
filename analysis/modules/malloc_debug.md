@@ -29,7 +29,7 @@ Each allocation is intended to be:
 - `calloc` must reject a product that cannot be represented in `size_t`.
 - Diagnostic checks themselves must not access memory outside a live wrapped allocation.
 
-## Confirmed defects
+## Historical pre-fix defects (confirmed at the audit baseline)
 
 ### Fixed: in-place shrink corrupted metadata
 
@@ -66,9 +66,15 @@ diagnostics, foreign pointer, repeated free, and bad realloc diagnostics. A sepa
 linker-wrapped sanitizer probe forces the growth backing allocation to fail
 and verifies the original contents remain valid.
 
-## Existing coverage
+## Current coverage
 
-No dedicated tests exist. The legacy `tests/test.c` globally selects `iDebugMalloc`, indirectly exercising ordinary allocation/free through unrelated containers, but it does not cover realloc, direct calloc, sentinels, error callbacks, overflow, or allocation failure and is not part of current CTest.
+`unittests/malloc_debug_test.c` is the dedicated nine-test suite and is
+auto-discovered by `unittests/CMakeLists.txt`. It covers aligned/zeroed
+requests, realloc shrink/grow/zero behavior, NULL operations, overflow and
+calloc, footer diagnostics, foreign/repeated frees, and bad realloc pointers.
+The normal CTest run passes `test_malloc_debug`; the no-dedicated-tests
+statement was historical pre-fix coverage information. The legacy
+`tests/test.c` path remains an indirect, non-CTest smoke path.
 
 ## Verification evidence
 
@@ -91,5 +97,7 @@ No dedicated tests exist. The legacy `tests/test.c` globally selects `iDebugMall
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+LeakSanitizer cannot initialize in the current local workspace because of its
+ptrace restriction, so a current local ASan/UBSan+LSan integration pass cannot
+be claimed. The earlier untraced pass is historical campaign evidence recorded
+on 2026-08-08 and does not supersede the current focused-run limitation.

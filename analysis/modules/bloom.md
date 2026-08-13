@@ -22,7 +22,11 @@
 | `Clear` | Zero bits and restore the empty-filter state. |
 | `Finalize` | Free bitset then object through the captured allocator. |
 
-## Confirmed defects
+## Historical pre-fix defects
+
+The B1-B7 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The implementation and test evidence later in this
+document describes the current source and test state.
 
 ### B1 — Murmur hash performs misaligned and aliasing-unsafe loads (critical)
 
@@ -76,11 +80,14 @@ floating results against `SIZE_MAX` and use checked additions/multiplications.
 The NULL path reports `iBloomFilter.Find` rather than `iBloomFilter.Clear`,
 making diagnostics misleading.
 
-## Existing coverage
+## Historical coverage baseline and current coverage
 
-The legacy test adds five integers, checks two present keys and one absent key,
-and finalizes. It does not clear, fill, validate sizing, use unaligned keys,
-inject allocation failures, inspect errors, or run edge probabilities.
+The historical test added five integers, checked two present keys and one
+absent key, and finalized. It did not clear, fill, validate sizing, use
+unaligned keys, inject allocation failures, inspect errors, or run edge
+probabilities. The current `unittests/bloom_test.c` is registered as
+`test_bloom` and covers those cases in the implementation and test evidence
+below.
 
 ## Required test matrix
 
@@ -126,10 +133,13 @@ allocations through finalization.
 `unittests/bloom_test.c` covers formula-table allocation dimensions, binary and
 unaligned keys, fill/clear/refill transitions, invalid and boundary
 probabilities, argument diagnostics, allocator failures/ownership, and size
-overflow. The focused suite passes under ASan/UBSan (leak detection is
-unavailable in the ptraced execution environment). GCC/gcov reports 96.95%
-line coverage and 90.54% taken-branch coverage for `src/bloom.c` (2026-08-08).
-## Final integration verification
+overflow. The focused suite passes under ASan/UBSan with leak detection
+disabled; LeakSanitizer is unavailable in this ptrace-restricted environment.
+The current GCC/gcov checker reports 96.99% line coverage and 90.54%
+taken-branch coverage for `src/bloom.c`.
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+## Current local integration verification
+
+The current unsanitized CTest run passes all 36 registered tests. No local LSan
+pass is claimed because LeakSanitizer cannot initialize under the workspace's
+ptrace restriction.

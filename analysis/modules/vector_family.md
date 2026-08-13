@@ -13,10 +13,10 @@
   Add/Contains/Erase/Push/Insert/Replace/IndexOf/CompareEqualScalar, restore a
   typed vtable on returned objects, adapt iterator replacement, and provide
   typed Create/Init/InitializeWith/Sort/Sizeof helpers.
-- No concrete installed public header declares `size_tVector` and
-  `isize_tVector`. A consumer must know to define `DATA_TYPE` as `size_t` and
-  include `vectorgen.h` manually. The template leaves macros behind, including
-  `INTERFACE_NAME` because the cleanup misspells `ITERFACE_NAME`.
+- The built specialization has the installed public declaration
+  `include/size_tvector.h`, which selects `DATA_TYPE size_t` and cleans up the
+  generator macros after inclusion. Consumers do not need to instantiate
+  `vectorgen.h` manually.
 
 The ownership unit is the generator plus its one wrapper. The generic defects
 in `vector.md` still affect delegated calls, but the findings below are
@@ -48,7 +48,11 @@ specific to the generated ABI and adapters.
 | Iterator adaptation | `NewIterator`, `InitIterator`, `SetupIteratorVTable`, and scalar `ReplaceWithIterator`; the generic Replace function is saved as `VectorReplace`. |
 | Cast-delegated methods | Size/flags/capacity, Clear/Finalize/Apply/Save, accessors, range mutation, comparison setup, allocator/destructor access, selection, resize, rotations, CompareEqual, and related vector operations are lazily copied from `iVector`. |
 
-## Allocator, iterator, and persistence behavior
+## Historical pre-fix allocator, iterator, and persistence behavior
+
+The following implementation description records the pre-fix audit baseline;
+the current test status and defect resolutions below are authoritative for the
+present implementation.
 
 Typed `CreateWithAllocator` passes the requested allocator to generic Vector;
 typed `Create`, `Init`, `InitializeWith`, and generic Load-derived paths use
@@ -71,7 +75,11 @@ with the typed interface. No size_t type marker or width check is performed,
 so persistence is only safe after validating the generic record before type
 restoration; custom callbacks do not repair the header/type ambiguity.
 
-## Confirmed generator-specific defects
+## Historical pre-fix generator-specific defects (resolved)
+
+VF1-VF13 below record the pre-fix audit baseline. The implementation status and
+dedicated generated-family suite later in this document describe current
+behavior.
 
 ### VF1 - typed and generic vector layouts are incompatible (critical,
 ASan/UBSan)
@@ -226,13 +234,14 @@ Provide a normal installed declaration for the built specialization, keep
 implementation layout opaque or exact, fully clean template macros, and define
 a placement destruction API that frees only owned contents.
 
-## Existing test status
+## Current test status
 
-No current test references `isize_tVector` or includes `vectorgen.h`. The
-coverage manifest declares the generator ownership unit and CMake exposes a
-`coverage-vectorgen` target, but there is no suite capable of producing its
-coverage. Generic vector use in legacy/collection tests does not execute most
-generator adapters and cannot validate generated ABI behavior.
+`unittests/vector_family_test.c` is the dedicated generated-family suite; it
+includes `size_tvector.h`, references `isize_tVector`, and validates layout,
+scalar adapters, derived vectors, masks, iterators, persistence, placement,
+readonly/error paths, and destructor behavior. The coverage manifest charges
+the generator ownership unit to this suite, and CMake exposes the corresponding
+`coverage-vectorgen` target.
 
 ## Required ASan/UBSan and 80%/70% test matrix
 
@@ -295,5 +304,6 @@ ptrace-constrained runner); the generator translation unit reaches 95.09% line
 and 87.10% taken-branch coverage in the local gcov run.
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The final untraced integration run passed with ASan and UBSan. LeakSanitizer is
+unavailable in the current ptrace-restricted environment, so no leak-enabled
+pass is claimed here.

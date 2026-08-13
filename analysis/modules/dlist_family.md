@@ -58,7 +58,11 @@ Normal scalar success is 1, empty pop is 0, and generic failures are negative
 container error codes. The current Contains, Finalize, and InitIterator wrappers
 do not preserve those error conventions, as detailed below.
 
-## Confirmed compatibility and correctness defects
+## Historical pre-fix compatibility and correctness defects
+
+The DD1-DD12 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The implementation status later in this document records
+the current typed-family source and test state.
 
 ### DD1 - typed list headers are not layout-compatible with generic Dlist
 (critical, ASan/UBSan)
@@ -217,21 +221,21 @@ caller assumptions that disagree with Load/GetElementSize. Either validate the
 argument equals sizeof(DATA_TYPE) for compatibility, or make a deliberate
 versioned API change that removes it.
 
-## Existing coverage
+## Historical coverage baseline and current coverage
 
-There is no dedicated typed Dlist test source. The coverage manifest names the
-three instantiations as one `dlistgen` unit, but the current unit-test CMake
-entry is only a placeholder exclusion. Legacy tests do not exercise the typed
-interfaces. No active checks cover header coexistence, layout offsets,
-iterators, sort, scalar persistence boundaries, NULL restoration, custom
-allocators, or the nonterminating AddRange delegate.
+Before the typed-family suite was added, the coverage manifest named the three
+instantiations as one `dlistgen` unit while CMake had no dedicated family test;
+legacy tests did not exercise the typed interfaces. The current
+`unittests/dlist_family_test.c` is registered as `test_dlist_family` and covers
+header coexistence, layout offsets, iterators, sort, scalar persistence
+boundaries, NULL restoration, custom allocators, and AddRange termination.
 
 ## Required ASan/UBSan and coverage matrix
 
-Until DD3 is repaired, use one test translation unit per scalar type and link
-them into a single executable; also keep a compile-failure regression proving
-all public headers must eventually coexist. After repair, include all three in
-the primary consumer test.
+The pre-fix plan used one test translation unit per scalar type while DD3 was
+unrepaired, plus a compile-failure regression proving that all public headers
+must eventually coexist. That repair is now covered by the current family
+suite, which invokes all three instantiations in the primary consumer test.
 
 1. Construction and representation: Create/CreateWithAllocator, placement
    Init, InitializeWith empty/one/many, exact element size, typed/generic
@@ -339,7 +343,9 @@ checker result is 214/223 lines (95.96%) and 66/88 branches (75.00%) across
 all three instantiations.
 LeakSanitizer remains unavailable in this ptrace-restricted environment.
 
-## Final integration verification
+## Current local integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The current unsanitized CTest run passes all 36 registered tests. The focused
+ASan/UBSan suite passes with leak detection disabled; LeakSanitizer cannot
+initialize in this ptrace-restricted workspace, so no local LSan pass is
+claimed.

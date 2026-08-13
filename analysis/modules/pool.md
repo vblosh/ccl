@@ -29,7 +29,7 @@ Internally an `Allocator` owns 20 reusable-node buckets. Each `MemoryNode_t` par
 - Finalizing releases every node and the separate `Allocator` object exactly once.
 - Failure to obtain a new node must not modify the active list or consume existing space.
 
-## Confirmed defects
+## Historical pre-fix defects (confirmed at the audit baseline)
 
 ### High: every successful pool leaks its `Allocator`
 
@@ -61,7 +61,7 @@ execution passes all nine tests. CTest's leak-enabled ASan mode is unavailable
 in the execution environment because LeakSanitizer reports that it cannot run
 under ptrace; no sanitizer error is reported with leak detection disabled.
 
-## Existing coverage
+## Current coverage
 
 `unittests/pool_test.c` is auto-discovered by the unit-test build and exercises
 the public `iPool` interface. The `#ifdef TEST` main at the end of `pool.c` is
@@ -82,5 +82,7 @@ separate implementation and remains covered by its own module work.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+LeakSanitizer cannot initialize in the current local workspace because of its
+ptrace restriction, so a current local ASan/UBSan+LSan integration pass cannot
+be claimed. The earlier untraced pass is historical campaign evidence recorded
+on 2026-08-08 and does not supersede the current focused-run limitation.

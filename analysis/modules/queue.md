@@ -24,7 +24,11 @@
 | `Finalize` | Capture the list allocator, finalize the list, then free the wrapper with that allocator. |
 | `GetData` | Return the owned underlying list for integration/advanced operations. |
 
-## Confirmed defects
+## Historical pre-fix defects (resolved)
+
+The Q1-Q3 findings below describe the pre-fix audit baseline. The current
+implementation status and dedicated suite below are authoritative for current
+behavior.
 
 ### Q1 - most entry points crash for a NULL queue (medium)
 
@@ -54,10 +58,12 @@ mutate or even finalize the list, so callers must treat the returned pointer as
 borrowed. That is an API hazard, not a source fix without a compatibility
 decision.
 
-## Existing coverage
+## Current coverage
 
-No source in `tests/` or `unittests/` calls `iQueue`. All behavior is currently
-covered, if at all, only indirectly through `iList` tests.
+`unittests/queue_test.c` is the dedicated queue suite. It directly exercises
+FIFO/copy behavior, clear/reuse, list views, allocator rollback/ownership,
+NULL handling, and randomized model sequences; list internals remain covered
+by the list unit.
 
 ## Required test matrix
 
@@ -105,5 +111,6 @@ before reporting allocations.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The final untraced integration run passed with ASan and UBSan. LeakSanitizer is
+unavailable in the current ptrace-restricted environment, so no leak-enabled
+pass is claimed here.

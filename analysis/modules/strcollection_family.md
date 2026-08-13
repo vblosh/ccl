@@ -18,10 +18,11 @@ header also declares an incompatible `WStringCompareFn` type. The generator
 depends on `CurrentAllocator`/`ContainerAllocator`, `iError`, `iVector`, `iMask`,
 `qsortEx`, stdio, and the line readers in `fgetline.c`.
 
-There is currently no dedicated string-collection unit test. The coverage
-manifest groups all three physical files under `strcollectiongen`, with the
-generator as the coverage source. This audit describes the implementation in
-the current shared worktree; none of these three production files was changed.
+`unittests/strcollection_family_test.c` is the dedicated family suite. The
+coverage manifest groups all three physical files under `strcollectiongen`,
+with the generator as the coverage source. This audit describes the
+implementation in the current shared worktree; none of these three production
+files was changed.
 
 The wrapper/template scheme has several maintainability hazards. The narrow
 wrapper's file banner incorrectly names `wstrcollection.c`; `STRSTR` is defined
@@ -208,7 +209,10 @@ pointer-free header for new output. If output format change is out of scope,
 at least reject impossible counts/lengths and all wide default persistence
 before allocation or partial output.
 
-## Confirmed correctness defects
+## Historical pre-fix correctness defects (resolved)
+
+SC1-SC26 below record the pre-fix audit baseline. The Repair status and
+dedicated family suite later in this document describe current behavior.
 
 ### SC1 - bulk add/append installs borrowed pointers and causes double frees (critical)
 
@@ -594,5 +598,6 @@ test builds, where it would abort before reaching the ownership check.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The final untraced integration run passed with ASan and UBSan. LeakSanitizer is
+unavailable in the current ptrace-restricted environment, so no leak-enabled
+pass is claimed here.

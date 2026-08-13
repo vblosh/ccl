@@ -20,7 +20,7 @@
 - For ordinary valid inputs, the invariant is a permutation of the original
   byte records ordered by the comparator, with the same thunk on every call.
 
-## Confirmed defect
+## Historical pre-fix defect (confirmed at the audit baseline)
 
 ### QR1 — the unnamespaced symbol conflicts with platform `qsort_r` ABIs
 (critical)
@@ -51,11 +51,13 @@ can truncate. These should be replaced with `size_t` and `uintptr_t` during
 the QR1 cleanup, but ordinary randomized inputs from 0-255 records, ascending/
 descending thunks, duplicates, and 13-byte records passed ASan/UBSan.
 
-## Existing coverage
+## Current coverage
 
-No source in the repository calls this function and no test references it.
-Consequently it contributes uncovered code while introducing a public symbol
-collision.
+The implementation is now the private `ccl_qsort_r` symbol. It is directly
+covered by `unittests/qsort_r_test.c`, auto-discovered by
+`unittests/CMakeLists.txt`; the suite also calls the native libc `qsort_r` ABI
+to prove the symbols do not collide. The former no-caller/no-test statement
+describes only the historical pre-fix baseline.
 
 ## Required test matrix
 
@@ -99,5 +101,5 @@ pseudomedian-of-nine, duplicate/equal-key partitioning, recursion/tail
 iteration, all required sizes, odd/aligned widths, full record permutation,
 descending thunks, and native libc ABI compatibility. Isolated GCC coverage is
 100.00% lines and 100.00% branch execution (98.72% of branches taken). The
-ASan+UBSan run with `ASAN_OPTIONS=detect_leaks=1` passes all three tests with no
-leaks.
+isolated ASan/UBSan run passes all three tests; LeakSanitizer cannot be
+validated in the current ptrace-restricted local environment.

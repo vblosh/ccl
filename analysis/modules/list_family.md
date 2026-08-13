@@ -69,7 +69,7 @@ use the corresponding negative container error. `Sort` returns 1 for zero/one
 element lists, negative error for NULL/read-only/allocation failure, and 1 after
 relinking a larger list.
 
-## Confirmed compatibility defects
+## Historical pre-fix compatibility defects (confirmed at the audit baseline)
 
 ### D1 - `PopFront` inserts instead of removing (critical)
 
@@ -279,5 +279,7 @@ and 74.27% branch in the local run, above the 80%/70% gate.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+LeakSanitizer cannot initialize in the current local workspace because of its
+ptrace restriction, so a current local ASan/UBSan+LSan integration pass cannot
+be claimed. The earlier untraced pass is historical campaign evidence recorded
+on 2026-08-08 and does not supersede the current focused-run limitation.

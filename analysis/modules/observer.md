@@ -26,7 +26,7 @@ nonzero operations for Subscribe; non-NULL object and nonzero operation for
 Notify. The vector must remain zero-filled outside active records. Failed
 subscription must not create a relationship or observably modify the subject.
 
-## Confirmed defects
+## Historical pre-fix defects (confirmed at the audit baseline)
 
 ### O1 — `Subscribe(NULL, ...)` dereferences NULL before validation (critical)
 
@@ -91,13 +91,15 @@ reports 93.67% line coverage and 90.00% taken-branch coverage for
 cannot initialize in this workspace because the host ptrace policy causes its
 fatal startup diagnostic.
 
-## Existing coverage
+## Current coverage
 
-Before the dedicated observer suite, the documentation included an example and
-many containers called `Notify`, but no test source directly asserted
-callbacks, filters, removal modes, growth, errors, or allocation behavior. The
-dedicated suite now provides that direct coverage; container-family suites also
-exercise observer integration independently.
+`unittests/observer_test.c` is the dedicated observer suite and is
+auto-discovered by `unittests/CMakeLists.txt`. It directly covers callbacks,
+filters, removal modes, growth/reuse, errors, allocation behavior, reentrant
+notification, and List integration; container-family suites also exercise
+observer integration independently. The normal CTest run passes
+`test_observer`. The preceding paragraph describes only the historical
+pre-suite baseline.
 
 ## Required test matrix
 
@@ -140,5 +142,7 @@ growth/OOM tests under ASan/UBSan before container integration tests.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+LeakSanitizer cannot initialize in the current local workspace because of its
+ptrace restriction, so a current local ASan/UBSan+LSan integration pass cannot
+be claimed. The earlier untraced pass is historical campaign evidence recorded
+on 2026-08-08 and does not supersede the current focused-run limitation.

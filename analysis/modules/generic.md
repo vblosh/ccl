@@ -26,7 +26,11 @@ each concrete entry in that prefix must have a function type compatible with
 the generic declaration. Iterator deletion additionally requires a reliable
 way to recover the owning concrete container.
 
-## Confirmed defects
+## Historical pre-fix defects
+
+The G1-G3 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The resolution and verification sections later in this
+document describe the current source and test state.
 
 ### G1 — `DeleteIterator` assumes an iterator layout contradicted by concrete
 iterators (critical)
@@ -79,11 +83,14 @@ NULL as BADARG consistently; do not attempt to dispatch it.
 The diagnostic typo `"iGneric.GetFlags"` is observable but cosmetic and is not
 counted as a behavioral defect.
 
-## Existing coverage
+## Historical coverage baseline and current coverage
 
-No current test references `iGeneric`. Existing container tests call concrete
-interfaces, so they neither validate vtable-prefix compatibility nor the
-iterator-owner assumption. Direct coverage is zero.
+Before the dedicated adapter suite, no test referenced `iGeneric`; existing
+container tests called only concrete interfaces and did not validate
+vtable-prefix compatibility or iterator ownership. The current
+`unittests/generic_test.c` is registered as `test_generic` and covers the
+protocol spy, supported concrete adapters, iterator ownership, callbacks,
+Save, and null handling.
 
 ## Required test matrix
 
@@ -150,8 +157,9 @@ reaches test completion but this runner's LeakSanitizer cannot suspend its
 process (it reports the environment's ptrace restriction), so leak reporting
 is unavailable here rather than being waived by a debugger/tracer.
 
-## Final integration verification
+## Current local integration verification
 
-The final untraced integration run passed this suite with ASan, UBSan, and
-LeakSanitizer enabled (`ASAN_OPTIONS=detect_leaks=1`). This supersedes the
-focused-run environment limitation above.
+The current unsanitized CTest run passes all 36 registered tests. The focused
+ASan/UBSan run reaches test completion with `detect_leaks=0`; LeakSanitizer
+cannot initialize in this ptrace-restricted workspace, so no local LSan pass is
+claimed.

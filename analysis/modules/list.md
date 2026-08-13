@@ -65,7 +65,7 @@ flags and byte values. It does not restore comparator, destructor, error
 callback, heap, derived vtable, or allocator. The format is ABI-dependent and
 has no version, endianness, or element-type identity.
 
-## Confirmed correctness defects and compatibility hazards
+## Historical pre-fix correctness defects and compatibility hazards
 
 ### L1 - `EraseAll` advances through a freed node (critical, ASan)
 
@@ -225,14 +225,17 @@ a `-Wall -Wextra` warning and fails a strict `-Werror` build. Normalize public
 status contracts while preserving intentionally query-like NULL behavior such
 as Sizeof(NULL).
 
-## Existing test status
+## Current coverage and test status
 
 `tests/test.c` has legacy list exercises for bulk values, ranges, rotations,
 copy/equality, persistence, and iteration, but they are not a focused CTest
-suite and many checks are print/manual. `unittests/list_family_test.c` reaches
-some generic delegates from typed wrappers and one generic persistence path;
-it does not own or cover standalone iList semantics. There is no
-`unittests/list_test.c`, despite a separate `list` coverage-manifest unit.
+suite and many checks are print/manual. The current tree also has dedicated
+`unittests/list_test.c` and `unittests/list_family_test.c` suites, both
+auto-discovered by `unittests/CMakeLists.txt`; the former owns standalone iList
+semantics and the latter covers typed delegates. The normal CTest run passes
+both `test_list` and `test_list_family`. Current GCC coverage for `src/list.c`
+is 82.08% lines and 70.56% branches; the former “no list_test.c” statement was
+the historical pre-fix baseline.
 
 ## Required ASan/UBSan and 80%/70% test matrix
 
@@ -264,6 +267,7 @@ it does not own or cover standalone iList semantics. There is no
     truncated GUID/header/elements, hostile count/width, callback failure,
     read-only serialized flags, and nontrivial-element rejection/documentation.
 11. Randomized operation sequences against a reference array, validating count,
-    order, First/Last, no cycles, and every node count after each step. Run the
-    dedicated suite with ASan+UBSan and GCC coverage until `src/list.c`
-    independently reaches at least 80% lines and 70% branches.
+    order, First/Last, no cycles, and every node count after each step. The
+    current dedicated suite records 82.08% lines and 70.56% branches for
+    `src/list.c`; retain ASan+UBSan regression coverage as the implementation
+    evolves.

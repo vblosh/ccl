@@ -28,7 +28,10 @@ and its final `{0, "Unknown error"}` record must remain the sentinel. A failed
 `AddError` must not link a partial node. `SetErrorFunction(NULL)` must not
 mutate the handler.
 
-## Confirmed defects
+## Historical pre-fix defects
+
+The E1-E2 findings below are the pre-fix audit baseline and are retained as
+historical evidence. The current direct test coverage is described below.
 
 ### E1 — Three live public error codes stringify as `"Unknown error"` (medium)
 
@@ -55,12 +58,14 @@ The fix should raise/return `CONTAINER_ERROR_BADARG` before allocating. A code
 policy check (for example requiring a user-code range) is not claimed because
 the header does not currently encode that policy.
 
-## Existing coverage
+## Historical coverage baseline and current coverage
 
-No current `tests/` or `unittests/` source calls `iError` directly. Other tests
-exercise the default handler incidentally, but do not assert message mapping,
-handler replacement, allocation failure, or registration precedence. Direct
-line and branch coverage for this unit is effectively absent.
+Before the dedicated suite, no test called `iError` directly; other tests only
+exercised the default handler incidentally and did not assert message mapping,
+handler replacement, allocation failure, or registration precedence. The current
+`unittests/error_test.c` is registered as `test_error` and directly covers those
+paths. The current coverage checker reports 100% line and branch coverage for
+`src/error.c`.
 
 ## Required test matrix
 

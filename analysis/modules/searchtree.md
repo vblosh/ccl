@@ -20,9 +20,12 @@
 | Node mechanics | node allocation, left/right insertion and destruction, AVL rotations, recursive insertion, iterative deletion/rebalancing. |
 | Public data operations | `Add`, extended `Insert`, `Erase`, `Find`/`Contains`, in-order `Apply`. |
 | Comparison/bulk | default byte comparator, structural `Equal`, ownership-transferring `Merge`. |
-| Iteration | `NewIterator` is a stub returning NULL; `DeleteIterator` returns success without work. |
+| Iteration | In-order iterator with mutation validation; replacement remains an explicitly unsupported operation. |
 
-## Confirmed defects
+## Historical pre-fix defects
+
+ST1-ST9 below describe the pre-fix audit baseline. The verification status and
+dedicated suite below are authoritative for current behavior.
 
 ### ST1 - default `Add` crashes on the second distinct element (critical)
 
@@ -84,13 +87,13 @@ here that is `node->data`. Client destructors consequently interpret internal
 pointers as their payload and can corrupt memory. Make every path call once on
 the value before freeing its node.
 
-### ST8 - iterator API is advertised but not implemented (medium)
+### ST8 - historical iterator stubs; replacement remains unsupported (medium)
 
-`NewIterator` always returns NULL, preventing traversal through the common
-iterator interface; `DeleteIterator` always returns 1. This is an explicit
-functional gap rather than sanitizer UB. Implement in-order iteration with
-mutation timestamp validation, or formally remove the interface in a separate
-breaking release. The compatibility-preserving choice is implementation.
+At the audit baseline `NewIterator` returned NULL and `DeleteIterator` did no
+work. The current `src/searchtree.c:671-720` implements allocated iterators,
+traversal, ownership, and mutation validation. `IteratorReplace` remains
+explicitly unsupported and returns `CONTAINER_ERROR_NOTIMPLEMENTED`
+(`src/searchtree.c:663-668`); retain that as the current limitation.
 
 ### ST9 - defensive semantics and readonly handling are inconsistent (medium)
 
@@ -101,14 +104,14 @@ and SetDestructor cannot clear an installed callback. Preserve established
 return values where documented, but reject bad inputs, enforce readonly, and
 make callback/timestamp behavior consistent with sibling containers.
 
-## Existing coverage
+## Current coverage (the following replaces the pre-fix baseline)
 
-`tests/test.c` has one legacy smoke function that installs a global double
-comparator, inserts ten ascending values, compares two trees, erases one value,
-and prints traversal. It is not a focused CTest suite, has no assertions for
-ordering/removal content, and bypasses ST1 by replacing the default comparator.
-There are no sanitizer, allocation-failure, clear-reuse, root-deletion, merge,
-destructor, invalid-input, or balancing-shape tests.
+The legacy `tests/test.c` smoke function remains, but
+`unittests/searchtree_test.c` is the active focused suite. It covers default
+and custom comparison, all AVL rotation directions, root/leaf/one-child/two-
+child erasure, randomized ordering, clear/reuse, equality, merge ownership and
+allocation failure, destructor payloads, iterator boundaries/invalidation,
+readonly handling, and zero-sized/null inputs.
 
 ## Required test matrix
 
@@ -143,15 +146,14 @@ branch coverage; the lifecycle/API matrix should exceed 80% line coverage.
 Run ASan/UBSan and leak checks, with a randomized differential oracle against
 a sorted unique array.
 
-## Compatibility-preserving handoff
+## Historical compatibility-preserving handoff
 
-Fix ST1-ST4 before expanding behavior: default use, root erasure, clear reuse,
-and merge are currently memory-unsafe. Add per-tree comparator state next, then
-correct empty equality/destructor arguments and implement traversal. Preserve
-copied-value ownership and AVL ordering, public signatures, and the existing
-`Insert` duplicate result convention. Treat any proposed change to `Contains`
-or Apply callback return semantics as a documented compatibility decision,
-not incidental cleanup.
+The repair order was ST1-ST4 first (default use, root erasure, clear reuse, and
+merge), followed by per-tree comparator state, empty equality/destructor
+arguments, and traversal. The current implementation has those repairs while
+preserving copied-value ownership, AVL ordering, public signatures, and the
+existing `Insert` duplicate result convention. Any future change to `Contains`
+or Apply callback return semantics remains a separate compatibility decision.
 
 ## Verification status (2026-08-08)
 
@@ -171,11 +173,12 @@ rotation directions, root/leaf/one-child/two-child erasure, randomized
 insert/erase ordering, clear/reuse, equality, merge ownership and allocation
 failure, destructor payloads, iterator boundaries/invalidation, readonly
 handling, and zero-sized/null inputs. The isolated GCC coverage run reports
-91.43% lines and 74.32% branches (thresholds: 80%/70%). Clang ASan/UBSan
+91.45% lines and 73.99% branches (thresholds: 80%/70%). Clang ASan/UBSan
 passes with leak detection disabled; this environment's LeakSanitizer cannot
 run under its ptrace policy (`detect_leaks=1` aborts before the suite starts).
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+The final untraced integration run passed with ASan and UBSan. LeakSanitizer is
+unavailable in the current ptrace-restricted environment, so no leak-enabled
+pass is claimed here.

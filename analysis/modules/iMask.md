@@ -26,7 +26,7 @@
 | `PopulationCount` | Count nonzero bytes. |
 | `Finalize` | Free with the allocator that created the object. |
 
-## Confirmed defects
+## Historical pre-fix defects (confirmed at the audit baseline)
 
 ### M1 — out-of-range `GetElement` reports an error and then reads out of bounds (critical)
 
@@ -70,11 +70,14 @@ initialization writes beyond the undersized allocation. Reject
 `n > SIZE_MAX - sizeof(Mask)` as an allocation failure/bad size before calling
 the allocator.
 
-## Existing coverage
+## Current coverage
 
-ValArray tests create and finalize masks and test selection, but there is no
-dedicated suite for mask logic, errors, allocator ownership, clearing, or
-failure branches. The existing tests do not expose M1-M5.
+`unittests/imask_test.c` is the dedicated mask suite and is auto-discovered by
+`unittests/CMakeLists.txt`. It covers creation/copying, bounds, clear/reuse,
+boolean operations, allocator ownership, allocation failures/overflow, NULL
+handling, and vector/string comparison reuse. The normal CTest run passes
+`test_imask`; the no-dedicated-suite statement above is historical pre-fix
+coverage information.
 
 ## Required test matrix
 
@@ -122,5 +125,7 @@ same ASan/UBSan run passes with leak checking disabled.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled. This supersedes the focused-run environment limitation above.
+LeakSanitizer cannot initialize in the current local workspace because of its
+ptrace restriction, so a current local ASan/UBSan+LSan integration pass cannot
+be claimed. The earlier untraced pass is historical campaign evidence recorded
+on 2026-08-08 and does not supersede the current focused-run limitation.

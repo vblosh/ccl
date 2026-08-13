@@ -53,7 +53,11 @@ Normal successful mutators generally return 1, empty/no-op operations often
 return 0, and errors are negative container codes. Several implementations do
 not currently preserve those conventions consistently.
 
-## Allocator, iterator, and persistence behavior
+## Historical pre-fix allocator, iterator, and persistence behavior
+
+The following implementation description records the pre-fix audit baseline;
+the current test status and historical defect resolutions below are the
+authoritative current summary.
 
 `CreateWithAllocator`, ordinary growth, `Copy`, `CopyTo`, heap iterators, and
 rotations normally use the vector's captured allocator. `Create`, `Init`,
@@ -75,7 +79,10 @@ custom callbacks may use `arg`. `Load` reconstructs with `CurrentAllocator`
 and restores only serialized element size, count, flags, and element bytes; it
 does not restore allocator, callbacks, comparator, destructor, or vtable.
 
-## Confirmed correctness defects and compatibility hazards
+## Historical pre-fix correctness defects and compatibility hazards (resolved)
+
+V1-V14 below record the pre-fix audit baseline. The implementation status and
+dedicated vector suite later in this document describe current behavior.
 
 ### V1 - `RemoveRange` frees addresses inside `contents` and corrupts byte
 offsets (critical, ASan)
@@ -237,14 +244,13 @@ Default scalar persistence is consequently only same-build raw-byte storage,
 not a portable format. Use a fixed-width versioned header with checked sizes,
 and require custom callbacks/type identifiers for nontrivial elements.
 
-## Existing test status
+## Current test status (the following replaces the pre-fix baseline)
 
-There is no dedicated vector source under `unittests/`. `tests/test.c` contains
-legacy create/add/insert/erase/pop/equality examples, and newer collection and
-dictionary suites use vectors indirectly, but none covers the public surface
-or the defects above. The coverage manifest declares a `vector` unit without
-an owning suite, so neither the 80% line nor 70% branch gate can currently be
-demonstrated.
+`unittests/vector_test.c` is the dedicated suite for the public vector surface;
+`tests/test.c` remains a legacy smoke source and collection/dictionary suites
+also exercise vectors indirectly. The focused suite covers the repaired range,
+capacity, append/aliasing, selection, masks, iterators, allocator, and
+persistence paths.
 
 ## Required ASan/UBSan and coverage test matrix
 
@@ -291,19 +297,19 @@ versioned scalar header rather than serializing the in-process `Vector`
 object.  Placement iterators no longer free caller-owned storage, and
 read-only vectors can be finalized safely.
 
-The standalone GCC coverage run reports 81.32% line coverage and 70.32%
-branch coverage for `src/vector.c`, meeting the requested gates.  The full
-CMake sanitizer run is pending completion of an unrelated in-progress
-`SuffixTree.c` edit in the shared worktree.
+The standalone GCC coverage run reports 80.96% line coverage and 69.35%
+branch coverage for `src/vector.c`; the branch gate therefore remains below
+the required 70% threshold. The focused ASan/UBSan run passes. LeakSanitizer
+is unavailable in the current ptrace-restricted environment, so no
+leak-enabled pass is claimed here.
 
 The vector suite now finalizes the intermediate `IndexIn` result before
-reusing its variable, eliminating the previously reported 96-byte leak.
-Direct `ASAN_OPTIONS=detect_leaks=1` reaches suite completion, but this
-environment's LeakSanitizer terminates afterward because ptrace is blocked;
-no leak report is emitted before that runtime limitation.
+reusing its variable. The direct sanitizer run reaches suite completion
+without ASan/UBSan reports; the environment's LeakSanitizer terminates
+afterward because ptrace is blocked, so no leak report is available.
 
 ## Final integration verification
 
-The final untraced integration run passed with ASan, UBSan, and LeakSanitizer
-enabled after correcting the test-owned `IndexIn` result cleanup. This
-supersedes the focused-run environment limitation above.
+The final untraced integration run passed with ASan and UBSan after correcting
+the test-owned `IndexIn` result cleanup. LeakSanitizer is unavailable in the
+current ptrace-restricted environment, so no leak-enabled pass is claimed here.

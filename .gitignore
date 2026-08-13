@@ -3,6 +3,8 @@
 dotest
 texdoc/ccl.aux
 texdoc/ccl.idx
+texdoc/ccl.ilg
+texdoc/ccl.ind
 texdoc/ccl.log
 texdoc/ccl.synctex.gz
 texdoc/ccl.tid

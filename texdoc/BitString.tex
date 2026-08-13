@@ -39,6 +39,8 @@ typedef struct tagBitStringInterface {
    int (*LessEqual)(BitString *bsl,BitString *bsr);
    BitString *(*Load)(FILE *stream, ReadFunction saveFn,void *arg);
    int (*Memset)(BitString *,size_t start,size_t stop,int newval);
+   BitString *(*Nand)(BitString *bsl,BitString *bsr);
+   int (*NandAssign)(BitString *bsl,BitString *bsr);
    Iterator *(*NewIterator)(BitString *);
    BitString *(*Not)(BitString *bsl);
    int (*NotAssign)(BitString *bsl);

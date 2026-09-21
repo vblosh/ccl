@@ -997,6 +997,375 @@ static int Finalize(Range *range)
     return FinalizeInternal(range);
 }
 
+/* Fluent RangeQuery facade.  The underlying Range API remains the source of
+ * truth for construction, lazy adaptors, terminals, and ownership. */
+#define RANGE_QUERY_INITIALIZED 1u
+#define RANGE_QUERY_FINALIZED   2u
+#define RANGE_QUERY_CONSUMED    4u
+#define RANGE_QUERY_SIGNATURE   0x52514C59u
+
+static RangeQuery *QueryWhere(RangeQuery *, RangePredicate, void *);
+static RangeQuery *QuerySelect(RangeQuery *, size_t, RangeTransformFunction,
+                               void *);
+static RangeQuery *QueryTake(RangeQuery *, size_t);
+static RangeQuery *QuerySkip(RangeQuery *, size_t);
+static RangeQuery *QueryTakeWhile(RangeQuery *, RangePredicate, void *);
+static RangeQuery *QuerySkipWhile(RangeQuery *, RangePredicate, void *);
+static RangeQuery *QueryConcat(RangeQuery *, RangeQuery *);
+static RangeQuery *QueryForEach(RangeQuery *, RangeVisitFunction, void *);
+static RangeQuery *QueryAggregate(RangeQuery *, void *, RangeFoldFunction,
+                                  void *);
+static RangeQuery *QueryFirst(RangeQuery *, RangePredicate, void *, void *);
+static RangeQuery *QueryAny(RangeQuery *, RangePredicate, void *);
+static RangeQuery *QueryAll(RangeQuery *, RangePredicate, void *);
+static RangeQuery *QueryCount(RangeQuery *, RangePredicate, void *, size_t *);
+static RangeQuery *QueryToVector(RangeQuery *, Vector **);
+static RangeQuery *QueryFinalize(RangeQuery *);
+
+static void QueryInstallMethods(RangeQuery *query)
+{
+    query->Where = QueryWhere;
+    query->Select = QuerySelect;
+    query->Take = QueryTake;
+    query->Skip = QuerySkip;
+    query->TakeWhile = QueryTakeWhile;
+    query->SkipWhile = QuerySkipWhile;
+    query->Concat = QueryConcat;
+    query->ForEach = QueryForEach;
+    query->Aggregate = QueryAggregate;
+    query->First = QueryFirst;
+    query->Any = QueryAny;
+    query->All = QueryAll;
+    query->Count = QueryCount;
+    query->ToVector = QueryToVector;
+    query->Finalize = QueryFinalize;
+}
+
+static RangeQuery *QueryRecord(RangeQuery *query, int status,
+                               const char *source)
+{
+    if (query == NULL)
+        return NULL;
+    query->LastResult = status;
+    if (status < 0 && query->Error >= 0) {
+        query->Error = status;
+        query->ErrorSource = source;
+    }
+    return query;
+}
+
+static RangeQuery *QueryReady(RangeQuery *query, const char *source)
+{
+    if (query == NULL)
+        return NULL;
+    if (query->Signature != RANGE_QUERY_SIGNATURE)
+        return QueryRecord(query, CONTAINER_ERROR_BADARG, source);
+    if (query->Error < 0)
+        return query;
+    if ((query->Flags & RANGE_QUERY_INITIALIZED) == 0 ||
+        (query->Flags & (RANGE_QUERY_FINALIZED | RANGE_QUERY_CONSUMED)) != 0 ||
+        query->Range == NULL)
+        return QueryRecord(query, CONTAINER_ERROR_BADARG, source);
+    return query;
+}
+
+static RangeQuery *QueryInitialize(RangeQuery *query, const char *source)
+{
+    if (query == NULL)
+        return NULL;
+    if (query->Signature == RANGE_QUERY_SIGNATURE &&
+        (query->Flags & RANGE_QUERY_INITIALIZED) != 0 &&
+        (query->Flags & RANGE_QUERY_FINALIZED) == 0)
+        return QueryRecord(query, CONTAINER_ERROR_BADARG, source);
+    memset(query, 0, sizeof(*query));
+    query->Signature = RANGE_QUERY_SIGNATURE;
+    query->Flags = RANGE_QUERY_INITIALIZED;
+    QueryInstallMethods(query);
+    return query;
+}
+
+static RangeQuery *QueryFromSequential(RangeQuery *query,
+                                       SequentialContainer *source)
+{
+    int status;
+
+    query = QueryInitialize(query, "iRangeQuery.FromSequential");
+    if (query == NULL || query->Error < 0)
+        return query;
+    status = iRange.FromSequential(source, &query->Range);
+    return QueryRecord(query, status, "iRangeQuery.FromSequential");
+}
+
+static RangeQuery *QueryFromSequentialWithAllocator(
+    RangeQuery *query, SequentialContainer *source,
+    const ContainerAllocator *allocator)
+{
+    int status;
+
+    query = QueryInitialize(query, "iRangeQuery.FromSequentialWithAllocator");
+    if (query == NULL || query->Error < 0)
+        return query;
+    status = iRange.FromSequentialWithAllocator(source, allocator,
+                                                &query->Range);
+    return QueryRecord(query, status,
+                       "iRangeQuery.FromSequentialWithAllocator");
+}
+
+static RangeQuery *QueryFromGeneric(RangeQuery *query, GenericContainer *source,
+                                     size_t elementSize)
+{
+    int status;
+
+    query = QueryInitialize(query, "iRangeQuery.FromGeneric");
+    if (query == NULL || query->Error < 0)
+        return query;
+    status = iRange.FromGeneric(source, elementSize, &query->Range);
+    return QueryRecord(query, status, "iRangeQuery.FromGeneric");
+}
+
+static RangeQuery *QueryFromGenericWithAllocator(
+    RangeQuery *query, GenericContainer *source, size_t elementSize,
+    const ContainerAllocator *allocator)
+{
+    int status;
+
+    query = QueryInitialize(query, "iRangeQuery.FromGenericWithAllocator");
+    if (query == NULL || query->Error < 0)
+        return query;
+    status = iRange.FromGenericWithAllocator(source, elementSize, allocator,
+                                             &query->Range);
+    return QueryRecord(query, status,
+                       "iRangeQuery.FromGenericWithAllocator");
+}
+
+static RangeQuery *QueryFromArray(RangeQuery *query, const void *data,
+                                  size_t count, size_t elementSize)
+{
+    int status;
+
+    query = QueryInitialize(query, "iRangeQuery.FromArray");
+    if (query == NULL || query->Error < 0)
+        return query;
+    status = iRange.FromArray(data, count, elementSize, &query->Range);
+    return QueryRecord(query, status, "iRangeQuery.FromArray");
+}
+
+static RangeQuery *QueryFromArrayWithAllocator(
+    RangeQuery *query, const void *data, size_t count, size_t elementSize,
+    const ContainerAllocator *allocator)
+{
+    int status;
+
+    query = QueryInitialize(query, "iRangeQuery.FromArrayWithAllocator");
+    if (query == NULL || query->Error < 0)
+        return query;
+    status = iRange.FromArrayWithAllocator(data, count, elementSize, allocator,
+                                           &query->Range);
+    return QueryRecord(query, status,
+                       "iRangeQuery.FromArrayWithAllocator");
+}
+
+static RangeQuery *QueryWhere(RangeQuery *query, RangePredicate predicate,
+                              void *arg)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.Where") == NULL ||
+        query->Error < 0)
+        return query;
+    status = iRange.Filter(&query->Range, predicate, arg);
+    return QueryRecord(query, status, "iRangeQuery.Where");
+}
+
+static RangeQuery *QuerySelect(RangeQuery *query, size_t outputElementSize,
+                               RangeTransformFunction transform, void *arg)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.Select") == NULL ||
+        query->Error < 0)
+        return query;
+    status = iRange.Transform(&query->Range, outputElementSize, transform,
+                              arg);
+    return QueryRecord(query, status, "iRangeQuery.Select");
+}
+
+static RangeQuery *QueryTake(RangeQuery *query, size_t count)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.Take") == NULL || query->Error < 0)
+        return query;
+    status = iRange.Take(&query->Range, count);
+    return QueryRecord(query, status, "iRangeQuery.Take");
+}
+
+static RangeQuery *QuerySkip(RangeQuery *query, size_t count)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.Skip") == NULL || query->Error < 0)
+        return query;
+    status = iRange.Drop(&query->Range, count);
+    return QueryRecord(query, status, "iRangeQuery.Skip");
+}
+
+static RangeQuery *QueryTakeWhile(RangeQuery *query, RangePredicate predicate,
+                                  void *arg)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.TakeWhile") == NULL ||
+        query->Error < 0)
+        return query;
+    status = iRange.TakeWhile(&query->Range, predicate, arg);
+    return QueryRecord(query, status, "iRangeQuery.TakeWhile");
+}
+
+static RangeQuery *QuerySkipWhile(RangeQuery *query, RangePredicate predicate,
+                                  void *arg)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.SkipWhile") == NULL ||
+        query->Error < 0)
+        return query;
+    status = iRange.DropWhile(&query->Range, predicate, arg);
+    return QueryRecord(query, status, "iRangeQuery.SkipWhile");
+}
+
+static RangeQuery *QueryConcat(RangeQuery *query, RangeQuery *other)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.Concat") == NULL ||
+        query->Error < 0)
+        return query;
+    if (other == NULL || other == query) {
+        return QueryRecord(query, CONTAINER_ERROR_BADARG,
+                           "iRangeQuery.Concat");
+    }
+    if (other->Signature != RANGE_QUERY_SIGNATURE)
+        return QueryRecord(query, CONTAINER_ERROR_BADARG,
+                           "iRangeQuery.Concat");
+    if (other->Error < 0)
+        return QueryRecord(query, other->Error,
+                           other->ErrorSource != NULL ? other->ErrorSource
+                                                       : "iRangeQuery.Concat");
+    if ((other->Flags & RANGE_QUERY_INITIALIZED) == 0 ||
+        (other->Flags & (RANGE_QUERY_FINALIZED | RANGE_QUERY_CONSUMED)) != 0 ||
+        other->Range == NULL)
+        return QueryRecord(query, CONTAINER_ERROR_BADARG,
+                           "iRangeQuery.Concat");
+    status = iRange.Concat(&query->Range, &other->Range);
+    QueryRecord(query, status, "iRangeQuery.Concat");
+    if (status > 0) {
+        other->Flags |= RANGE_QUERY_CONSUMED;
+        other->LastResult = status;
+    }
+    return query;
+}
+
+static RangeQuery *QueryForEach(RangeQuery *query, RangeVisitFunction function,
+                                void *arg)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.ForEach") == NULL ||
+        query->Error < 0)
+        return query;
+    status = iRange.ForEach(query->Range, function, arg);
+    return QueryRecord(query, status, "iRangeQuery.ForEach");
+}
+
+static RangeQuery *QueryAggregate(RangeQuery *query, void *accumulator,
+                                  RangeFoldFunction function, void *arg)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.Aggregate") == NULL ||
+        query->Error < 0)
+        return query;
+    status = iRange.Fold(query->Range, accumulator, function, arg);
+    return QueryRecord(query, status, "iRangeQuery.Aggregate");
+}
+
+static RangeQuery *QueryFirst(RangeQuery *query, RangePredicate predicate,
+                              void *arg, void *result)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.First") == NULL || query->Error < 0)
+        return query;
+    status = iRange.FindIf(query->Range, predicate, arg, result);
+    return QueryRecord(query, status, "iRangeQuery.First");
+}
+
+static RangeQuery *QueryAny(RangeQuery *query, RangePredicate predicate,
+                            void *arg)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.Any") == NULL || query->Error < 0)
+        return query;
+    status = iRange.AnyOf(query->Range, predicate, arg);
+    return QueryRecord(query, status, "iRangeQuery.Any");
+}
+
+static RangeQuery *QueryAll(RangeQuery *query, RangePredicate predicate,
+                            void *arg)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.All") == NULL || query->Error < 0)
+        return query;
+    status = iRange.AllOf(query->Range, predicate, arg);
+    return QueryRecord(query, status, "iRangeQuery.All");
+}
+
+static RangeQuery *QueryCount(RangeQuery *query, RangePredicate predicate,
+                              void *arg, size_t *result)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.Count") == NULL || query->Error < 0)
+        return query;
+    status = iRange.CountIf(query->Range, predicate, arg, result);
+    return QueryRecord(query, status, "iRangeQuery.Count");
+}
+
+static RangeQuery *QueryToVector(RangeQuery *query, Vector **result)
+{
+    int status;
+
+    if (QueryReady(query, "iRangeQuery.ToVector") == NULL ||
+        query->Error < 0)
+        return query;
+    status = iRange.ToVector(query->Range, result);
+    return QueryRecord(query, status, "iRangeQuery.ToVector");
+}
+
+static RangeQuery *QueryFinalize(RangeQuery *query)
+{
+    int status;
+
+    if (query == NULL)
+        return NULL;
+    if (query->Signature != RANGE_QUERY_SIGNATURE)
+        return query;
+    if ((query->Flags & RANGE_QUERY_FINALIZED) != 0)
+        return query;
+    if (query->Range != NULL) {
+        status = iRange.Finalize(query->Range);
+        QueryRecord(query, status, "iRangeQuery.Finalize");
+        if (status < 0)
+            return query;
+        query->Range = NULL;
+    }
+    query->Flags |= RANGE_QUERY_FINALIZED;
+    return query;
+}
+
 RangeInterface iRange = {
     FromSequential,
     FromSequentialWithAllocator,
@@ -1024,4 +1393,13 @@ RangeInterface iRange = {
     CountIf,
     ToVector,
     Finalize,
+};
+
+RangeQueryInterface iRangeQuery = {
+    QueryFromSequential,
+    QueryFromSequentialWithAllocator,
+    QueryFromGeneric,
+    QueryFromGenericWithAllocator,
+    QueryFromArray,
+    QueryFromArrayWithAllocator,
 };

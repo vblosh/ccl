@@ -141,6 +141,28 @@ Only the outermost range in a pipeline needs to be finalized.
 Range handles have unique ownership and should not be copied; after an adaptor
 succeeds, any previously retained alias refers to an owned inner recipe node.
 
+For a chainable form, use the caller-owned `RangeQuery` facade. It stores the
+range and the first error, and every method returns the same query pointer. A
+failed call makes later calls no-ops; inspect `Error` and `ErrorSource` after
+the final operation.
+
+```c
+RangeQuery query = {0};
+Vector *result = NULL;
+
+iRangeQuery.FromArray(&query, values, 6, sizeof(int))
+    ->Where(&query, is_even, NULL)
+    ->Select(&query, sizeof(int), square, NULL)
+    ->Take(&query, 2)
+    ->ToVector(&query, &result);
+
+if (query.Error < 0)
+    fprintf(stderr, "%s: %d\n", query.ErrorSource, query.Error);
+if (result != NULL)
+    iVector.Finalize(result);
+query.Finalize(&query);
+```
+
 ### ValArray examples
 
 ValArrays provide type-specific numeric containers. Include `valarray.h` and

@@ -756,6 +756,71 @@ cleanup:
     return -1;
 }
 
+static int test_fluent_query(void)
+{
+    int values[] = {1, 2, 3, 4, 5, 6, 7, 8};
+    RangeQuery query = {0};
+    RangeQuery invalid = {0};
+    RangeQuery terminal = {0};
+    Vector *vector = NULL;
+    Vector *sentinel = (Vector *)(uintptr_t)1;
+    RangeQuery *current;
+
+    current = iRangeQuery.FromArray(&query, values, 8, sizeof(int));
+    TEST_REQUIRE(current == &query && current->Error == 0);
+    current = current->Where(current, is_even, NULL);
+    TEST_REQUIRE(current == &query && current->Error == 0);
+    current = current->Select(current, sizeof(int), square, NULL);
+    current = current->Skip(current, 1);
+    current = current->Take(current, 2);
+    current = current->ToVector(current, &vector);
+    TEST_REQUIRE(current == &query && query.Error == 0 &&
+                 query.ErrorSource == NULL && query.LastResult == 1);
+    TEST_REQUIRE(vector != NULL && iVector.Size(vector) == 2);
+    TEST_REQUIRE(*(const int *)iVector.GetElement(vector, 0) == 16 &&
+                 *(const int *)iVector.GetElement(vector, 1) == 36);
+    iVector.Finalize(vector);
+    vector = NULL;
+    TEST_REQUIRE(query.Finalize(&query) == &query && query.Range == NULL);
+    TEST_REQUIRE(query.Finalize(&query) == &query);
+
+    current = iRangeQuery.FromArray(&invalid, values, 2, 0);
+    TEST_REQUIRE(current == &invalid && invalid.Error < 0 &&
+                 strcmp(invalid.ErrorSource, "iRangeQuery.FromArray") == 0);
+    current = current->Where(current, is_even, NULL);
+    TEST_REQUIRE(current == &invalid && invalid.LastResult < 0 &&
+                 strcmp(invalid.ErrorSource, "iRangeQuery.FromArray") == 0);
+    current = current->ToVector(current, &sentinel);
+    TEST_REQUIRE(current == &invalid && sentinel == (Vector *)(uintptr_t)1);
+    TEST_REQUIRE(invalid.Finalize(&invalid) == &invalid);
+
+    current = iRangeQuery.FromArray(&invalid, values, 2, sizeof(int));
+    TEST_REQUIRE(current == &invalid && invalid.Error == 0);
+    current = current->Where(current, NULL, NULL);
+    TEST_REQUIRE(invalid.Error == CONTAINER_ERROR_BADARG &&
+                 strcmp(invalid.ErrorSource, "iRangeQuery.Where") == 0);
+    current = current->Take(current, 1);
+    TEST_REQUIRE(current == &invalid && invalid.LastResult ==
+                 CONTAINER_ERROR_BADARG);
+    current->Finalize(current);
+
+    current = iRangeQuery.FromArray(&terminal, values, 2, sizeof(int));
+    current = current->Select(current, sizeof(int), zero_transform, NULL);
+    current = current->ToVector(current, &vector);
+    TEST_REQUIRE(current == &terminal && vector == NULL &&
+                 terminal.Error == CONTAINER_ERROR_WRONGELEMENT &&
+                 strcmp(terminal.ErrorSource, "iRangeQuery.ToVector") == 0);
+    terminal.Finalize(&terminal);
+    return 0;
+
+cleanup:
+    if (vector) iVector.Finalize(vector);
+    query.Finalize(&query);
+    invalid.Finalize(&invalid);
+    terminal.Finalize(&terminal);
+    return -1;
+}
+
 static const TestCase tests[] = {
     {"lazy pipeline and reuse", test_lazy_pipeline_and_reuse},
     {"while, concat, and terminals", test_while_concat_and_terminals},
@@ -765,6 +830,7 @@ static const TestCase tests[] = {
     {"callback and transaction errors", test_callback_and_transaction_errors},
     {"allocator failures and empty range", test_allocator_failures_and_empty_range},
     {"bad arguments", test_bad_arguments},
+    {"fluent query", test_fluent_query},
 };
 
 const TestSuite *ccl_get_test_suite(void)

@@ -1,92 +1,115 @@
-# `range.c` audit
+# Fluent range interface
 
-## Scope and representation
+## Purpose
 
-- Physical source: `src/range.c`; public interface: `include/range.h` through
-  `iRange`.
-- The implementation is a lazily evaluated view graph. Each opened cursor is
-  single-pass, while the range itself can open fresh cursors and be reused.
-  Source nodes borrow a generic container or array; adaptor nodes own their
-  child range handles but do not copy source elements.
-- A range handle has unique ownership. Successful unary adaptors replace the
-  caller's handle and mark the wrapped node as having a parent. Successful
-  `Concat` consumes both top-level handles, publishes the combined handle in
-  `*left`, and sets `*right` to `NULL`.
-- Each `Open` builds an independent cursor tree. Transform cursors own one
-  output buffer, so the returned element remains valid only until the next
-  `Next` call or cursor deletion.
+`src/range.c` provides the original `iRange` interface: source constructors
+return status codes, adaptors mutate a `Range **`, and terminals return their
+individual result. The original API remains available. The fluent facade adds
+a caller-owned `RangeQuery` object whose methods return the same object, so a
+pipeline can be built in a C#-style sequence while remaining valid C.
 
-## Public behavior
+The facade is intentionally thin. It stores the current lazy `Range *` and
+delegates construction, cursor evaluation, allocator handling, and recursive
+finalization to `iRange`.
 
-| Area | Operations and contract |
-| --- | --- |
-| Sources | `FromSequential`, `FromGeneric`, and `FromArray`, plus allocator-aware variants. Sequential sources obtain their fixed element size through `iSequentialContainer.GetElementSize`. |
-| Lazy adaptors | `Filter`, `Transform`, `Take`, `Drop`, `TakeWhile`, `DropWhile`, and `Concat`. Construction is transactional: failure leaves input handles unchanged. |
-| Cursor lifecycle | `Open`, `Next`, and `DeleteCursor`. `Next` returns 1 for an element, 0 at end, or a negative `CONTAINER_ERROR_*`; errors are sticky. |
-| Metadata | `GetElementSize` and recursively applied `SetErrorFunction`. |
-| Terminals | `ForEach`, `Fold`, `FindIf`, `AnyOf`, `AllOf`, `CountIf`, and `ToVector`; each opens and closes its own cursor and leaves the range reusable. |
-| Lifetime | `Finalize` recursively releases the owned range graph using the allocator captured by each node. Borrowed container/array storage is never released. |
+## Public shape
 
-Predicates return positive for true, zero for false, and negative for an error.
-Transform and fold callbacks must return positive on success; zero is converted
-to `CONTAINER_ERROR_WRONGELEMENT`. A visitor may return zero to stop `ForEach`
-normally. Empty ranges therefore produce `AnyOf == 0`, `AllOf == 1`, and a
-successful empty vector from `ToVector`.
+`include/range.h` declares:
 
-## Invariants and edge cases
+- `RangeQuery`, containing `Range *Range`, `int Error`,
+  `const char *ErrorSource`, `int LastResult`, and the fluent method pointers;
+- `RangeQueryInterface iRangeQuery`, containing source constructors;
+- source methods `FromArray`, `FromSequential`, `FromGeneric`, and all
+  allocator-aware variants;
+- fluent adaptors `Where`, `Select`, `Take`, `Skip`, `TakeWhile`, `SkipWhile`,
+  and `Concat`;
+- fluent terminals `ForEach`, `Aggregate`, `First`, `Any`, `All`, `Count`, and
+  `ToVector`, plus `Finalize`.
 
-1. Borrowed sources must outlive the range and every open cursor. The array
-   source cannot detect changes to its storage.
-2. Generic cursors snapshot the source size and use the source iterator's
-   mutation checks. Early exhaustion, excess elements, or a changed size is
-   reported as `CONTAINER_ERROR_OBJECT_CHANGED` and remains sticky.
-3. Only a top-level handle (`Parent == NULL`) may be adapted, opened, or
-   finalized. Retained aliases of a consumed inner node are invalid.
-4. `Concat` requires equal element sizes. Its children may use different
-   allocators; each child cursor and range node is still released through its
-   own captured allocator.
-5. `FromArray` rejects zero element size, nonempty NULL data, and overflowing
-   `count * elementSize`. `FromGeneric` may use element size zero for an opaque
-   traversal, but copying terminals such as `FindIf` and `ToVector` reject it
-   as incompatible.
-6. Allocator-aware creation requires all four allocator callbacks. All range,
-   cursor, transform-buffer, and `ToVector` allocations retain that ownership.
-7. Terminal functions close cursor trees on normal completion, callback stop,
-   source errors, and allocation failures. `ToVector` also finalizes a partial
-   result before returning an error.
+The query storage belongs to the caller. A source constructor initializes all
+query state; it must not be copied while it owns a range and it must be
+finalized before being initialized again.
 
-No source defect was reproduced in the 2026-08-13 recheck. The principal API
-hazards are contractual: source lifetime is borrowed, array mutation is not
-observable, and range handles must not be aliased after an adaptor consumes
-them.
+```c
+RangeQuery query = {0};
+Vector *result = NULL;
 
-## Test coverage
+iRangeQuery.FromArray(&query, values, count, sizeof(int))
+    ->Where(&query, is_even, NULL)
+    ->Select(&query, sizeof(int), square, NULL)
+    ->Skip(&query, 1)
+    ->Take(&query, 10)
+    ->ToVector(&query, &result);
 
-`unittests/range_test.c` registers eight focused cases covering:
+if (query.Error < 0)
+    fprintf(stderr, "%s: %d\n", query.ErrorSource, query.Error);
 
-- reusable filter/transform/take/drop pipelines;
-- while adaptors, concatenation, and every terminal algorithm;
-- array, sequential, and generic-protocol sources;
-- source mutation and malformed iterator protocols;
-- custom allocators and deterministic allocation failures;
-- callback errors, sticky cursor failures, and transactional adaptor failure;
-- empty-range identities, invalid arguments, overflow, and opaque generic
-  element sizes.
-
-The 2026-08-13 GCC/gcov run reports 502/574 executable lines (87.46%) and
-295/388 taken branches (76.03%), passing the 80%/70% gates. The suite passes
-under AddressSanitizer and UndefinedBehaviorSanitizer with leak detection
-disabled. LeakSanitizer itself cannot initialize in the current
-ptrace-restricted environment, so no current LSan pass is claimed.
-
-## Reproduction
-
-```text
-cmake -S . -B <build> -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
-cmake --build <build> --target test_range
-ctest --test-dir <build> -R '^test_range$' --output-on-failure
+if (result != NULL)
+    iVector.Finalize(result);
+query.Finalize(&query);
 ```
 
-For sanitizer verification use a separate build with
-`-DCCL_ENABLE_SANITIZERS=ON`. For coverage use a GCC build with
-`-DCCL_ENABLE_COVERAGE=ON` and run `coverage-range` or `coverage-check`.
+C function pointers do not have an implicit receiver, so each method receives
+the query pointer explicitly. The return value is always that same pointer;
+the calls can therefore also be written as separate statements without
+checking an intermediate status.
+
+## State and error contract
+
+`Error` starts at zero. Every source, adaptor, and terminal stores its
+underlying return value in `LastResult`. A negative result stores the first
+negative value in `Error` and the public fluent operation name in `ErrorSource`.
+The first error is never replaced.
+
+Every method except `Finalize` begins by checking `Error`. Once it is negative,
+the method returns immediately, performs no allocation, callback, or output
+write, and leaves the existing diagnostic unchanged. A successful terminal may
+return zero (`First` when no element matches, `Any` on an empty range, or `All`
+on a nonmatching element); zero is a successful `LastResult`, not a query
+error.
+
+The source of a callback, cursor, or allocation failure is the fluent terminal
+that observed it, for example `iRangeQuery.ToVector`. The facade does not
+retain an internal cursor-stage stack. The underlying `iRange` error handler
+still receives the original low-level operation notification.
+
+`Finalize` always runs even when `Error` is negative. It releases the owned
+outer range once, marks the query finalized, and is safe to call repeatedly.
+After successful `Concat`, the right query is marked consumed, its range is
+owned by the left query, and it can only be finalized or reinitialized after
+finalization. Failed concatenation leaves both query graphs unchanged.
+
+## Ownership and evaluation
+
+The facade preserves the existing range rules:
+
+1. Source containers, arrays, and callback arguments are borrowed and must
+   outlive every terminal evaluation and open cursor.
+2. Adaptors are lazy. A pipeline can be evaluated repeatedly while its source
+   remains valid; each terminal opens and closes its own cursor.
+3. The range allocator captured by the source owns every adaptor, cursor,
+   transform buffer, and vector produced by `ToVector`.
+4. `Select` may change the element size. `First` and `ToVector` reject an
+   opaque generic source whose element size is zero, matching `iRange`.
+5. A query cannot be adapted while its range is consumed, finalized, or owned
+   by another query.
+
+## Implementation mapping
+
+| Fluent method | Existing operation |
+| --- | --- |
+| `Where` / `SkipWhile` / `TakeWhile` | `Filter` / `DropWhile` / `TakeWhile` |
+| `Select` / `Skip` | `Transform` / `Drop` |
+| `Take` / `Concat` | `Take` / `Concat` |
+| `ForEach` / `Aggregate` | `ForEach` / `Fold` |
+| `First` / `Any` / `All` / `Count` | `FindIf` / `AnyOf` / `AllOf` / `CountIf` |
+| `ToVector` / `Finalize` | `ToVector` / `Finalize` |
+
+## Verification
+
+`unittests/range_test.c` retains the existing direct-interface coverage and
+adds fluent coverage for adaptor chains, same-object returns, independent
+query state, first-error preservation, skipped calls and unchanged output
+sentinels, type-changing `Select`, terminal error sources, and repeated
+finalization. Build and run `test_range` together with the existing CTest
+suite; sanitizer builds should continue to exercise the same ownership paths.

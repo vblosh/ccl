@@ -9,6 +9,7 @@ extern "C" {
 
 typedef struct Range Range;
 typedef struct RangeCursor RangeCursor;
+typedef struct RangeQuery RangeQuery;
 
 /* Predicates return a positive value for true, zero for false, or a
  * negative CONTAINER_ERROR_* value.  Negative callback results are propagated
@@ -27,6 +28,55 @@ typedef int (*RangeFoldFunction)(void *accumulator, const void *element,
 /* Visitors return a positive value to continue, zero to stop normally, or a
  * negative CONTAINER_ERROR_* value. */
 typedef int (*RangeVisitFunction)(const void *element, void *arg);
+
+/*
+ * A RangeQuery is a caller-owned fluent facade over Range.  Query methods
+ * return their receiver so calls can be chained.  Error is sticky: after the
+ * first negative result, later methods return the receiver without doing
+ * work.  ErrorSource names the fluent operation that recorded Error.
+ *
+ * The method pointers are initialized by an iRangeQuery source constructor.
+ * A source constructor initializes all query state. A query must not be copied
+ * while it owns a range, and must be finalized before it is initialized again.
+ */
+struct RangeQuery {
+    unsigned int Signature;
+    Range *Range;
+    int Error;
+    const char *ErrorSource;
+    int LastResult;
+    unsigned int Flags;
+
+    RangeQuery *(*Where)(RangeQuery *, RangePredicate, void *);
+    RangeQuery *(*Select)(RangeQuery *, size_t, RangeTransformFunction, void *);
+    RangeQuery *(*Take)(RangeQuery *, size_t);
+    RangeQuery *(*Skip)(RangeQuery *, size_t);
+    RangeQuery *(*TakeWhile)(RangeQuery *, RangePredicate, void *);
+    RangeQuery *(*SkipWhile)(RangeQuery *, RangePredicate, void *);
+    RangeQuery *(*Concat)(RangeQuery *, RangeQuery *);
+
+    RangeQuery *(*ForEach)(RangeQuery *, RangeVisitFunction, void *);
+    RangeQuery *(*Aggregate)(RangeQuery *, void *, RangeFoldFunction, void *);
+    RangeQuery *(*First)(RangeQuery *, RangePredicate, void *, void *);
+    RangeQuery *(*Any)(RangeQuery *, RangePredicate, void *);
+    RangeQuery *(*All)(RangeQuery *, RangePredicate, void *);
+    RangeQuery *(*Count)(RangeQuery *, RangePredicate, void *, size_t *);
+    RangeQuery *(*ToVector)(RangeQuery *, Vector **);
+    RangeQuery *(*Finalize)(RangeQuery *);
+};
+
+typedef struct tagRangeQueryInterface {
+    RangeQuery *(*FromSequential)(RangeQuery *, SequentialContainer *);
+    RangeQuery *(*FromSequentialWithAllocator)(
+        RangeQuery *, SequentialContainer *, const ContainerAllocator *);
+    RangeQuery *(*FromGeneric)(RangeQuery *, GenericContainer *, size_t);
+    RangeQuery *(*FromGenericWithAllocator)(
+        RangeQuery *, GenericContainer *, size_t, const ContainerAllocator *);
+    RangeQuery *(*FromArray)(RangeQuery *, const void *, size_t, size_t);
+    RangeQuery *(*FromArrayWithAllocator)(
+        RangeQuery *, const void *, size_t, size_t,
+        const ContainerAllocator *);
+} RangeQueryInterface;
 
 typedef struct tagRangeInterface {
     /* Sources borrow their container or array storage.  Result is set to NULL
@@ -94,6 +144,7 @@ typedef struct tagRangeInterface {
 } RangeInterface;
 
 extern RangeInterface iRange;
+extern RangeQueryInterface iRangeQuery;
 
 #ifdef __cplusplus
 }

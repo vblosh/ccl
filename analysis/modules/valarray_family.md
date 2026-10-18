@@ -57,6 +57,18 @@ The unused `siz` assignment in `Compare` was removed.  This keeps all nine
 generator instantiations clean under GCC `-Wall -Werror` without changing the
 public interface or comparison result.
 
+`CopyElement` previously used `idx *= AL->Slice->start + idx * AL->Slice->increment;`
+when a slice was active, multiplying the index rather than computing the sliced
+position; it now assigns `idx = AL->Slice->start + idx * AL->Slice->increment;`.
+
+`FCompare` previously rejected `bytearray == NULL` immediately with a memory
+error, preventing automatic mask allocation and making the allocation branch dead
+code. It now checks `bytearray == NULL || bytearray->length < left_len`, creates
+the mask via `iMask.Create`, and finalizes any undersized existing mask.
+
+`IndexIn` now increments `result->timestamp++` for each copied element so that
+container mutations are tracked for active iterators.
+
 The pre-existing ValArray analysis documents remain in `analysis/` and are
 preserved.  This report records only the generator-family inventory and the
 defect/test evidence for this ownership pass.

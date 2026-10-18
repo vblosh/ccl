@@ -411,7 +411,6 @@ static List    *Copy(const List * l)
     while (elem) {
         newElem = NewLink(result, elem->Data, "iList.Copy");
         if (newElem == NULL) {
-            l->RaiseError("iList.Copy", CONTAINER_ERROR_NOMEMORY);
             ClearListNodes(result);
             (void)UnregisterListHeader(result);
             result->Allocator->free(result);
@@ -845,7 +844,6 @@ static int InsertIn(List * l, size_t idx, List * newData)
                 FreeListNode(l, insertedFirst);
                 insertedFirst = next;
             }
-            l->RaiseError("iList.InsertIn", CONTAINER_ERROR_NOMEMORY);
             return CONTAINER_ERROR_NOMEMORY;
         }
         if (insertedLast)
@@ -904,11 +902,13 @@ static int InsertAt(List * l, size_t pos, const void *pdata)
         return ErrorReadOnly(l, "InsertAt");
     }
     if (pos == l->count) {
-        return Add_nd(l, pdata);
+        int r = Add_nd(l, pdata);
+        if (r > 0 && (l->Flags & CONTAINER_HAS_OBSERVER))
+            iObserver.Notify(l, CCL_INSERT_AT, pdata, (void *) originalPos);
+        return r;
     }
-    elem = NewLink(l, pdata, "iList. InsertAt");
+    elem = NewLink(l, pdata, "iList.InsertAt");
     if (elem == NULL) {
-        l->RaiseError("iList.InsertAt", CONTAINER_ERROR_NOMEMORY);
         return CONTAINER_ERROR_NOMEMORY;
     }
     if (pos == 0) {
@@ -987,7 +987,6 @@ static int EraseInternal(List * l, const void *elem, int all)
         rvp = next;
         if (l->count == 0)
             l->First = l->Last = NULL;
-        position++;
     }
     return result;
 }
@@ -1173,6 +1172,10 @@ static int AddRange(List * AL, size_t n, const void *data)
         AL->RaiseError("iList.AddRange", CONTAINER_ERROR_BADARG);
         return CONTAINER_ERROR_BADARG;
     }
+    if (n > SIZE_MAX - AL->count) {
+        AL->RaiseError("iList.AddRange", CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
+    }
     original_n = n;
     oldFirst = AL->First;
     p = (const unsigned char *)data;
@@ -1182,10 +1185,10 @@ static int AddRange(List * AL, size_t n, const void *data)
     while (n > 0) {
         int             r = Add_nd(AL, p);
         if (r < 0) {
-            ListElement *removed = oldLast ? oldLast->Next : oldFirst;
+            ListElement *removed = oldLast ? oldLast->Next : AL->First;
             while (removed) {
                 ListElement *tmp = removed->Next;
-                DestroyListNode(AL, removed);
+                FreeListNode(AL, removed);
                 removed = tmp;
             }
             AL->First = oldFirst;

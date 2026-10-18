@@ -57,6 +57,12 @@ static int test_lifetime_and_sequence(void)
     TEST_REQUIRE(iBitString.InsertAt(bits, 1, 1) == 65);
     TEST_REQUIRE(iBitString.EraseAt(bits, 1) == 1);
     TEST_REQUIRE(iBitString.Clear(bits) == 1 && iBitString.Size(bits) == 0);
+    {
+        BitString stack_bs;
+        TEST_REQUIRE(iBitString.Init(&stack_bs, 64) == &stack_bs);
+        TEST_REQUIRE(iBitString.Add(&stack_bs, 1) == 1);
+        TEST_REQUIRE(iBitString.Finalize(&stack_bs) == 1);
+    }
     result = 0;
 
 cleanup:
@@ -391,7 +397,7 @@ static int test_edge_and_error_paths(void)
     TEST_REQUIRE(iterator->GetPosition(iterator) == 0);
     TEST_REQUIRE(iterator->Seek(iterator, 0) != NULL);
     TEST_REQUIRE(iterator->Replace(iterator, &replacement, 0) == 1);
-    TEST_REQUIRE(iterator->GetNext(iterator) == NULL);
+    TEST_REQUIRE(iterator->GetNext(iterator) != NULL);
     iBitString.DeleteIterator(iterator); iterator = NULL;
     iBitString.Finalize(other); other = NULL;
     result = 0;

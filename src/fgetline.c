@@ -95,7 +95,8 @@ static int GetDelim(char **LinePointer, int *n, int delimiter, FILE *stream, Con
 NoMem:
 			mm->free(*LinePointer);
 			*LinePointer = NULL;
-			iError.RaiseError("Getline",CONTAINER_ERROR_NOMEMORY);
+			*n = 0;
+			iError.RaiseError("GetLine",CONTAINER_ERROR_NOMEMORY);
 			return CONTAINER_ERROR_NOMEMORY;
 		}
 		p = newp + d;
@@ -173,7 +174,8 @@ static int WGetDelim(wchar_t **LinePointer, int *n, wint_t delimiter, FILE *stre
 		NoMem:
 			mm->free(*LinePointer);
 			*LinePointer = NULL;
-			iError.RaiseError("Getline",CONTAINER_ERROR_NOMEMORY);
+			*n = 0;
+			iError.RaiseError("WGetLine",CONTAINER_ERROR_NOMEMORY);
 			return CONTAINER_ERROR_NOMEMORY;
 		}
 		p = newp + d;
@@ -194,7 +196,7 @@ int main(void)
 {
 	char *buf=NULL;
 	int n=0;
-	int r = GetLine(&buf,&n,stdin);
+	int r = GetLine(&buf,&n,stdin,CurrentAllocator);
 	printf("'%s'\n",buf);
 }
 #endif

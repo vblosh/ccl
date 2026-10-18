@@ -422,7 +422,7 @@ static int test_allocation_failures(void)
 	state.fail_at = 2;
 	TEST_REQUIRE(GetLine(&line, &capacity, stream, &allocator) ==
 				CONTAINER_ERROR_NOMEMORY);
-	TEST_REQUIRE(line == NULL);
+	TEST_REQUIRE(line == NULL && capacity == 0);
 	TEST_REQUIRE(state.realloc_calls == 2 && state.free_calls == 1);
 	fclose(stream);
 	stream = tmpfile();
@@ -437,7 +437,7 @@ static int test_allocation_failures(void)
 	state.fail_at = 2;
 	TEST_REQUIRE(GetLine(&line, &capacity, stream, &allocator) ==
 				CONTAINER_ERROR_NOMEMORY);
-	TEST_REQUIRE(line == NULL);
+	TEST_REQUIRE(line == NULL && capacity == 0);
 	TEST_REQUIRE(state.realloc_calls == 2 && state.free_calls == 1);
 	result = 0;
 
@@ -481,7 +481,7 @@ static int test_wide_allocation_failures(void)
 	state.fail_at = 2;
 	TEST_REQUIRE(WGetLine(&line, &capacity, stream, &allocator) ==
 				CONTAINER_ERROR_NOMEMORY);
-	TEST_REQUIRE(line == NULL);
+	TEST_REQUIRE(line == NULL && capacity == 0);
 	TEST_REQUIRE(state.realloc_calls == 2 && state.free_calls == 1);
 	fclose(stream);
 	stream = tmpfile();
@@ -497,7 +497,7 @@ static int test_wide_allocation_failures(void)
 	state.fail_at = 2;
 	TEST_REQUIRE(WGetLine(&line, &capacity, stream, &allocator) ==
 				CONTAINER_ERROR_NOMEMORY);
-	TEST_REQUIRE(line == NULL);
+	TEST_REQUIRE(line == NULL && capacity == 0);
 	TEST_REQUIRE(state.realloc_calls == 2 && state.free_calls == 1);
 	result = 0;
 

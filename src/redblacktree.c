@@ -290,6 +290,43 @@ static RedBlackTreeNode *minimum_node(RedBlackTreeNode *node)
     return node;
 }
 
+static RedBlackTreeNode *maximum_node(RedBlackTreeNode *node)
+{
+    while (node != NULL && node->right != NULL)
+        node = node->right;
+    return node;
+}
+
+static RedBlackTreeNode *next_node(RedBlackTreeNode *node)
+{
+    RedBlackTreeNode *parent;
+    if (node == NULL)
+        return NULL;
+    if (node->right != NULL)
+        return minimum_node(node->right);
+    parent = node->parent;
+    while (parent != NULL && node == parent->right) {
+        node = parent;
+        parent = parent->parent;
+    }
+    return parent;
+}
+
+static RedBlackTreeNode *prev_node(RedBlackTreeNode *node)
+{
+    RedBlackTreeNode *parent;
+    if (node == NULL)
+        return NULL;
+    if (node->left != NULL)
+        return maximum_node(node->left);
+    parent = node->parent;
+    while (parent != NULL && node == parent->left) {
+        node = parent;
+        parent = parent->parent;
+    }
+    return parent;
+}
+
 /* x may be NULL; parent is therefore passed separately. */
 static void delete_fixup(RedBlackTree *tree, RedBlackTreeNode *x,
                          RedBlackTreeNode *parent)
@@ -383,7 +420,8 @@ static RedBlackTree *Create(size_t element_size, size_t key_size)
 {
     RedBlackTree *tree;
     if (element_size == 0 || key_size == 0 ||
-        key_size > SIZE_MAX - offsetof(RedBlackTreeNode, key))
+        key_size > SIZE_MAX - offsetof(RedBlackTreeNode, key) ||
+        CurrentAllocator == NULL || CurrentAllocator->malloc == NULL)
         return NULL;
     tree = CurrentAllocator->malloc(sizeof(*tree));
     if (tree == NULL)
@@ -590,8 +628,12 @@ static size_t Sizeof(RedBlackTree *tree)
     size_t per_node;
     if (tree == NULL)
         return sizeof(RedBlackTree);
-    per_node = offsetof(RedBlackTreeNode, key) + tree->KeySize +
-               tree->ElementSize;
+    if (tree->KeySize > SIZE_MAX - offsetof(RedBlackTreeNode, key))
+        return SIZE_MAX;
+    per_node = offsetof(RedBlackTreeNode, key) + tree->KeySize;
+    if (tree->ElementSize > SIZE_MAX - per_node)
+        return SIZE_MAX;
+    per_node += tree->ElementSize;
     if (tree->count > (SIZE_MAX - sizeof(*tree)) / per_node)
         return SIZE_MAX;
     return sizeof(*tree) + tree->count * per_node;
@@ -645,21 +687,18 @@ static void *IteratorGetFirst(Iterator *base)
         iterator->tree->count == 0)
         return NULL;
     iterator->index = 0;
-    iterator->current = node_at(iterator->tree->root, &iterator->index, 0);
-    iterator->index = 0;
+    iterator->current = minimum_node(iterator->tree->root);
     return iterator_value(iterator);
 }
 
 static void *IteratorGetLast(Iterator *base)
 {
     RedBlackTreeIterator *iterator = (RedBlackTreeIterator *)base;
-    size_t index;
     if (iterator_stale(iterator, "iRedBlackTree.GetLast") ||
         iterator->tree->count == 0)
         return NULL;
-    index = iterator->tree->count - 1;
-    iterator->current = node_at(iterator->tree->root, &(size_t){0}, index);
-    iterator->index = index;
+    iterator->index = iterator->tree->count - 1;
+    iterator->current = maximum_node(iterator->tree->root);
     return iterator_value(iterator);
 }
 
@@ -674,36 +713,33 @@ static void *IteratorGetCurrent(Iterator *base)
 static void *IteratorGetNext(Iterator *base)
 {
     RedBlackTreeIterator *iterator = (RedBlackTreeIterator *)base;
-    size_t index;
     if (iterator_stale(iterator, "iRedBlackTree.GetNext") ||
         iterator->current == NULL || iterator->index + 1 >= iterator->tree->count)
         return NULL;
-    index = iterator->index + 1;
-    iterator->current = node_at(iterator->tree->root, &(size_t){0}, index);
-    iterator->index = index;
+    ++iterator->index;
+    iterator->current = next_node(iterator->current);
     return iterator_value(iterator);
 }
 
 static void *IteratorGetPrevious(Iterator *base)
 {
     RedBlackTreeIterator *iterator = (RedBlackTreeIterator *)base;
-    size_t index;
     if (iterator_stale(iterator, "iRedBlackTree.GetPrevious") ||
         iterator->current == NULL || iterator->index == 0)
         return NULL;
-    index = iterator->index - 1;
-    iterator->current = node_at(iterator->tree->root, &(size_t){0}, index);
-    iterator->index = index;
+    --iterator->index;
+    iterator->current = prev_node(iterator->current);
     return iterator_value(iterator);
 }
 
 static void *IteratorSeek(Iterator *base, size_t index)
 {
     RedBlackTreeIterator *iterator = (RedBlackTreeIterator *)base;
+    size_t current = 0;
     if (iterator_stale(iterator, "iRedBlackTree.Seek") ||
         index >= iterator->tree->count)
         return NULL;
-    iterator->current = node_at(iterator->tree->root, &(size_t){0}, index);
+    iterator->current = node_at(iterator->tree->root, &current, index);
     iterator->index = index;
     return iterator_value(iterator);
 }

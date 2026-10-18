@@ -161,7 +161,8 @@ static int test_noop_inputs(void)
 
 	memset(bytes, 0xa5, sizeof(bytes));
 	memcpy(before, bytes, sizeof(bytes));
-	memset(&info, 0, sizeof(info));
+	qsortEx(NULL, 10, 1, compare_byte_record, &info);
+	qsortEx(bytes, 4, 1, NULL, &info);
 	qsortEx(bytes, 0, 1, NULL, &info);
 	qsortEx(bytes, 1, 1, NULL, &info);
 	qsortEx(bytes, 4, 0, NULL, &info);

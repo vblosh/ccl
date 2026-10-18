@@ -8,6 +8,24 @@
 #include <string.h>
 
 static unsigned destructor_calls;
+static unsigned observed_insert_at_count;
+static size_t observed_insert_at_pos;
+static unsigned observed_erase_at_count;
+static size_t observed_erase_at_positions[10];
+
+static void tracking_observer(const void *object, unsigned operation,
+                              const void *extra[])
+{
+    (void)object;
+    if (operation == CCL_INSERT_AT) {
+        ++observed_insert_at_count;
+        observed_insert_at_pos = (size_t)(uintptr_t)extra[1];
+    } else if (operation == CCL_ERASE_AT) {
+        if (observed_erase_at_count < 10)
+            observed_erase_at_positions[observed_erase_at_count] = (size_t)(uintptr_t)extra[1];
+        ++observed_erase_at_count;
+    }
+}
 
 static void list_observer(const void *object, unsigned operation,
                           const void *extra[])
@@ -643,13 +661,90 @@ cleanup:
     return -1;
 }
 
+static int test_review_findings_list(void)
+{
+    ContainerAllocator allocator = {
+        fail_malloc, fail_free, fail_realloc, fail_calloc
+    };
+    List *list = NULL;
+    int values[] = {10, 20, 30, 20, 40};
+    int val = 99;
+    int twenty = 20;
+    int result = -1;
+
+    /* 1. AddRange rollback on initially empty list: must not leak nodes and must reset pointers */
+    malloc_calls = 0;
+    fail_at = 0;
+    list = iList.CreateWithAllocator(sizeof(int), &allocator);
+    TEST_REQUIRE(list != NULL);
+    fail_at = malloc_calls + 2; /* 1st node succeeds, 2nd fails */
+    TEST_REQUIRE(iList.AddRange(list, 3, values) == CONTAINER_ERROR_NOMEMORY);
+    TEST_REQUIRE(iList.Size(list) == 0);
+    TEST_REQUIRE(list->First == NULL);
+    TEST_REQUIRE(list->Last == NULL);
+    fail_at = 0;
+    iList.Finalize(list);
+    list = NULL;
+
+    /* 2. AddRange overflow check */
+    list = iList.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL);
+    TEST_REQUIRE(iList.Add(list, &val) == 1);
+    TEST_REQUIRE(iList.AddRange(list, SIZE_MAX, values) == CONTAINER_ERROR_NOMEMORY);
+    iList.Finalize(list);
+    list = NULL;
+
+    /* 3. InsertAt at end of list (pos == count) notifies CCL_INSERT_AT */
+    list = iList.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL);
+    TEST_REQUIRE(iObserver.Subscribe(list, tracking_observer, CCL_INSERT_AT | CCL_ERASE_AT) == 1);
+    observed_insert_at_count = 0;
+    observed_insert_at_pos = (size_t)-1;
+    /* Insert into empty list (pos == count == 0) */
+    TEST_REQUIRE(iList.InsertAt(list, 0, &values[0]) == 1);
+    TEST_REQUIRE(observed_insert_at_count == 1);
+    TEST_REQUIRE(observed_insert_at_pos == 0);
+    /* Insert at end of non-empty list (pos == count == 1) */
+    TEST_REQUIRE(iList.InsertAt(list, 1, &values[1]) == 1);
+    TEST_REQUIRE(observed_insert_at_count == 2);
+    TEST_REQUIRE(observed_insert_at_pos == 1);
+    iObserver.Unsubscribe(list, tracking_observer);
+    iList.Finalize(list);
+    list = NULL;
+
+    /* 4. EraseInternal: position reporting in CCL_ERASE_AT */
+    list = iList.InitializeWith(sizeof(int), 5, values); /* [10, 20, 30, 20, 40] */
+    TEST_REQUIRE(list != NULL);
+    TEST_REQUIRE(iObserver.Subscribe(list, tracking_observer, CCL_ERASE_AT) == 1);
+    observed_erase_at_count = 0;
+    TEST_REQUIRE(iList.EraseAll(list, &twenty) == 1);
+    /* There were 2 matches.
+       First match was at index 1.
+       After removing it, list was [10, 30, 20, 40], so second match is at index 2.
+       Observer should report position 1, then position 2. */
+    TEST_REQUIRE(observed_erase_at_count == 2);
+    TEST_REQUIRE(observed_erase_at_positions[0] == 1);
+    TEST_REQUIRE(observed_erase_at_positions[1] == 2);
+    iObserver.Unsubscribe(list, tracking_observer);
+    iList.Finalize(list);
+    list = NULL;
+
+    result = 0;
+
+cleanup:
+    fail_at = 0;
+    if (list) iList.Finalize(list);
+    return result;
+}
+
 static const TestCase tests[] = {
     {"lifecycle, ownership and ranges", test_lifecycle_and_ranges},
     {"atomic AddRange rollback", test_atomic_add_range},
     {"iterators and safe transfers", test_iterators_and_transfers},
     {"persistence validation", test_persistence_validation},
     {"API edges and navigation", test_api_edges_and_navigation},
-    {"allocation failure paths", test_allocation_failure_paths}
+    {"allocation failure paths", test_allocation_failure_paths},
+    {"review findings list fixes", test_review_findings_list}
 };
 
 static const TestSuite suite = {

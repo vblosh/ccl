@@ -202,6 +202,8 @@ static int test_element_widths_and_noops(void)
 
 	memset(untouched, 0xc7, sizeof(untouched));
 	memcpy(before, untouched, sizeof(untouched));
+	ccl_qsort_r(NULL, 10, 1, NULL, ccl_compare_bytes);
+	ccl_qsort_r(untouched, 10, 1, NULL, NULL);
 	ccl_qsort_r(untouched, 0, 1, NULL, ccl_compare_bytes);
 	ccl_qsort_r(untouched, 1, 1, NULL, ccl_compare_bytes);
 	ccl_qsort_r(untouched, 4, 0, NULL, ccl_compare_bytes);

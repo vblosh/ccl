@@ -134,7 +134,7 @@ static void Delete(TreeMap *bt, struct Node *p)
      will cause us to do a little more rebalancing than strictly
      necessary to maintain the scapegoat tree's height
      invariant. */
-  if (bt->count < bt->max_size * 3 / 4 && bt->count > 0)
+  if (bt->count < bt->max_size - (bt->max_size >> 2) && bt->count > 0)
     {
       rebalance_subtree (bt, bt->root, bt->count);
       bt->max_size = bt->count;
@@ -254,7 +254,7 @@ static void rebalance_subtree (TreeMap *bt, struct Node *subtree, size_t count)
   struct Node **q = down_link (bt, subtree);
   tree_to_vine (q);
   vine_to_tree (q, count);
-  if (q) (*q)->up = up;
+  if (q != NULL && *q != NULL) (*q)->up = up;
   else {
       iError.RaiseError("rebalance_subtree",CONTAINER_INTERNAL_ERROR);
   }
@@ -388,6 +388,8 @@ static TreeMap *Copy(TreeMap *src)
 	    pSrc = bt_next(src,pSrc);
     }
     result->Flags = src->Flags;
+    result->DestructorFn = src->DestructorFn;
+    result->RaiseError = src->RaiseError;
     return result;
 }
 
@@ -976,14 +978,16 @@ static int Finalize(TreeMap *tree)
 
 static int Apply(TreeMap *tree,int (*Applyfn)(const void *data,void *arg),void *arg)
 {
+    Iterator *it;
+    void *obj;
+    unsigned timestamp;
+
     if (tree == NULL || Applyfn == NULL)
         return tree_error(tree, "iTree.Apply", CONTAINER_ERROR_BADARG);
-    Iterator *it = NewIterator(tree);
-    void *obj;
-
+    timestamp = tree->timestamp;
+    it = NewIterator(tree);
     if (it == NULL) {
-        iError.RaiseError("iTree.Apply",CONTAINER_ERROR_NOMEMORY);
-        return CONTAINER_ERROR_NOMEMORY;
+        return tree_error(tree, "iTree.Apply", CONTAINER_ERROR_NOMEMORY);
     }
     for (obj = it->GetFirst(it);
     	 obj != NULL;
@@ -991,6 +995,8 @@ static int Apply(TreeMap *tree,int (*Applyfn)(const void *data,void *arg),void *
     	Applyfn(obj,arg);
     }
     DeleteIterator(it);
+    if (tree->timestamp != timestamp)
+        return CONTAINER_ERROR_OBJECT_CHANGED;
     return 1;
 }
 

@@ -18,19 +18,27 @@ static size_t QSize(Queue *Q)
 
 static size_t Sizeof(Queue *q)
 {
+    size_t list_size;
     if (q == NULL) return sizeof(Queue);
-    return sizeof(*q) + iList.Sizeof(q->Items);
+    list_size = iList.Sizeof(q->Items);
+    if (list_size > SIZE_MAX - sizeof(*q))
+        return SIZE_MAX;
+    return sizeof(*q) + list_size;
 }
 
 static int Finalize(Queue *Q)
 {
 	const ContainerAllocator *allocator;
+	int r;
 
 	if (Q == NULL)
 		return iError.NullPtrError("iQueue.Finalize");
 	allocator = iList.GetAllocator(Q->Items);
-    iList.Finalize(Q->Items);
-    allocator->free(Q);
+	r = iList.Finalize(Q->Items);
+	if (r < 0)
+		return r;
+	if (allocator != NULL && allocator->free != NULL)
+		allocator->free(Q);
     return 1;
 }
 
@@ -88,7 +96,7 @@ static Queue *Create(size_t ElementSize)
 static int Front(Queue *Q,void *result)
 {
 	size_t idx;
-	if (Q == NULL) {
+	if (Q == NULL || result == NULL) {
 		return iError.NullPtrError("iQueue.Front");
 	}
 	idx = iList.Size(Q->Items);
@@ -100,7 +108,7 @@ static int Front(Queue *Q,void *result)
 static int Back(Queue *Q,void *result)
 {
 	size_t idx;
-	if (Q == NULL) {
+	if (Q == NULL || result == NULL) {
 		return iError.NullPtrError("iQueue.Back");
 	}
 	idx = iList.Size(Q->Items);

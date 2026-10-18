@@ -370,8 +370,7 @@ static int CopyElement(const ValArray *AL,size_t idx, ElementType *outbuf)
 		return IndexError("CopyElement");
 	}
 	if (AL->Slice) {
-		idx *= AL->Slice->start + idx * AL->Slice->increment;
-		
+		idx = AL->Slice->start + idx * AL->Slice->increment;
 	}
 	*outbuf = AL->contents[idx];
 	return 1;
@@ -785,6 +784,7 @@ static ValArray *IndexIn(const ValArray *SC, const ValArraySize_t *AL)
 		idx = contents[i];
 		p = GetElement(SC,idx);
 		result->contents[result->count++]=p;
+		result->timestamp++;
 	}
 	return result;
 }
@@ -1708,20 +1708,14 @@ static Mask *FCompare(const ValArray *left,const ValArray *right, Mask *bytearra
 		ErrorIncompatible("Compare");
 		return NULL;
 	}
-	if (bytearray == NULL) {
-		NoMemory("Compare");
-		return NULL;
-	}
-	
-	if (bytearray == NULL) {
-		bytearray= CurrentAllocator->malloc(left_len+sizeof(Mask));
+	if (bytearray == NULL || bytearray->length < left_len) {
+		if (bytearray)
+			iMask.Finalize(bytearray);
+		bytearray = iMask.Create(left_len);
 		if (bytearray == NULL) {
-			iError.RaiseError("ValArray.Fcompare",CONTAINER_ERROR_NOMEMORY);
+			NoMemory("Compare");
 			return NULL;
 		}
-		bytearray->Allocator = CurrentAllocator;
-		bytearray->length = left_len;
-		
 	}
 	memset(bytearray->data,0,left_len);
 	j = right_start;
@@ -1741,6 +1735,7 @@ static Mask *FCompare(const ValArray *left,const ValArray *right, Mask *bytearra
 		j += right_incr;
 		i += left_incr;
 	}
+	bytearray->length = left_len;
 	return bytearray;
 }
 

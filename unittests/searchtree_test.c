@@ -334,6 +334,8 @@ static int test_equal_merge_and_allocator_ownership(void)
     TEST_REQUIRE(iBinarySearchTree.Equal(empty_left, left) == 0);
     TEST_REQUIRE(iBinarySearchTree.Add(right, &three) == 0);
     TEST_REQUIRE(iBinarySearchTree.Add(incompatible, &four) == 0);
+    TEST_REQUIRE(iBinarySearchTree.Merge(left, left, &two) == NULL);
+    TEST_REQUIRE(iBinarySearchTree.Merge(empty_left, empty_left, &two) == NULL);
     TEST_REQUIRE(iBinarySearchTree.Merge(left, incompatible, &two) == NULL);
     merge = iBinarySearchTree.Merge(left, right, &two);
     TEST_REQUIRE(merge != NULL);

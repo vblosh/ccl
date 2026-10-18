@@ -78,7 +78,9 @@ static size_t Hash(const void * key, size_t len, unsigned int seed )
 	switch(len)
 	{
 	case 3: h ^= (size_t)data[2] << 16;
+	        /* fallthrough */
 	case 2: h ^= (size_t)data[1] << 8;
+	        /* fallthrough */
 	case 1: h ^= (size_t)data[0];
 	        h *= m;
 	default:
@@ -205,6 +207,11 @@ static BloomFilter *Create(size_t nbOfElements,double Probability)
 	bit_bytes = nbOfBits / 8 + (nbOfBits % 8 != 0);
 	object_bytes = space - bit_bytes;
 	allocator = CurrentAllocator;
+	if (allocator == NULL || allocator->malloc == NULL ||
+	    allocator->free == NULL) {
+		iError.RaiseError("BloomFilter.Create", CONTAINER_ERROR_BADARG);
+		return NULL;
+	}
 	result = allocator->malloc(object_bytes);
 	if (result == NULL) {
 		iError.RaiseError("BloomFilter.Create",CONTAINER_ERROR_NOMEMORY);

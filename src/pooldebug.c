@@ -210,21 +210,21 @@ static void destroyAllocator(Allocator *allocator)
 #if (POOL_DEBUG_VERSION & POOL_DEBUG_VERSION_VERBOSE_ALL)
 static void Log(Pool *pool, const char *event, const char *file_line, int deref)
 {
-        if (deref) {
+        if (deref && pool != NULL) {
             fprintf(stderr,
                 "POOL DEBUG: "
                 "[%lu"
                 "] "
                 "%7s "
                 "(%10lu) "
-                "0x%pp \"%s\" "
+                "%p \"%s\" "
                 "<%s> "
                 "(%u/%u/%u) "
                 "\n",
                 0UL,
                 event,
                 (unsigned long)Sizeof(pool),
-                pool, pool->tag,
+                (void *)pool, pool->tag ? pool->tag : "",
                 file_line,
                 pool->stat_alloc, pool->stat_total_alloc, pool->stat_clear);
         }
@@ -235,12 +235,12 @@ static void Log(Pool *pool, const char *event, const char *file_line, int deref)
                 "] "
                 "%7s "
                 "                                   "
-                "0x%pp "
+                "%p "
                 "<%s> "
                 "\n",
                 0UL,
                 event,
-                pool,
+                (void *)pool,
                 file_line);
         }
 }
@@ -262,6 +262,9 @@ static void *pool_alloc_debug(Pool *pool, size_t size,const char *file_line)
     void *mem;
 
     (void)file_line;
+
+    if (pool == NULL)
+        return NULL;
 
     if ((mem = iDebugMalloc.malloc(size)) == NULL) {
         return NULL;
@@ -290,6 +293,9 @@ static void * PoolAlloc_debug(Pool *pool, size_t size, const char *file_line)
 {
     void *mem;
 
+    if (pool == NULL)
+        return NULL;
+
     CheckIntegrity(pool);
 
     mem = pool_alloc_debug(pool, size,file_line);
@@ -305,6 +311,9 @@ static void * PoolCalloc_debug(Pool *pool, size_t n,size_t size, const char *fil
 {
     void *mem;
     size_t total_size;
+
+    if (pool == NULL)
+        return NULL;
 
     CheckIntegrity(pool);
 
@@ -336,6 +345,9 @@ static void pool_clear_debug(Pool *pool, const char *file_line)
 
     (void)file_line;
 
+    if (pool == NULL)
+        return;
+
     /* Free the blocks, scribbling over them first to help highlight
      * use-after-free issues. */
     while ((node = pool->nodes) != NULL) {
@@ -357,6 +369,9 @@ static void pool_clear_debug(Pool *pool, const char *file_line)
 
 static void PoolClear_debug(Pool *pool, const char *file_line)
 {
+    if (pool == NULL)
+        return;
+
     CheckIntegrity(pool);
 
 #if (POOL_DEBUG_VERSION & POOL_DEBUG_VERSION_VERBOSE)
@@ -368,6 +383,9 @@ static void PoolClear_debug(Pool *pool, const char *file_line)
 
 static void PoolDestroy_debug(Pool *pool, const char *file_line)
 {
+    if (pool == NULL)
+        return;
+
     CheckIntegrity(pool);
 
 #if (POOL_DEBUG_VERSION & POOL_DEBUG_VERSION_VERBOSE)
@@ -451,16 +469,31 @@ static int FindPoolFromData(Pool *pool, void *data)
 static void SetMaxSize(Pool *pool,size_t in_size)
 {
     uint32_t max_free_index;
-    uint32_t size = (uint32_t)in_size;
-	Allocator *allocator = pool->allocator;
+    size_t aligned_size;
+    size_t scaled_index;
+    Allocator *allocator;
 
-    max_free_index = ALIGN(size, BOUNDARY_SIZE) >> BOUNDARY_INDEX;
-    allocator->current_free_index += max_free_index;
-    allocator->current_free_index -= allocator->max_free_index;
+    if (pool == NULL || pool->allocator == NULL)
+        return;
+    allocator = pool->allocator;
+    if (in_size > SIZE_MAX - (BOUNDARY_SIZE - 1))
+        aligned_size = SIZE_MAX & ~(size_t)(BOUNDARY_SIZE - 1);
+    else
+        aligned_size = ALIGN(in_size, BOUNDARY_SIZE);
+    scaled_index = aligned_size >> BOUNDARY_INDEX;
+    max_free_index = scaled_index > UINT32_MAX ?
+                     UINT32_MAX : (uint32_t)scaled_index;
+    if (allocator->current_free_index + max_free_index >=
+        allocator->max_free_index) {
+        allocator->current_free_index =
+            allocator->current_free_index + max_free_index -
+            allocator->max_free_index;
+    } else {
+        allocator->current_free_index = 0;
+    }
     allocator->max_free_index = max_free_index;
     if (allocator->current_free_index > max_free_index)
 		allocator->current_free_index = max_free_index;
-
 }
 
 static size_t Sizeof(Pool *pool)

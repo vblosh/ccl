@@ -11,6 +11,10 @@
 #define CHUNK_SIZE 256
 #endif
 
+/* Internal flag in BitString.Flags indicating the header was allocated on
+ * the heap by Create/CreateWithAllocator. Bit 31 is reserved for this. */
+#define BITSTRING_HEAP_HEADER 0x80000000u
+
 /* Bit zero is the least significant bit of byte zero.  Print and parse
  * present the logical sequence most-significant bit first. */
 static const unsigned char bit_mask[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
@@ -167,7 +171,8 @@ static int Finalize(BitString *b)
     if (b->Flags & CONTAINER_READONLY)
         return read_only_error("Finalize", b);
     b->Allocator->free(b->contents);
-    b->Allocator->free(b);
+    if (b->Flags & BITSTRING_HEAP_HEADER)
+        b->Allocator->free(b);
     return 1;
 }
 
@@ -187,7 +192,7 @@ static BitString *Copy(BitString *b)
     if (result == NULL)
         return NULL;
     result->count = b->count;
-    result->Flags = b->Flags;
+    result->Flags = (b->Flags & ~BITSTRING_HEAP_HEADER) | BITSTRING_HEAP_HEADER;
     bytes = bytes_for_bits(b->count);
     memcpy(result->contents, b->contents, bytes);
     canonicalize(result);
@@ -315,7 +320,8 @@ static int Equal(BitString *left, BitString *right)
         return left != NULL;
     if (left == NULL || right == NULL)
         return 0;
-    if (left->Flags != right->Flags || left->count != right->count)
+    if ((left->Flags & ~BITSTRING_HEAP_HEADER) != (right->Flags & ~BITSTRING_HEAP_HEADER) ||
+        left->count != right->count)
         return 0;
     for (i = 0; i < left->count; ++i)
         if (GetElement(left, i) != GetElement(right, i))
@@ -485,8 +491,8 @@ static int AddRange(BitString *b, size_t bit_size, void *data)
     contents_end = contents_start + b->capacity;
     source_start = (uintptr_t)data;
     source_end = source_start + source_bytes;
-    if (source_start >= contents_start && source_start < contents_end &&
-        source_end >= source_start && source_end <= contents_end) {
+    if (source_end >= source_start &&
+        source_start < contents_end && contents_start < source_end) {
         snapshot = b->Allocator->malloc(source_bytes);
         if (snapshot == NULL)
             return CONTAINER_ERROR_NOMEMORY;
@@ -503,6 +509,9 @@ static int AddRange(BitString *b, size_t bit_size, void *data)
         size_t position = old_count + i;
         if (source[i / CHAR_BIT] & bit_mask[i & (CHAR_BIT - 1)])
             b->contents[position / CHAR_BIT] |= bit_mask[position & (CHAR_BIT - 1)];
+        else
+            b->contents[position / CHAR_BIT] &=
+                (unsigned char)~bit_mask[position & (CHAR_BIT - 1)];
     }
     b->count = old_count + bit_size;
     canonicalize(b);
@@ -621,8 +630,8 @@ static int Append(BitString *left, BitString *right)
     contents_end = contents_start + left->capacity;
     source_start = (uintptr_t)source;
     source_end = source_start + source_bytes;
-    if (source_start >= contents_start && source_start < contents_end &&
-        source_end >= source_start && source_end <= contents_end) {
+    if (source_end >= source_start &&
+        source_start < contents_end && contents_start < source_end) {
         snapshot = left->Allocator->malloc(source_bytes);
         if (snapshot == NULL)
             return CONTAINER_ERROR_NOMEMORY;
@@ -675,7 +684,7 @@ static size_t Sizeof(BitString *b)
 
 static unsigned GetFlags(BitString *b)
 {
-    return b == NULL ? 0 : b->Flags;
+    return b == NULL ? 0 : (b->Flags & ~BITSTRING_HEAP_HEADER);
 }
 
 static unsigned SetFlags(BitString *b, unsigned value)
@@ -683,8 +692,9 @@ static unsigned SetFlags(BitString *b, unsigned value)
     unsigned old;
     if (b == NULL)
         return 0;
-    old = b->Flags;
-    b->Flags = value;
+    old = b->Flags & ~BITSTRING_HEAP_HEADER;
+    b->Flags = (value & ~BITSTRING_HEAP_HEADER) |
+               (b->Flags & BITSTRING_HEAP_HEADER);
     if (old != value)
         b->timestamp++;
     return old;
@@ -1016,10 +1026,18 @@ static size_t GetPosition(Iterator *it)
 static int IteratorReplace(Iterator *it, void *data, int direction)
 {
     struct BitstringIterator *iterator = as_bit_iterator(it, "Replace");
+    int rc;
     (void)direction;
     if (iterator == NULL || data == NULL || iterator->index == 0)
         return CONTAINER_ERROR_BADARG;
-    return SetElement(iterator->bits, iterator->index - 1, *(int *)data);
+    if (!iterator_valid(iterator))
+        return CONTAINER_ERROR_OBJECT_CHANGED;
+    rc = SetElement(iterator->bits, iterator->index - 1, *(int *)data);
+    if (rc > 0) {
+        iterator->bit = *(int *)data != 0;
+        iterator->timestamp = iterator->bits->timestamp;
+    }
+    return rc;
 }
 
 static Iterator *NewIterator(BitString *b)
@@ -1087,13 +1105,15 @@ static int DeleteIterator(Iterator *it)
 static int Save(const BitString *b, FILE *stream, SaveFunction save_fn, void *arg)
 {
     size_t bytes;
+    unsigned flags;
     (void)save_fn;
     (void)arg;
     if (b == NULL || stream == NULL)
         return null_error("Save");
     bytes = bytes_for_bits(b->count);
+    flags = b->Flags & ~BITSTRING_HEAP_HEADER;
     if (fwrite(&b->count, sizeof(b->count), 1, stream) != 1 ||
-        fwrite(&b->Flags, sizeof(b->Flags), 1, stream) != 1 ||
+        fwrite(&flags, sizeof(flags), 1, stream) != 1 ||
         fwrite(b->contents, 1, bytes, stream) != bytes)
         return CONTAINER_ERROR_FILE_WRITE;
     return 0;
@@ -1126,7 +1146,7 @@ static BitString *Load(FILE *stream, ReadFunction read_fn, void *arg)
         return NULL;
     }
     result->count = count;
-    result->Flags = flags;
+    result->Flags = (flags & ~BITSTRING_HEAP_HEADER) | BITSTRING_HEAP_HEADER;
     canonicalize(result);
     return result;
 }
@@ -1215,6 +1235,7 @@ static BitString *create_with_allocator(size_t bits,
     result->VTable = &iBitString;
     result->Allocator = allocator;
     result->capacity = bytes;
+    result->Flags = BITSTRING_HEAP_HEADER;
     return result;
 }
 

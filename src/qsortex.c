@@ -41,8 +41,9 @@
 */
 
 #define CUTOFF 8
+#define STKSIZ (8 * sizeof(void *) - 2)
 
-static void shortsort(char *lo, char *hi, size_t width, int (*comp)(const void *, const void *,CompareInfo *ExtraArgs),CompareInfo *ExtraARgs);
+static void shortsort(char *lo, char *hi, size_t width, CompareFunction comp, CompareInfo *ExtraArgs);
 static void swap(char *p, char *q, size_t width);
 
 void qsortEx(void *base, size_t num, size_t width, CompareFunction comp, CompareInfo *ExtraArgs)
@@ -51,10 +52,10 @@ void qsortEx(void *base, size_t num, size_t width, CompareFunction comp, Compare
   char *mid;
   char *loguy, *higuy;
   size_t size;
-  char *lostk[30], *histk[30];
+  char *lostk[STKSIZ], *histk[STKSIZ];
   int stkptr;
 
-  if (num < 2 || width == 0) return;
+  if (base == NULL || comp == NULL || num < 2 || width == 0) return;
   stkptr = 0;
 
   lo = base;
@@ -91,7 +92,8 @@ recurse:
      * element (higuy == lo), which creates a pointer before the array.  It
      * also mixed an element-sized range with a byte-sized subtraction.
      */
-    if (higuy - lo >= hi - loguy)
+    if ((higuy > lo ? (size_t)(higuy - lo) : 0) >=
+        (loguy < hi ? (size_t)(hi - loguy) : 0))
     {
       if (lo + width < higuy) 
       {

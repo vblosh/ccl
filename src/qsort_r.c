@@ -33,6 +33,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* CCL's private BSD-style comparator ABI.  Do not call this qsort_r: on
  * glibc (and several other systems) that name denotes a different ABI. */
@@ -57,7 +58,7 @@ static inline void swapfunc(char *, char *, size_t, int);
 }
 
 #define SWAPINIT(a, es) swaptype = ((uintptr_t)(const void *)(a)) % sizeof(long) || \
-        es % sizeof(long) ? 2 : es == sizeof(long)? 0 : 1;
+        (es) % sizeof(long) ? 2 : (es) == sizeof(long) ? 0 : 1;
 
 static inline void
 swapfunc(char *a, char *b, size_t n, int swaptype)
@@ -70,9 +71,10 @@ swapfunc(char *a, char *b, size_t n, int swaptype)
 
 #define swap(a, b)                                      \
         if (swaptype == 0) {                            \
-                long t = *(long *)(a);                  \
-                *(long *)(a) = *(long *)(b);            \
-                *(long *)(b) = t;                       \
+                long t;                                 \
+                memcpy(&t, (a), sizeof(t));             \
+                memcpy((a), (b), sizeof(t));            \
+                memcpy((b), &t, sizeof(t));             \
         } else                                          \
                 swapfunc(a, b, es, swaptype)
 
@@ -96,7 +98,7 @@ void ccl_qsort_r(void *a, size_t n, size_t es, void *thunk,
         int cmp_result;
         int swaptype, swap_cnt;
 
-        if (n < 2 || es == 0) {
+        if (a == NULL || cmp == NULL || n < 2 || es == 0) {
                 return;
         }
 loop:   SWAPINIT(a, es);
@@ -159,9 +161,9 @@ loop:   SWAPINIT(a, es);
         }
 
         pn = (char *)a + n * es;
-        r = min(pa - (char *)a, pb - pa);
+        r = min((size_t)(pa - (char *)a), (size_t)(pb - pa));
         vecswap(a, pb - r, r);
-        r = min((size_t)(pd - pc), pn - pd - es);
+        r = min((size_t)(pd - pc), (size_t)(pn - pd) - es);
         vecswap(pb, pn - r, r);
         if ((r = pb - pa) > es)
                 ccl_qsort_r(a, r / es, es, thunk, cmp);

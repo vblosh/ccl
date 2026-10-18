@@ -270,6 +270,35 @@ cleanup:
     return -1;
 }
 
+static int test_null_and_overflow_safety(void)
+{
+    Pool *pool;
+
+    /* Verify NULL pool safety across public entry points */
+    TEST_REQUIRE(iPoolDebug.Alloc(NULL, 32, "null-alloc") == NULL);
+    TEST_REQUIRE(iPoolDebug.Calloc(NULL, 2, 16, "null-calloc") == NULL);
+    iPoolDebug.Clear(NULL, "null-clear");
+    iPoolDebug.Finalize(NULL, "null-finalize");
+    iPoolDebug.SetMaxFree(NULL, 1024);
+
+    /* Verify SetMaxFree underflow and truncation safety */
+    pool = iPoolDebug.Create(NULL);
+    TEST_REQUIRE(pool != NULL);
+    iPoolDebug.SetMaxFree(pool, (size_t)-1);
+    iPoolDebug.SetMaxFree(pool, 0);
+    iPoolDebug.SetMaxFree(pool, 100);
+    iPoolDebug.SetMaxFree(pool, 50);
+    iPoolDebug.Finalize(pool, NULL);
+    pool = NULL;
+
+    return 0;
+
+cleanup:
+    if (pool != NULL)
+        iPoolDebug.Finalize(pool, NULL);
+    return -1;
+}
+
 static const TestCase tests[] = {
     {"empty and allocated lifecycles are clean",
      test_empty_and_allocated_lifecycles_are_clean},
@@ -283,6 +312,8 @@ static const TestCase tests[] = {
      test_find_pool_from_data_checks_half_open_ranges},
     {"sizeof and max-free states",
      test_sizeof_and_max_free_states},
+    {"null and overflow safety",
+     test_null_and_overflow_safety},
 };
 
 static const TestSuite suite = {

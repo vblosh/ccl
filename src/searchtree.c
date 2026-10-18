@@ -16,6 +16,7 @@
 typedef struct tagBinarySearchTreeNode {
     char hidden;
     signed char factor; /* LEFT, BALANCED, or RIGHT. */
+    int height;
     struct tagBinarySearchTreeNode *left;
     struct tagBinarySearchTreeNode *right;
     char data[MINIMUM_ARRAY_INDEX];
@@ -147,6 +148,7 @@ static BinarySearchTreeNode *new_tree_node(BinarySearchTree *tree,
     if (node == NULL)
         return NULL;
     memset(node, 0, sizeof(*node));
+    node->height = 1;
     if (tree->ElementSize != 0)
         memcpy(node->data, data, tree->ElementSize);
     ++tree->count;
@@ -155,13 +157,9 @@ static BinarySearchTreeNode *new_tree_node(BinarySearchTree *tree,
 
 static int node_height(const BinarySearchTreeNode *node)
 {
-    int left_height;
-    int right_height;
     if (node == NULL)
         return 0;
-    left_height = node_height(node->left);
-    right_height = node_height(node->right);
-    return (left_height > right_height ? left_height : right_height) + 1;
+    return node->height;
 }
 
 static void update_factor(BinarySearchTreeNode *node)
@@ -172,6 +170,7 @@ static void update_factor(BinarySearchTreeNode *node)
         return;
     left_height = node_height(node->left);
     right_height = node_height(node->right);
+    node->height = (left_height > right_height ? left_height : right_height) + 1;
     node->factor = (signed char)(left_height > right_height ? LEFT :
                                 left_height < right_height ? RIGHT : BALANCED);
 }
@@ -342,6 +341,7 @@ static BinarySearchTreeNode *delete_node(BinarySearchTree *tree,
             tree->DestructorFn(node->data);
         tree->Allocator->free(node);
         --tree->count;
+        update_factor(successor);
         return rebalance(successor);
     }
 }
@@ -480,10 +480,15 @@ static ErrorFunction SetErrorFunction(BinarySearchTree *tree, ErrorFunction fn)
 
 static size_t Sizeof(BinarySearchTree *tree)
 {
+    size_t per_node;
     if (tree == NULL)
         return sizeof(BinarySearchTree);
-    return sizeof(*tree) + tree->count * (sizeof(BinarySearchTreeNode) +
-                                          tree->ElementSize);
+    if (tree->ElementSize > SIZE_MAX - sizeof(BinarySearchTreeNode))
+        return SIZE_MAX;
+    per_node = sizeof(BinarySearchTreeNode) + tree->ElementSize;
+    if (tree->count > (SIZE_MAX - sizeof(*tree)) / per_node)
+        return SIZE_MAX;
+    return sizeof(*tree) + tree->count * per_node;
 }
 
 static int DefaultCompareFunction(const void *left, const void *right,
@@ -567,10 +572,11 @@ static BinarySearchTreeNode *iterator_node(BinarySearchTreeIterator *iterator,
 static int iterator_stale(BinarySearchTreeIterator *iterator,
                            const char *operation)
 {
-    if (iterator == NULL || iterator->magic != SEARCHTREE_ITERATOR_MAGIC)
+    if (iterator == NULL || iterator->magic != SEARCHTREE_ITERATOR_MAGIC ||
+        iterator->tree == NULL)
         return 1;
     if (iterator->timestamp != iterator->tree->timestamp) {
-        iterator->tree->RaiseError(operation, CONTAINER_ERROR_OBJECT_CHANGED);
+        report_error(iterator->tree, operation, CONTAINER_ERROR_OBJECT_CHANGED);
         return 1;
     }
     return 0;
@@ -723,7 +729,7 @@ static BinarySearchTree *Merge(BinarySearchTree *left, BinarySearchTree *right,
                                const void *data)
 {
     BinarySearchTree *merge;
-    if (left == NULL || right == NULL ||
+    if (left == NULL || right == NULL || left == right ||
         left->ElementSize != right->ElementSize ||
         left->CompareFn != right->CompareFn ||
         left->Allocator != right->Allocator ||
@@ -731,6 +737,8 @@ static BinarySearchTree *Merge(BinarySearchTree *left, BinarySearchTree *right,
         !valid_data(left, data))
         return NULL;
     if ((left->Flags & CONTAINER_READONLY) || (right->Flags & CONTAINER_READONLY))
+        return NULL;
+    if (left->count > SIZE_MAX - right->count - 1)
         return NULL;
     merge = create_with_allocator(left->ElementSize, left->Allocator);
     if (merge == NULL)

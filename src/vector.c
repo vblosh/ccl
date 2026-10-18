@@ -55,16 +55,18 @@ static int vector_bytes(size_t elementsize,size_t count,size_t *bytes)
 
 static int vector_range_overlaps(const Vector *v,const void *ptr,size_t bytes)
 {
-	uintptr_t begin, end, source;
+	uintptr_t begin, source;
+	size_t capacity_bytes;
 
 	if (v == NULL || v->contents == NULL || ptr == NULL || bytes == 0)
 		return 0;
-	if (!vector_bytes(v->ElementSize,v->capacity,&bytes))
+	if (!vector_bytes(v->ElementSize,v->capacity,&capacity_bytes))
 		return 0;
 	begin = (uintptr_t)v->contents;
-	end = begin + bytes;
 	source = (uintptr_t)ptr;
-	return source >= begin && source < end;
+	if (source >= begin)
+		return (source - begin) < capacity_bytes;
+	return (begin - source) < bytes;
 }
 
 static Vector *Create(size_t elementsize,size_t startsize);

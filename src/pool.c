@@ -170,13 +170,10 @@ static MemoryNode_t *newAllocator(Allocator *allocator, size_t in_size,Container
     uint32_t max_index;
     size_t size, i, idx;
 
-    /* Round up the block size to the next boundary, but always
-     * allocate at least a certain size (MIN_ALLOC).
-     */
-    size = ALIGN(in_size + MEMORYNODE_SIZE, BOUNDARY_SIZE);
-    if (size < in_size) {
+    if (in_size > SIZE_MAX - MEMORYNODE_SIZE - (BOUNDARY_SIZE - 1)) {
         return NULL;
     }
+    size = ALIGN(in_size + MEMORYNODE_SIZE, BOUNDARY_SIZE);
     if (size < MIN_ALLOC)
         size = MIN_ALLOC;
 
@@ -433,6 +430,8 @@ static void * PoolAlloc(Pool *pool, size_t in_size)
 
     free_index = (ALIGN(active->endp - active->first_avail + 1,
                             BOUNDARY_SIZE) - BOUNDARY_SIZE) >> BOUNDARY_INDEX;
+    if (free_index > UINT32_MAX)
+        free_index = UINT32_MAX;
 
     active->free_index = (uint32_t)free_index;
     node = active->next;
@@ -573,10 +572,10 @@ int main(void)
 {
 	Pool *pool;
 	void *mem;
-	pool = newPool();
+	pool = newPool(NULL);
 	mem = PoolAlloc(pool,1024);
 	memset(mem,0,1024);
-	PoolDestroy(pool);
+	PoolFinalize(pool);
 
 	return 0;
 }

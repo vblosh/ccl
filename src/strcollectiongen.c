@@ -153,13 +153,19 @@ Errors:        Duplication of NULL is allowed and returns NULL. If no more
 static CHAR_TYPE *DuplicateString(const ElementType *SC,const CHAR_TYPE *str,const char *fnname)
 {
     CHAR_TYPE *result;
+    size_t len, bytes;
     if (str == NULL)      return NULL;
-    result = SC->Allocator->malloc(sizeof(CHAR_TYPE)*(1+STRLEN(str)));
+    if (!SizeAdd(STRLEN(str), 1, &len) ||
+        !SizeMul(len, sizeof(CHAR_TYPE), &bytes)) {
+        NoMemoryError(SC, fnname);
+        return NULL;
+    }
+    result = SC->Allocator->malloc(bytes);
     if (result == NULL) {
         NoMemoryError(SC,fnname);
         return NULL;
     }
-    STRCPY(result,str);
+    memcpy(result, str, bytes);
     return result;
 }
 
@@ -456,14 +462,19 @@ static int Contains(const ElementType *SC,const CHAR_TYPE *str)
 static CHAR_TYPE **CopyTo(const ElementType *SC)
 {
     CHAR_TYPE **result;
-    size_t i;
+    size_t i, count_plus_one, bytes;
 
     if (SC == NULL) {
         NullPtrError("CopyTo");
         return NULL;
     }
 
-    result = SC->Allocator->malloc((1+SC->count)*sizeof(CHAR_TYPE *));
+    if (!SizeAdd(SC->count, 1, &count_plus_one) ||
+        !SizeMul(count_plus_one, sizeof(CHAR_TYPE *), &bytes)) {
+        NoMemoryError(SC, "CopyTo");
+        return NULL;
+    }
+    result = SC->Allocator->malloc(bytes);
     if (result == NULL) {
         NoMemoryError(SC,"CopyTo");
         return NULL;
@@ -473,7 +484,7 @@ static CHAR_TYPE **CopyTo(const ElementType *SC)
         if (result[i] == NULL) {
             while (i > 0) {
                 --i;
-                SC->Allocator->free(result[i]);
+                DestroyString((ElementType *)SC, result[i]);
             }
             SC->Allocator->free(result);
             return NULL;
@@ -786,7 +797,7 @@ static int PushBack(ElementType *SC,const CHAR_TYPE *str)
         if (res <= 0)
             return res;
     }
-    r = DuplicateString(SC,str,"Push");
+    r = DuplicateString(SC,str,"PushBack");
     if (r == NULL)
         return 0;
     SC->contents[SC->count++] = r;
@@ -811,8 +822,8 @@ static int PushFront(ElementType *SC,CHAR_TYPE *str)
     }
     r = DuplicateString(SC,str,"PushFront");
     if (r == NULL)
-        return NoMemoryError(SC,"PushFront");
-    memmove(SC->contents+1,SC->contents,SC->count*sizeof(void *));
+        return 0;
+    memmove(SC->contents+1,SC->contents,SC->count*sizeof(*SC->contents));
     SC->contents[0] = r;
     SC->timestamp++;
     SC->count++;
@@ -856,8 +867,10 @@ static size_t PopFront(ElementType *SC,CHAR_TYPE *buffer,size_t buflen)
     CHAR_TYPE *result;
     size_t len,tocopy;
 
-    if (SC == NULL)
+    if (SC == NULL) {
+        NullPtrError("PopFront");
         return 0;
+    }
     if (SC->Flags&CONTAINER_READONLY) {
         ReadOnlyError(SC,"PopFront");
         return 0;
@@ -868,7 +881,7 @@ static size_t PopFront(ElementType *SC,CHAR_TYPE *buffer,size_t buflen)
     SC->count--;
     result = SC->contents[0];
     if (SC->count) {
-        memmove(SC->contents,SC->contents+1,SC->count*sizeof(void *));
+        memmove(SC->contents,SC->contents+1,SC->count*sizeof(*SC->contents));
     }
     SC->timestamp++;
     if (buffer != NULL && buflen > 0) {
@@ -887,7 +900,7 @@ static size_t PopFront(ElementType *SC,CHAR_TYPE *buffer,size_t buflen)
 static size_t GetCapacity(const ElementType *SC)
 {
     if (SC == NULL) {
-        NullPtrError("SetCapacity");
+        NullPtrError("GetCapacity");
         return 0;
     }
     return SC->capacity;
@@ -1112,8 +1125,10 @@ struct strCollectionIterator {
 static size_t GetPosition(Iterator *it)
 {
     struct strCollectionIterator *ali = (struct strCollectionIterator *)it;
-    if (ali == NULL)
-        return 0;
+    if (ali == NULL) {
+        NullPtrError("GetPosition");
+        return SIZE_MAX;
+    }
     if (ali->SC != NULL && ali->timestamp != ali->SC->timestamp) {
         ali->SC->RaiseError("GetPosition",CONTAINER_ERROR_OBJECT_CHANGED);
         return SIZE_MAX;
@@ -1124,7 +1139,11 @@ static size_t GetPosition(Iterator *it)
 static void *GetLast(Iterator *it)
 {
     struct strCollectionIterator *sci = (struct strCollectionIterator *)it;
-    if (sci == NULL || sci->SC == NULL)
+    if (sci == NULL) {
+        NullPtrError("GetLast");
+        return NULL;
+    }
+    if (sci->SC == NULL)
         return NULL;
     if (sci->timestamp != sci->SC->timestamp) {
         sci->SC->RaiseError("GetLast",CONTAINER_ERROR_OBJECT_CHANGED);
@@ -1476,7 +1495,7 @@ static ElementType *Load(FILE *stream, ReadFunction readFn,void *arg)
             result->Allocator->free(result->contents[i]);
             result->contents[i] = NULL;
         err:
-            iError.RaiseError("ElementType.Load",CONTAINER_ERROR_FILE_READ);
+            iError.RaiseError("istrCollection.Load",CONTAINER_ERROR_FILE_READ);
             Finalize(result);
             return NULL;
         }
@@ -1606,7 +1625,7 @@ static int WriteToFile(const ElementType *SC,const  char *fileName)
         if (fputs(SC->contents[i],f) == EOF) {
 #endif
 writeerror:
-            iError.RaiseError("istrCollection.WriteToFile",CONTAINER_ERROR_FILE_WRITE);
+            SC->RaiseError("istrCollection.WriteToFile",CONTAINER_ERROR_FILE_WRITE);
             result = CONTAINER_ERROR_FILE_WRITE;
             break;
         }
@@ -1619,7 +1638,10 @@ writeerror:
     }
     if (i == SC->count)
         result = 1;
-    fclose(f);
+    if (fclose(f) == EOF && result > 0) {
+        SC->RaiseError("istrCollection.WriteToFile",CONTAINER_ERROR_FILE_WRITE);
+        result = CONTAINER_ERROR_FILE_WRITE;
+    }
     return result;
 }
 
@@ -1944,7 +1966,7 @@ static Mask *CompareEqual(const ElementType *left,const ElementType *right,Mask 
     }
     left_len = left->count; right_len = right->count;
     if (left_len != right_len) {
-        iError.RaiseError("iVector.CompareEqual",CONTAINER_ERROR_INCOMPATIBLE);
+        left->RaiseError("istrCollection.CompareEqual",CONTAINER_ERROR_INCOMPATIBLE);
         return NULL;
     }
     if (bytearray == NULL || iMask.Size(bytearray) < left_len) {
@@ -1971,21 +1993,17 @@ static Mask *CompareEqualScalar(const ElementType *left,const CHAR_TYPE *right,M
     size_t i;
     
     if (left == NULL || right == NULL) {
-        NullPtrError("CompareEqual");
+        NullPtrError("CompareEqualScalar");
         return NULL;
     }
     left_len = left->count;
     if (bytearray == NULL || iMask.Size(bytearray) < left_len) {
         if (bytearray) iMask.Finalize(bytearray);
         bytearray = iMask.Create(left_len);
-        if (bytearray == NULL) {
-       	    iError.RaiseError("CompareEqual",CONTAINER_ERROR_NOMEMORY);
-            return NULL;
-        }
     }
     else iMask.Clear(bytearray);
     if (bytearray == NULL) {
-        iError.RaiseError("CompareEqual",CONTAINER_ERROR_NOMEMORY);
+        left->RaiseError("istrCollection.CompareEqualScalar",CONTAINER_ERROR_NOMEMORY);
         return NULL;
     }
     for (i=0; i<left_len;i++) {
@@ -2005,7 +2023,7 @@ static int Select(ElementType *src,const Mask *m)
     if (src->Flags & CONTAINER_READONLY)
         return ReadOnlyError(src,"Select");
     if (m->length != src->count) {
-        iError.RaiseError("iVector.Select",CONTAINER_ERROR_BADMASK,src,m);
+        src->RaiseError("istrCollection.Select",CONTAINER_ERROR_BADMASK,src,m);
         return CONTAINER_ERROR_BADMASK;
     }
     for (i=0; i<m->length;i++) {
@@ -2030,10 +2048,12 @@ static ElementType  *SelectCopy(const ElementType *src,const Mask *m)
     size_t i,offset=0;
     ElementType *result;
     
-    if (src == NULL || m == NULL)
+    if (src == NULL || m == NULL) {
+        NullPtrError("SelectCopy");
         return NULL;
+    }
     if (m->length != src->count) {
-        iError.RaiseError("iVector.SelectCopy",CONTAINER_ERROR_BADMASK,src,m);
+        src->RaiseError("istrCollection.SelectCopy",CONTAINER_ERROR_BADMASK,src,m);
         return NULL;
     }
     result = CreateWithAllocator(src->count,src->Allocator);
@@ -2041,6 +2061,9 @@ static ElementType  *SelectCopy(const ElementType *src,const Mask *m)
         NoMemoryError(src,"SelectCopy");
         return NULL;
     }
+    result->strcompare = src->strcompare;
+    result->StringCompareContext = src->StringCompareContext;
+    result->DestructorFn = src->DestructorFn;
     for (i=0; i<m->length;i++) {
         if (m->data[i]) {
             result->contents[offset] = DuplicateString(result,src->contents[i],"SelectCopy");
@@ -2052,6 +2075,7 @@ static ElementType  *SelectCopy(const ElementType *src,const Mask *m)
             result->count++;
         }
     }
+    result->Flags = src->Flags;
     return result;
 }
 

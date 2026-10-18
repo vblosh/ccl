@@ -15,7 +15,7 @@ typedef unsigned int uint32_t;
 #include "containers.h"
 #include "ccl_internal.h"
 #define MAX_INDEX	20
-#define ALIGN(size, boundary) (((size) + ((boundary) - 1)) & ~((boundary) - 1))
+#define ALIGN(size, boundary) (((size) + ((size_t)(boundary) - 1)) & ~((size_t)(boundary) - 1))
 #define ALIGN_DEFAULT(size) ALIGN(size, 8)
 
 /*
@@ -166,10 +166,10 @@ static MemoryNode_t *newAllocator(Allocator *allocator, size_t in_size)
     /* Round up the block size to the next boundary, but always
      * allocate at least a certain size (MIN_ALLOC).
      */
-    size = ALIGN(in_size + MEMORYNODE_SIZE, BOUNDARY_SIZE);
-    if (size < in_size) {
+    if (in_size > SIZE_MAX - MEMORYNODE_SIZE - (BOUNDARY_SIZE - 1)) {
         return NULL;
     }
+    size = ALIGN(in_size + MEMORYNODE_SIZE, BOUNDARY_SIZE);
     if (size < MIN_ALLOC)
         size = MIN_ALLOC;
 
@@ -276,7 +276,7 @@ static void allocator_free(Allocator *allocator, MemoryNode_t *node)
 {
     MemoryNode_t *next, *freelist = NULL;
     uint32_t index, max_index;
-    uint32_t max_free_index, current_free_index;
+    size_t max_free_index, current_free_index;
 
     max_index = allocator->max_index;
     max_free_index = allocator->max_free_index;

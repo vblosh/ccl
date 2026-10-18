@@ -657,6 +657,16 @@ static int test_copy_element(void)
     TEST_ASSERT(iValArrayInt.CopyElement(v, 1, &result) == 1, "CopyElement succeeds");
     TEST_ASSERT(result == 20, "CopyElement copies correct value");
 
+    /* Verify CopyElement with an active slice (start=1, length=2, increment=1) */
+    iValArrayInt.SetSlice(v, 1, 2, 1);
+    TEST_ASSERT(iValArrayInt.CopyElement(v, 0, &result) == 1 && result == 20,
+                "CopyElement slice idx 0 retrieves element at start");
+    TEST_ASSERT(iValArrayInt.CopyElement(v, 1, &result) == 1 && result == 30,
+                "CopyElement slice idx 1 retrieves element at start+increment");
+    TEST_ASSERT(iValArrayInt.CopyElement(v, 2, &result) < 0,
+                "CopyElement slice rejects out-of-slice index");
+    iValArrayInt.ResetSlice(v);
+
     iValArrayInt.Finalize(v);
     return 0;
 }
@@ -909,8 +919,11 @@ static int test_valarray_specializations(void)
                 "Second double ValArray accepts comparison values");
     TEST_ASSERT(iValArrayDouble.Abs(double_array) == 1,
                 "Double ValArray Abs succeeds");
-    TEST_ASSERT(iValArrayDouble.FCompare(double_array, double_other, float_mask, 0.01) != NULL,
-                "Double ValArray FCompare succeeds");
+    float_mask = iValArrayDouble.FCompare(double_array, double_other, float_mask, 0.01);
+    TEST_ASSERT(float_mask != NULL, "Double ValArray FCompare succeeds");
+    Mask *null_mask = iValArrayDouble.FCompare(double_array, double_other, NULL, 0.01);
+    TEST_ASSERT(null_mask != NULL, "Double ValArray FCompare allocates mask when NULL is provided");
+    iMask.Finalize(null_mask);
     TEST_ASSERT(iValArrayDouble.Inverse(double_array) == 1,
                 "Double ValArray Inverse succeeds");
     TEST_ASSERT(iValArrayDouble.GetElement(double_array, 1) == 0.5,

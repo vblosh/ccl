@@ -344,6 +344,7 @@ static int test_near_size_max_requests_do_not_mutate_pool(void)
     malloc_before = state_a.malloc_calls;
     TEST_REQUIRE(iPool.Alloc(pool, SIZE_MAX) == NULL);
     TEST_REQUIRE(iPool.Alloc(pool, SIZE_MAX - 7) == NULL);
+    TEST_REQUIRE(iPool.Alloc(pool, SIZE_MAX - 4096) == NULL);
     TEST_REQUIRE(state_a.malloc_calls == malloc_before);
     TEST_REQUIRE(iPool.Alloc(pool, 1) != NULL);
     TEST_REQUIRE(state_a.malloc_calls == malloc_before);

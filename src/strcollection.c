@@ -1,5 +1,5 @@
 /*------------------------------------------------------------------------
-Module:        wstrcollection.c
+Module:        strcollection.c
 Author:        jacob
 Project:       Containers
 State:
@@ -19,7 +19,6 @@ Added fixes from Gerome. Oct. 20 2005
 #define STRSTR strstr
 #define ElementType strCollection
 #define iElementType istrCollection
-#define STRSTR strstr 
 #define GETLINE GetLine 
 #define STRCOMPAREFUNCTION StringCompareFn
 #define INTERFACE_TYP strCollectionInterface

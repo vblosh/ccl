@@ -182,16 +182,22 @@ static int test_null_arguments_and_forwarded_errors(void)
 
 	queue = iQueue.Create(sizeof(int));
 	TEST_REQUIRE(queue != NULL);
+	clear_error();
+	TEST_REQUIRE(iQueue.Front(queue, NULL) == CONTAINER_ERROR_BADARG &&
+			error_is("iQueue.Front", CONTAINER_ERROR_BADARG));
+	clear_error();
+	TEST_REQUIRE(iQueue.Back(queue, NULL) == CONTAINER_ERROR_BADARG &&
+			error_is("iQueue.Back", CONTAINER_ERROR_BADARG));
 	TEST_REQUIRE(iQueue.Enqueue(queue, &value) == 1);
 	clear_error();
 	TEST_REQUIRE(iQueue.Enqueue(queue, NULL) == CONTAINER_ERROR_BADARG &&
 			error_is("iList.Add", CONTAINER_ERROR_BADARG));
 	clear_error();
 	TEST_REQUIRE(iQueue.Front(queue, NULL) == CONTAINER_ERROR_BADARG &&
-			error_is("iList.CopyElement", CONTAINER_ERROR_BADARG));
+			error_is("iQueue.Front", CONTAINER_ERROR_BADARG));
 	clear_error();
 	TEST_REQUIRE(iQueue.Back(queue, NULL) == CONTAINER_ERROR_BADARG &&
-			error_is("iList.CopyElement", CONTAINER_ERROR_BADARG));
+			error_is("iQueue.Back", CONTAINER_ERROR_BADARG));
 	TEST_REQUIRE(iQueue.Dequeue(queue, NULL) == 1);
 	TEST_REQUIRE(iQueue.Dequeue(queue, NULL) == 0);
 	TEST_REQUIRE(iQueue.Finalize(queue) == 1);

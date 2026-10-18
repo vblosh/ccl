@@ -1,5 +1,7 @@
 #ifndef __CCL_INTERNAL_H__
 #define __CCL_INTERNAL_H__
+#include <stdint.h>
+#include <stddef.h>
 #ifdef NO_C99
 /* No flexible arrays */
 #define MINIMUM_ARRAY_INDEX     1
@@ -12,7 +14,7 @@ int snprintf(char *restrict s, size_t n, const char *restrict format, ...);
 #endif
 
 /* This macro supposes that n is a power of two */
-#define roundupTo(x,n) (((x)+((n)-1))&(~((n)-1)))
+#define roundupTo(x,n) (((x)+((size_t)(n)-1))&(~((size_t)(n)-1)))
 #define roundup(x) roundupTo(x,sizeof(void *))
 /* This function is needed to read a line from a file.
    The resulting line is allocated with the given memory manager
@@ -125,6 +127,10 @@ struct _List {
 };
 #define LIST_MAGIC_NUMBER	86644334455544331LL
 
+/* Iterators end with a trailing ElementBuffer sized dynamically for the
+ * container's ElementSize. Callers using placement initialization (InitIterator)
+ * MUST size their storage using SizeofIterator(container) rather than
+ * sizeof(struct ListIterator) to ensure sufficient capacity for element reads. */
 struct ListIterator {
     Iterator it;
 	long long Magic;
@@ -372,7 +378,7 @@ struct WstrCollection {
 /*----------------------------------------------------------------------------*/
 /* Heap object                                                                */
 /*----------------------------------------------------------------------------*/
-#define INVALID_POINTER_VALUE (void *)(~0)
+#define INVALID_POINTER_VALUE ((void *)~(uintptr_t)0)
 struct tagHeapObject {
     HeapInterface *VTable;
     unsigned BlockCount;

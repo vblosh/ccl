@@ -102,7 +102,8 @@ static void Apply(SequentialContainer *sc, int (*fn)(void *, void *), void *arg)
 
 static int Equal(const SequentialContainer *left, const SequentialContainer *right)
 {
-	if (left == NULL || left->vTable == NULL || right == NULL)
+	if (left == NULL || left->vTable == NULL ||
+	    right == NULL || right->vTable == NULL)
 		return BadArg("iSequentialContainer.Equal");
 	return iGeneric.Equal((const GenericContainer *)left,
 	                      (const GenericContainer *)right);
@@ -197,6 +198,8 @@ static int Add(SequentialContainer *sc, const void *element)
 		 * contract is fixed-size and therefore cannot represent it safely. */
 		return Unsupported("iSequentialContainer.Add");
 	}
+	if (sc->vTable->Add == NULL)
+		return Unsupported("iSequentialContainer.Add");
 	return sc->vTable->Add(sc, element);
 }
 
@@ -208,6 +211,8 @@ static void *GetElement(const SequentialContainer *sc, size_t idx)
 	}
 	if (IsStringTable(sc))
 		return NULL; /* variable-sized string values are not this ABI */
+	if (sc->vTable->GetElement == NULL)
+		return NULL;
 	return sc->vTable->GetElement(sc, idx);
 }
 
@@ -216,6 +221,8 @@ static int Push(SequentialContainer *sc, void *element)
 	if (sc == NULL || sc->vTable == NULL || element == NULL)
 		return BadArg("iSequentialContainer.Push");
 	if (IsStringTable(sc))
+		return Unsupported("iSequentialContainer.Push");
+	if (sc->vTable->Push == NULL)
 		return Unsupported("iSequentialContainer.Push");
 	return sc->vTable->Push(sc, element);
 }
@@ -226,6 +233,8 @@ static int Pop(SequentialContainer *sc, void *result)
 		return BadArg("iSequentialContainer.Pop");
 	if (IsStringTable(sc))
 		return Unsupported("iSequentialContainer.Pop");
+	if (sc->vTable->Pop == NULL)
+		return Unsupported("iSequentialContainer.Pop");
 	return sc->vTable->Pop(sc, result);
 }
 
@@ -235,6 +244,8 @@ static int InsertAt(SequentialContainer *sc, size_t idx, const void *value)
 		return BadArg("iSequentialContainer.InsertAt");
 	if (IsStringTable(sc))
 		return Unsupported("iSequentialContainer.InsertAt");
+	if (sc->vTable->InsertAt == NULL)
+		return Unsupported("iSequentialContainer.InsertAt");
 	return sc->vTable->InsertAt(sc, idx, value);
 }
 
@@ -242,6 +253,8 @@ static int EraseAt(SequentialContainer *sc, size_t idx)
 {
 	if (sc == NULL || sc->vTable == NULL) return BadArg("iSequentialContainer.EraseAt");
 	if (IsStringTable(sc)) return Unsupported("iSequentialContainer.EraseAt");
+	if (sc->vTable->EraseAt == NULL)
+		return Unsupported("iSequentialContainer.EraseAt");
 	return sc->vTable->EraseAt(sc, idx);
 }
 
@@ -250,6 +263,8 @@ static int ReplaceAt(SequentialContainer *sc, size_t idx, const void *value)
 	if (sc == NULL || sc->vTable == NULL || value == NULL)
 		return BadArg("iSequentialContainer.ReplaceAt");
 	if (IsStringTable(sc)) return Unsupported("iSequentialContainer.ReplaceAt");
+	if (sc->vTable->ReplaceAt == NULL)
+		return Unsupported("iSequentialContainer.ReplaceAt");
 	return sc->vTable->ReplaceAt(sc, idx, value);
 }
 
@@ -259,6 +274,8 @@ static int IndexOf(const SequentialContainer *sc, const void *value,
 	if (sc == NULL || sc->vTable == NULL || value == NULL || result == NULL)
 		return BadArg("iSequentialContainer.IndexOf");
 	if (IsStringTable(sc)) return Unsupported("iSequentialContainer.IndexOf");
+	if (sc->vTable->IndexOf == NULL)
+		return Unsupported("iSequentialContainer.IndexOf");
 	return sc->vTable->IndexOf(sc, value, args, result);
 }
 
@@ -278,6 +295,10 @@ static int Append(SequentialContainer *destination, SequentialContainer *source)
 	if (destination->ElementSize != source->ElementSize) {
 		iError.RaiseError("iSequentialContainer.Append", CONTAINER_ERROR_INCOMPATIBLE);
 		return CONTAINER_ERROR_INCOMPATIBLE;
+	}
+	if (destination->Flags & CONTAINER_READONLY) {
+		iError.RaiseError("iSequentialContainer.Append", CONTAINER_ERROR_READONLY);
+		return CONTAINER_ERROR_READONLY;
 	}
 
 	iterator = NewIterator(source);

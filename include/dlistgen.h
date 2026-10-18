@@ -19,6 +19,11 @@ extern "C" {
 #undef LIST_ELEMENT_
 #undef LIST_STRUCT_INTERNAL_NAME
 #undef INTERFACE_STRUCT_INTERNAL_NAME
+#undef CONCAT
+#undef CONCAT3_
+#undef CONCAT3
+#undef EVAL
+#undef ERROR_RETURN
 
 #define CONCAT(x,y) x ## y
 #define CONCAT3_(a,b,c) a##b##c

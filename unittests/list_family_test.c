@@ -450,13 +450,97 @@ cleanup:
     return -1;
 }
 
+static unsigned observed_erase_gen;
+static size_t observed_erase_gen_pos;
+static void gen_observer(const void *obj, unsigned op, const void *extra[])
+{
+    (void)obj;
+    if (op == CCL_ERASE_AT) {
+        ++observed_erase_gen;
+        observed_erase_gen_pos = (size_t)(uintptr_t)extra[1];
+    }
+}
+
+static int test_review_findings_listgen(void)
+{
+    doubleList *dl = NULL;
+    intList *il = NULL;
+    intList *sub = NULL;
+    Iterator *it = NULL;
+    double dval = 3.14159;
+    double dval2 = 2.71828;
+    int ival1 = 10, ival2 = 20, ival3 = 30;
+    int result = -1;
+
+    /* 1. NewIterator on read-only DoubleList (8-byte DATA_TYPE):
+       Must not overflow when reading elements with element buffer tail. */
+    dl = idoubleList.Create();
+    TEST_REQUIRE(dl != NULL);
+    TEST_REQUIRE(idoubleList.Add(dl, dval) == 1);
+    TEST_REQUIRE(idoubleList.Add(dl, dval2) == 1);
+    idoubleList.SetFlags(dl, CONTAINER_READONLY);
+    it = idoubleList.NewIterator(dl);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    TEST_REQUIRE(it->GetNext(it) != NULL);
+    idoubleList.DeleteIterator(it);
+    it = NULL;
+    idoubleList.Finalize(dl);
+    dl = NULL;
+
+    /* 2. EraseMatching observer notification */
+    il = iintList.Create();
+    TEST_REQUIRE(il != NULL);
+    TEST_REQUIRE(iintList.Add(il, ival1) == 1);
+    TEST_REQUIRE(iintList.Add(il, ival2) == 1);
+    TEST_REQUIRE(iintList.Add(il, ival3) == 1);
+    TEST_REQUIRE(iObserver.Subscribe(il, gen_observer, CCL_ERASE_AT) == 1);
+    observed_erase_gen = 0;
+    observed_erase_gen_pos = (size_t)-1;
+    TEST_REQUIRE(iintList.Erase(il, ival2) == 1);
+    TEST_REQUIRE(observed_erase_gen == 1);
+    TEST_REQUIRE(observed_erase_gen_pos == 1);
+    iObserver.Unsubscribe(il, gen_observer);
+
+    /* 3. GetRange error checks and RaiseError propagation */
+    TEST_REQUIRE(iintList.GetRange(NULL, 0, 1) == NULL);
+    sub = iintList.GetRange(il, 0, 1);
+    TEST_REQUIRE(sub != NULL);
+    TEST_REQUIRE(sub->RaiseError == il->RaiseError);
+    iintList.Finalize(sub);
+    sub = NULL;
+
+    /* 4. EraseRange on read-only list */
+    iintList.SetFlags(il, CONTAINER_READONLY);
+    TEST_REQUIRE(iintList.EraseRange(il, 0, 1) == CONTAINER_ERROR_READONLY);
+    iintList.SetFlags(il, 0);
+
+    /* 5. Static interface initialization: Finalize, InsertIn, GetRange, SplitAfter */
+    TEST_REQUIRE(iintList.Finalize != NULL);
+    TEST_REQUIRE(iintList.InsertIn != NULL);
+    TEST_REQUIRE(iintList.GetRange != NULL);
+    TEST_REQUIRE(iintList.SplitAfter != NULL);
+
+    iintList.Finalize(il);
+    il = NULL;
+    result = 0;
+
+cleanup:
+    if (it != NULL) idoubleList.DeleteIterator(it);
+    if (dl != NULL) idoubleList.Finalize(dl);
+    if (sub != NULL) iintList.Finalize(sub);
+    if (il != NULL) iintList.Finalize(il);
+    return result;
+}
+
 static const TestCase tests[] = {
     {"int scalar lifecycle", test_int_scalar_lifecycle},
     {"int sort compare and iterator", test_int_sort_compare_and_iterator},
     {"int placement iterator and ranges", test_int_placement_iterator_and_ranges},
     {"scalar specializations", test_scalar_specializations},
     {"typed load width boundary", test_typed_load_rejects_wrong_width},
-    {"delegated surface and masks", test_delegated_surface_and_masks}
+    {"delegated surface and masks", test_delegated_surface_and_masks},
+    {"review findings listgen fixes", test_review_findings_listgen}
 };
 
 static const TestSuite suite = {

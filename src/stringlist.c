@@ -22,3 +22,4 @@ static const guid StringListGuid = {0x13327EA7,0x78ED,0x4FD2,
 #undef LIST_ELEMENT
 #undef LIST_TYPE
 #undef LIST_TYPE_Iterator
+#undef DATA_TYPE

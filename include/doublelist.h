@@ -1,3 +1,5 @@
+#ifndef CCL_DOUBLELIST_H
+#define CCL_DOUBLELIST_H
 #include "containers.h"
 #undef DATA_TYPE
 #define DATA_TYPE double
@@ -19,4 +21,4 @@
 #undef EVAL
 #undef ERROR_RETURN
 #undef DEFAULT_START_SIZE
-#undef DATA_TYPE
+#endif

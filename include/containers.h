@@ -206,6 +206,8 @@ typedef struct tagGenericContainerInterface {
     ErrorFunction (*SetErrorFunction)(GenericContainer *Gen,ErrorFunction fn);
     size_t (*Sizeof)(const GenericContainer *Gen);
     Iterator *(*NewIterator)(GenericContainer *Gen);
+    /* Placement storage for InitIterator MUST be at least SizeofIterator(Gen)
+       bytes (not sizeof(Iterator)), as iterators embed a trailing element buffer. */
     int (*InitIterator)(GenericContainer *Gen,void *buf);
     int (*DeleteIterator)(Iterator *);
     size_t (*SizeofIterator)(const GenericContainer *Gen);
@@ -266,7 +268,7 @@ extern SequentialContainerInterface iSequentialContainer;
 typedef struct AssociativeContainer AssociativeContainer;
 typedef struct tagAssociativeContainerInterface {
     GenericContainerInterface Generic;
-    int (*Add)(SequentialContainer *SC,const void *key,const void *Element);
+    int (*Add)(AssociativeContainer *SC,const void *key,const void *Element);
     void *(*GetElement)(const AssociativeContainer *SC,const void *Key);
     int (*Replace)(AssociativeContainer *SC, const void *Key, const void *element);
 } AssociativeContainerInterface;
@@ -1171,6 +1173,7 @@ enum CCL_OPERATIONS{
     CCL_ADD=1,
     CCL_ADDRANGE = CCL_ADD << 1,
     CCL_ERASE_AT = CCL_ADDRANGE << 1,
+    CCL_ERASE = CCL_ERASE_AT,
     CCL_CLEAR = CCL_ERASE_AT<<1,
     CCL_FINALIZE = CCL_CLEAR<<1,
     CCL_PUSH = CCL_FINALIZE << 1,
@@ -1179,7 +1182,7 @@ enum CCL_OPERATIONS{
     CCL_REPLACEAT = CCL_REPLACE << 1,
     CCL_INSERT = CCL_REPLACEAT << 1,
     CCL_INSERT_AT = CCL_INSERT << 1,
-    CCL_INSERT_IN = CCL_INSERT << 1,
+    CCL_INSERT_IN = CCL_INSERT_AT << 1,
     CCL_APPEND = CCL_INSERT_IN << 1,
     CCL_COPY = CCL_APPEND << 1
 };

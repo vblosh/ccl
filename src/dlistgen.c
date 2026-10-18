@@ -118,10 +118,7 @@ static int IndexOf(const LIST_TYPE * l, const DATA_TYPE ElementToFind, void *Ext
 
 static size_t Sizeof(const LIST_TYPE * l)
 {
-    if (l == NULL) {
-        return sizeof(Dlist);
-    }
-    return sizeof(LIST_TYPE) + l->ElementSize * l->count + l->count * offsetof(LIST_ELEMENT,Data);
+    return iDlist.Sizeof((const Dlist *)l);
 }
 
 static size_t SizeofIterator(const LIST_TYPE * l)
@@ -437,8 +434,12 @@ static int InsertInTyped(LIST_TYPE *l, size_t idx, LIST_TYPE *data)
 
 static int AppendTyped(LIST_TYPE *l, LIST_TYPE *data)
 {
-    if (l == data || l == NULL || data == NULL)
+    if (l == NULL || data == NULL)
+        return iError.NullPtrError("typedDlist.Append");
+    if (l == data) {
+        l->RaiseError("typedDlist.Append", CONTAINER_ERROR_BADARG, l);
         return CONTAINER_ERROR_BADARG;
+    }
     if (data->count != 0 &&
         (l->Allocator != data->Allocator || l->Heap != data->Heap)) {
         l->RaiseError("typedDlist.Append", CONTAINER_ERROR_INCOMPATIBLE);

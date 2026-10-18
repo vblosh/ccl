@@ -1,6 +1,11 @@
+#ifndef CCL_LONGLONGLIST_H
+#define CCL_LONGLONGLIST_H
 #include "containers.h"
 #undef DATA_TYPE
+#ifndef CCL_LONGLONG_TYPEDEF
+#define CCL_LONGLONG_TYPEDEF
 typedef long long longlong;
+#endif
 #define DATA_TYPE longlong
 #include "listgen.h"
 #undef DATA_TYPE
@@ -20,4 +25,4 @@ typedef long long longlong;
 #undef EVAL
 #undef ERROR_RETURN
 #undef DEFAULT_START_SIZE
-#undef DATA_TYPE
+#endif

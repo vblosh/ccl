@@ -14,9 +14,16 @@ extern "C" {
 #undef LIST_TYPE_
 #undef INTERFACE
 #undef ITERATOR
-#undef ITERFACE_NAME
+#undef INTERFACE_NAME
 #undef LIST_ELEMENT
 #undef LIST_ELEMENT_
+#undef LIST_STRUCT_INTERNAL_NAME
+#undef INTERFACE_STRUCT_INTERNAL_NAME
+#undef CONCAT
+#undef CONCAT3_
+#undef CONCAT3
+#undef EVAL
+#undef ERROR_RETURN
 
 #define CONCAT(x,y) x ## y
 #define CONCAT3_(a,b,c) a##b##c
@@ -67,8 +74,35 @@ struct ITERATOR(DATA_TYPE) {
     LIST_ELEMENT *Current;
     LIST_ELEMENT *Previous;
     unsigned  timestamp;
-    DATA_TYPE ElementBuffer;
+    unsigned char ElementBuffer[1];
 };
+
+#include "ccl_internal.h"
+#ifdef __cplusplus
+#define LIST_STATIC_ASSERT static_assert
+#else
+#define LIST_STATIC_ASSERT _Static_assert
+#endif
+LIST_STATIC_ASSERT(sizeof(LIST_TYPE) == sizeof(List),
+               "typed list header must match generic size");
+#if !defined(__arm__) || defined(__aarch64__) || defined(SPARC32)
+LIST_STATIC_ASSERT(offsetof(LIST_ELEMENT, Data) == offsetof(ListElement, Data),
+               "typed list element data must match generic offset");
+#endif
+LIST_STATIC_ASSERT(offsetof(struct ITERATOR(DATA_TYPE), Magic) ==
+                   offsetof(struct ListIterator, Magic),
+               "typed list iterator must match generic Magic offset");
+LIST_STATIC_ASSERT(offsetof(struct ITERATOR(DATA_TYPE), L) ==
+                   offsetof(struct ListIterator, L),
+               "typed list iterator must match generic list offset");
+LIST_STATIC_ASSERT(offsetof(struct ITERATOR(DATA_TYPE), ElementBuffer) ==
+                   offsetof(struct ListIterator, ElementBuffer),
+               "typed list iterator buffer must match generic offset");
+LIST_STATIC_ASSERT(sizeof(struct ITERATOR(DATA_TYPE)) ==
+                   sizeof(struct ListIterator),
+               "typed list iterator must match generic size");
+#undef LIST_STATIC_ASSERT
+
 extern INTERFACE(DATA_TYPE) INTERFACE_NAME(DATA_TYPE);
 
 struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {

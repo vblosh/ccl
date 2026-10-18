@@ -4,3 +4,4 @@
 #define COMPARE_EXPRESSION(A, B) (B > A ? -1 : B != A)
 #include "dlistgen.c"
 #undef DATA_TYPE
+#undef COMPARE_EXPRESSION

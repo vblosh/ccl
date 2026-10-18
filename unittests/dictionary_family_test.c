@@ -517,13 +517,41 @@ static int test_dictionary_views_observers_and_stale_iterators(void)
     TEST_REQUIRE(iterator->GetNext(iterator) != NULL);
     iDictionary.Add(dict,"three",&one);
     TEST_REQUIRE(iterator->GetNext(iterator) == NULL);
+    TEST_REQUIRE(iterator->GetCurrent(iterator) == NULL);
     iDictionary.DeleteIterator(iterator);
     iterator = NULL;
+
+    {
+        Iterator *seek_it;
+        void *val0;
+        void *val1;
+        seek_it = iDictionary.NewIterator(dict);
+        TEST_REQUIRE(seek_it != NULL);
+        val0 = seek_it->Seek(seek_it, 0);
+        TEST_REQUIRE(val0 != NULL);
+        TEST_REQUIRE(seek_it->GetPosition(seek_it) == 0);
+        val1 = seek_it->Seek(seek_it, 1);
+        TEST_REQUIRE(val1 != NULL);
+        TEST_REQUIRE(seek_it->GetPosition(seek_it) == 1);
+        iDictionary.DeleteIterator(seek_it);
+    }
+
+    {
+        char stack_buf[512];
+        Dictionary *stack_dict;
+        TEST_REQUIRE(sizeof(stack_buf) >= iDictionary.Sizeof(NULL));
+        stack_dict = iDictionary.Init((Dictionary *)stack_buf, sizeof(int), 10);
+        TEST_REQUIRE(stack_dict == (Dictionary *)stack_buf);
+        TEST_REQUIRE(iDictionary.Add(stack_dict, "item", &one) == 1);
+        TEST_REQUIRE(iDictionary.Finalize(stack_dict) == 1);
+    }
+
     TEST_REQUIRE(iDictionary.InitIterator(dict,storage) == 1);
     iterator = (Iterator *)storage;
     TEST_REQUIRE(iterator->GetFirst(iterator) != NULL);
     iDictionary.SetHashFunction(dict,constant_hash);
     TEST_REQUIRE(iterator->GetNext(iterator) == NULL);
+    TEST_REQUIRE(iterator->GetCurrent(iterator) == NULL);
     iterator = NULL;
 
     stream = ccl_test_tmpfile();

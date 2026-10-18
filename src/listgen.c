@@ -55,6 +55,7 @@ static int EraseMatching(LIST_TYPE *l, DATA_TYPE elem, int all)
 {
     LIST_ELEMENT *current;
     LIST_ELEMENT *previous = NULL;
+    size_t position = 0;
     int result = CONTAINER_ERROR_NOTFOUND;
     CompareInfo ci;
 
@@ -70,6 +71,8 @@ static int EraseMatching(LIST_TYPE *l, DATA_TYPE elem, int all)
     while (current != NULL) {
         LIST_ELEMENT *next = current->Next;
         if (l->Compare(&current->Data, &elem, &ci) == 0) {
+            if (l->Flags & CONTAINER_HAS_OBSERVER)
+                iObserver.Notify(l, CCL_ERASE_AT, current, (void *)position);
             if (previous == NULL)
                 l->First = next;
             else
@@ -89,6 +92,7 @@ static int EraseMatching(LIST_TYPE *l, DATA_TYPE elem, int all)
                 break;
         } else {
             previous = current;
+            ++position;
         }
         current = next;
     }
@@ -141,10 +145,7 @@ static int IndexOf(const LIST_TYPE * l, const DATA_TYPE ElementToFind, void *Ext
 
 static size_t Sizeof(const LIST_TYPE * l)
 {
-    if (l == NULL) {
-        return sizeof(List);
-    }
-    return sizeof(LIST_TYPE) + l->ElementSize * l->count + l->count * offsetof(LIST_ELEMENT,Data);
+    return iList.Sizeof((const List *)l);
 }
 
 static size_t SizeofIterator(const LIST_TYPE * l)
@@ -178,9 +179,17 @@ static LIST_TYPE *Load(FILE * stream, ReadFunction loadFn, void *arg)
 static Iterator *NewIterator(LIST_TYPE * L)
 {
     struct ITERATOR(DATA_TYPE) *result;
-    if (L == NULL)
+    size_t allocSize;
+    if (L == NULL) {
+        iError.NullPtrError("iList.NewIterator");
         return NULL;
-    result = (struct ITERATOR(DATA_TYPE) *)L->Allocator->malloc(sizeof(*result));
+    }
+    allocSize = iList.SizeofIterator((const List *)L);
+    if (allocSize == 0)
+        return NULL;
+    if (allocSize < sizeof(*result))
+        allocSize = sizeof(*result);
+    result = (struct ITERATOR(DATA_TYPE) *)L->Allocator->malloc(allocSize);
     if (result == NULL) {
         L->RaiseError("iList.NewIterator", CONTAINER_ERROR_NOMEMORY);
         return NULL;
@@ -252,7 +261,7 @@ static void QSORT(const LIST_TYPE *l, LIST_ELEMENT **base, size_t num)
   LIST_ELEMENT **lo, **hi, **mid;
   LIST_ELEMENT **loguy, **higuy;
   size_t size;
-  LIST_ELEMENT **lostk[30], **histk[30];
+  LIST_ELEMENT **lostk[CHAR_BIT * sizeof(size_t)], **histk[CHAR_BIT * sizeof(size_t)];
   int stkptr;
 
   if (num < 2) return;
@@ -349,6 +358,10 @@ static int Sort(LIST_TYPE * l)
         l->RaiseError("iList.Sort", CONTAINER_ERROR_READONLY);
         return CONTAINER_ERROR_READONLY;
     }
+    if (l->count > SIZE_MAX / sizeof(LIST_ELEMENT *)) {
+        l->RaiseError("iList.Sort", CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
+    }
     tab = l->Allocator->malloc(l->count * sizeof(LIST_ELEMENT *));
     if (tab == NULL) {
         l->RaiseError("iList.Sort", CONTAINER_ERROR_NOMEMORY);
@@ -395,7 +408,7 @@ static int EraseRange(LIST_TYPE *l, size_t start, size_t end)
     if (l == NULL)
         return iError.NullPtrError("EraseRange");
     if (l->Flags & CONTAINER_READONLY)
-        return (iError.RaiseError("iList.EraseRange", CONTAINER_ERROR_READONLY),
+        return (l->RaiseError("iList.EraseRange", CONTAINER_ERROR_READONLY),
                 CONTAINER_ERROR_READONLY);
     if (start >= l->count)
         return 0;
@@ -431,14 +444,17 @@ static LIST_TYPE *GetRange(const LIST_TYPE *l, size_t start, size_t end)
     LIST_ELEMENT *element;
     size_t count;
     size_t position;
-    if (l == NULL)
+    if (l == NULL) {
+        iError.NullPtrError("iList.GetRange");
         return NULL;
+    }
     if (l->count != 0 && (start >= end || start >= l->count))
         return NULL;
     result = CreateWithAllocator(l->Allocator);
     if (result == NULL)
         return NULL;
     result->Compare = l->Compare;
+    result->RaiseError = l->RaiseError;
     if (l->count == 0)
         return result;
     if (end > l->count)
@@ -477,44 +493,44 @@ static LIST_TYPE *SetVTable(LIST_TYPE *result)
     static int Initialized;
     INTERFACE(DATA_TYPE) *intface = &INTERFACE_NAME(DATA_TYPE);
     
+    if (!Initialized) {
+        Initialized = 1;
+        intface->FirstElement = (LIST_ELEMENT *(*)(LIST_TYPE *))iList.FirstElement;
+        intface->LastElement = (LIST_ELEMENT *(*)(LIST_TYPE *))iList.LastElement;
+        intface->GetElement = (DATA_TYPE *(*)(const LIST_TYPE *,size_t))iList.GetElement;
+        intface->Clear = (int (*)(LIST_TYPE *))iList.Clear;
+        intface->EraseAt = (int (*)(LIST_TYPE *,size_t))iList.EraseAt;
+        intface->EraseRange = EraseRange;
+        intface->RemoveRange = (int (*)(LIST_TYPE *,size_t,size_t))iList.RemoveRange;
+        intface->Select = (int (*)(LIST_TYPE *,const Mask *))iList.Select;
+        intface->SetFlags = (unsigned (*)(LIST_TYPE *,unsigned))iList.SetFlags;
+        intface->GetFlags = (unsigned (*)(const LIST_TYPE *))iList.GetFlags;
+        intface->SetDestructor = (DestructorFunction (*)(LIST_TYPE *, DestructorFunction))iList.SetDestructor;
+        intface->Apply = (int (*)(LIST_TYPE *, int (Applyfn) (DATA_TYPE *, void * ), void *))iList.Apply;
+        intface->Reverse = (int (*)(LIST_TYPE *))iList.Reverse;
+        intface->SetCompareFunction = (CompareFunction (*)(LIST_TYPE *, CompareFunction ))iList.SetCompareFunction;
+        intface->GetRange = GetRange;
+        intface->Skip = (LIST_ELEMENT *(*)(LIST_ELEMENT *, size_t))iList.Skip;
+        intface->Append = (int (*)(LIST_TYPE *, LIST_TYPE *))iList.Append;
+        intface->Equal = (int (*)(const LIST_TYPE *, const LIST_TYPE *))iList.Equal;
+        intface->InsertIn = InsertIn;
+        intface->AddRange = (int (*)(LIST_TYPE *, size_t, const DATA_TYPE *))iList.AddRange;
+        intface->SetErrorFunction = (ErrorFunction (*)(LIST_TYPE *, ErrorFunction))iList.SetErrorFunction;
+        intface->UseHeap = (int (*)(LIST_TYPE *, const ContainerAllocator *))iList.UseHeap;
+        intface->GetHeap = (ContainerHeap *(*)(const LIST_TYPE *))iList.GetHeap;
+        intface->RotateLeft = (int (*)(LIST_TYPE *, size_t))iList.RotateLeft;
+        intface->RotateRight = (int (*)(LIST_TYPE *, size_t))iList.RotateRight;
+        intface->Save = (int (*)(const LIST_TYPE *, FILE *, SaveFunction, void *))iList.Save;
+        intface->Size = (size_t (*)(const LIST_TYPE *))iList.Size;
+        intface->DeleteIterator = (int (*)(Iterator *))iList.DeleteIterator;
+        intface->SplitAfter = SplitAfter;
+        intface->Back = (DATA_TYPE *(*)(const LIST_TYPE *))iList.Back;
+        intface->Front = (DATA_TYPE *(*)(const LIST_TYPE *))iList.Front;
+        intface->Finalize = Finalize;
+    }
     if (result == NULL)
         return NULL;
     result->VTable = intface;
-    if (Initialized) return result;
-    Initialized = 1;
-    intface->FirstElement = (LIST_ELEMENT *(*)(LIST_TYPE *))iList.FirstElement;
-    intface->LastElement = (LIST_ELEMENT *(*)(LIST_TYPE *))iList.LastElement;
-    intface->GetElement = (DATA_TYPE *(*)(const LIST_TYPE *,size_t))iList.GetElement;
-    intface->Clear = (int (*)(LIST_TYPE *))iList.Clear;
-    intface->EraseAt = (int (*)(LIST_TYPE *,size_t))iList.EraseAt;
-    intface->EraseRange = EraseRange;
-    intface->RemoveRange = (int (*)(LIST_TYPE *,size_t,size_t))iList.RemoveRange;
-    intface->Select = (int (*)(LIST_TYPE *,const Mask *))iList.Select;
-    intface->SetFlags = (unsigned (*)(LIST_TYPE *,unsigned))iList.SetFlags;
-    intface->GetFlags = (unsigned (*)(const LIST_TYPE *))iList.GetFlags;
-    intface->SetDestructor = (DestructorFunction (*)(LIST_TYPE *, DestructorFunction))iList.SetDestructor;
-    intface->Apply = (int (*)(LIST_TYPE *, int (Applyfn) (DATA_TYPE *, void * ), void *))iList.Apply;
-    intface->Reverse = (int (*)(LIST_TYPE *))iList.Reverse;
-    intface->SetCompareFunction = (CompareFunction (*)(LIST_TYPE *, CompareFunction ))iList.SetCompareFunction;
-    intface->GetRange = GetRange;
-    intface->Skip = (LIST_ELEMENT *(*)(LIST_ELEMENT *, size_t))iList.Skip;
-    intface->Append = (int (*)(LIST_TYPE *, LIST_TYPE *))iList.Append;
-    intface->Equal = (int (*)(const LIST_TYPE *, const LIST_TYPE *))iList.Equal;
-    intface->InsertIn = InsertIn;
-    intface->AddRange = (int (*)(LIST_TYPE *, size_t, const DATA_TYPE *))iList.AddRange;
-    intface->SetErrorFunction = (ErrorFunction (*)(LIST_TYPE *, ErrorFunction))iList.SetErrorFunction;
-    intface->SetFlags = (unsigned (*)(LIST_TYPE * l, unsigned newval))iList.SetFlags;
-    intface->UseHeap = (int (*)(LIST_TYPE *, const ContainerAllocator *))iList.UseHeap;
-    intface->GetHeap = (ContainerHeap *(*)(const LIST_TYPE *))iList.GetHeap;
-    intface->RotateLeft = (int (*)(LIST_TYPE *, size_t))iList.RotateLeft;
-    intface->RotateRight = (int (*)(LIST_TYPE *, size_t))iList.RotateRight;
-    intface->Save = (int (*)(const LIST_TYPE *, FILE *, SaveFunction, void *))iList.Save;
-    intface->Size = (size_t (*)(const LIST_TYPE *))iList.Size;
-    intface->DeleteIterator = (int (*)(Iterator *))iList.DeleteIterator;
-    intface->SplitAfter = SplitAfter;
-    intface->Back = (DATA_TYPE *(*)(const LIST_TYPE *))iList.Back;
-    intface->Front = (DATA_TYPE *(*)(const LIST_TYPE *))iList.Front;
-    intface->Finalize = Finalize;
     return result;
 }
 
@@ -621,7 +637,7 @@ INTERFACE(DATA_TYPE)   INTERFACE_NAME(DATA_TYPE) = {
     Contains,
     Erase,
     EraseAll,
-    NULL,         /* Finalize, */
+    Finalize,
     NULL,         /* Apply,    */
     NULL,         /* Equal,    */
     Copy,
@@ -644,12 +660,12 @@ INTERFACE(DATA_TYPE)   INTERFACE_NAME(DATA_TYPE) = {
     ReplaceAt,
     IndexOf,
     /* End of sequential container part */
-    NULL,        /* InsertIn, */
+    InsertIn,
     CopyElement,
     EraseRange,
     Sort,
     NULL,        /* Reverse, */
-    NULL,        /* GetRange, */
+    GetRange,
     NULL,        /* Append, */
     NULL,        /* SetCompareFunction, */
     DefaultListCompareFunction,
@@ -677,7 +693,7 @@ INTERFACE(DATA_TYPE)   INTERFACE_NAME(DATA_TYPE) = {
     SetElementData,
     Advance,
     NULL,          /* Skip, */
-    NULL,          /* SplitAfter, */
+    SplitAfter,
 };
 
 /* Do not leak template implementation macros into consumers or into the next

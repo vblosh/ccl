@@ -73,7 +73,7 @@ struct RangeCursor {
             RangeCursor *Source;
             RangePredicate Predicate;
             void *Arg;
-            int Matched;
+            int DoneDropping;
         } Predicate;
         struct {
             RangeCursor *Source;
@@ -179,7 +179,7 @@ static int FromSequentialWithAllocator(SequentialContainer *source,
         return RaiseGlobal("iRange.FromSequential", CONTAINER_ERROR_BADARG);
     elementSize = iSequentialContainer.GetElementSize(source);
     if (elementSize == 0)
-        return CONTAINER_ERROR_INCOMPATIBLE;
+        return RaiseGlobal("iRange.FromSequential", CONTAINER_ERROR_INCOMPATIBLE);
     return FromGenericWithAllocator((GenericContainer *)source, elementSize,
                                     allocator, result);
 }
@@ -224,8 +224,10 @@ static int FromArray(const void *data, size_t count, size_t elementSize,
 
 static int ValidateRangeSlot(Range **range, const char *name)
 {
-    if (range == NULL || *range == NULL || (*range)->Parent != NULL)
+    if (range == NULL || *range == NULL)
         return RaiseGlobal(name, CONTAINER_ERROR_BADARG);
+    if ((*range)->Parent != NULL)
+        return RaiseRange(*range, name, CONTAINER_ERROR_BADARG);
     return 1;
 }
 
@@ -236,8 +238,9 @@ static int WrapPredicate(Range **range, RangeKind kind,
     Range *source;
     Range *wrapper;
 
-    if (ValidateRangeSlot(range, name) < 0)
-        return CONTAINER_ERROR_BADARG;
+    int status = ValidateRangeSlot(range, name);
+    if (status < 0)
+        return status;
     source = *range;
     if (predicate == NULL)
         return RaiseRange(source, name, CONTAINER_ERROR_BADARG);
@@ -277,8 +280,9 @@ static int Transform(Range **range, size_t outputElementSize,
     Range *source;
     Range *wrapper;
 
-    if (ValidateRangeSlot(range, "iRange.Transform") < 0)
-        return CONTAINER_ERROR_BADARG;
+    int status = ValidateRangeSlot(range, "iRange.Transform");
+    if (status < 0)
+        return status;
     source = *range;
     if (outputElementSize == 0 || transform == NULL)
         return RaiseRange(source, "iRange.Transform", CONTAINER_ERROR_BADARG);
@@ -302,8 +306,9 @@ static int WrapCount(Range **range, RangeKind kind, size_t count,
     Range *source;
     Range *wrapper;
 
-    if (ValidateRangeSlot(range, name) < 0)
-        return CONTAINER_ERROR_BADARG;
+    int status = ValidateRangeSlot(range, name);
+    if (status < 0)
+        return status;
     source = *range;
     wrapper = AllocateRange(source->Allocator, kind, source->ElementSize);
     if (wrapper == NULL)
@@ -330,10 +335,11 @@ static int Concat(Range **left, Range **right)
 {
     Range *wrapper;
 
-    if (left == NULL || right == NULL || *left == NULL || *right == NULL ||
-        left == right || *left == *right || (*left)->Parent != NULL ||
-        (*right)->Parent != NULL)
+    if (left == NULL || right == NULL || *left == NULL || *right == NULL)
         return RaiseGlobal("iRange.Concat", CONTAINER_ERROR_BADARG);
+    if (left == right || *left == *right || (*left)->Parent != NULL ||
+        (*right)->Parent != NULL)
+        return RaiseRange(*left, "iRange.Concat", CONTAINER_ERROR_BADARG);
     if ((*left)->ElementSize != (*right)->ElementSize)
         return RaiseRange(*left, "iRange.Concat",
                           CONTAINER_ERROR_INCOMPATIBLE);
@@ -442,7 +448,7 @@ static int OpenInternal(const Range *range, RangeCursor **result)
         status = OpenInternal(range->Data.Predicate.Source,
                               &cursor->Data.Predicate.Source);
         if (status < 0) {
-            range->Allocator->free(cursor);
+            DeleteCursorInternal(cursor);
             return status;
         }
         cursor->Data.Predicate.Predicate = range->Data.Predicate.Predicate;
@@ -452,7 +458,7 @@ static int OpenInternal(const Range *range, RangeCursor **result)
         status = OpenInternal(range->Data.Transform.Source,
                               &cursor->Data.Transform.Source);
         if (status < 0) {
-            range->Allocator->free(cursor);
+            DeleteCursorInternal(cursor);
             return status;
         }
         cursor->Data.Transform.Buffer =
@@ -470,7 +476,7 @@ static int OpenInternal(const Range *range, RangeCursor **result)
         status = OpenInternal(range->Data.Count.Source,
                               &cursor->Data.Count.Source);
         if (status < 0) {
-            range->Allocator->free(cursor);
+            DeleteCursorInternal(cursor);
             return status;
         }
         cursor->Data.Count.Count = range->Data.Count.Count;
@@ -479,7 +485,7 @@ static int OpenInternal(const Range *range, RangeCursor **result)
         status = OpenInternal(range->Data.Concat.Left,
                               &cursor->Data.Concat.Left);
         if (status < 0) {
-            range->Allocator->free(cursor);
+            DeleteCursorInternal(cursor);
             return status;
         }
         status = OpenInternal(range->Data.Concat.Right,
@@ -499,8 +505,10 @@ static int Open(const Range *range, RangeCursor **result)
     if (result == NULL)
         return RaiseGlobal("iRange.Open", CONTAINER_ERROR_BADARG);
     *result = NULL;
-    if (range == NULL || range->Parent != NULL)
+    if (range == NULL)
         return RaiseGlobal("iRange.Open", CONTAINER_ERROR_BADARG);
+    if (range->Parent != NULL)
+        return RaiseRange(range, "iRange.Open", CONTAINER_ERROR_BADARG);
     return OpenInternal(range, result);
 }
 
@@ -534,6 +542,10 @@ static int NextGeneric(RangeCursor *cursor, const void **element)
     currentSize = iGeneric.Size(cursor->Data.Generic.Container);
     if (currentSize != cursor->Data.Generic.Expected)
         return CursorError(cursor, CONTAINER_ERROR_OBJECT_CHANGED);
+    /* For non-empty containers, GetPosition returning (size_t)-1 at normal
+     * end-of-iteration indicates iterator corruption or concurrent modification.
+     * Empty containers are excluded as empty iterators may legitimately report
+     * an undefined position. */
     if (cursor->Data.Generic.Expected != 0 &&
         iterator->GetPosition != NULL &&
         iterator->GetPosition(iterator) == (size_t)-1)
@@ -647,7 +659,7 @@ static int NextDropWhile(RangeCursor *cursor, const void **element)
 {
     int status;
 
-    while (!cursor->Data.Predicate.Matched) {
+    while (!cursor->Data.Predicate.DoneDropping) {
         status = iRange.Next(cursor->Data.Predicate.Source, element);
         if (status <= 0)
             return status < 0 ? CursorError(cursor, status) : status;
@@ -656,7 +668,7 @@ static int NextDropWhile(RangeCursor *cursor, const void **element)
         if (status < 0)
             return CursorError(cursor, status);
         if (status == 0) {
-            cursor->Data.Predicate.Matched = 1;
+            cursor->Data.Predicate.DoneDropping = 1;
             return 1;
         }
     }
@@ -768,6 +780,8 @@ static ErrorFunction SetErrorFunction(Range *range, ErrorFunction function)
 
 static int FinishCursor(RangeCursor *cursor, int result)
 {
+    /* Prioritize any existing iteration/callback error (result < 0) over cursor
+     * teardown errors, as the root cause from the pipeline is more specific. */
     int closeResult = DeleteCursorInternal(cursor);
 
     if (result >= 0 && closeResult < 0)
@@ -938,7 +952,7 @@ static int ToVector(const Range *range, Vector **result)
     vector = iVector.CreateWithAllocator(range->ElementSize, 4,
                                          range->Allocator);
     if (vector == NULL)
-        return CONTAINER_ERROR_NOMEMORY;
+        return RaiseRange(range, "iRange.ToVector", CONTAINER_ERROR_NOMEMORY);
     status = Open(range, &cursor);
     if (status < 0) {
         iVector.Finalize(vector);
@@ -992,8 +1006,10 @@ static int FinalizeInternal(Range *range)
 
 static int Finalize(Range *range)
 {
-    if (range == NULL || range->Parent != NULL)
+    if (range == NULL)
         return RaiseGlobal("iRange.Finalize", CONTAINER_ERROR_BADARG);
+    if (range->Parent != NULL)
+        return RaiseRange(range, "iRange.Finalize", CONTAINER_ERROR_BADARG);
     return FinalizeInternal(range);
 }
 

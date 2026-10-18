@@ -88,6 +88,10 @@ static const guid DictionaryGuid = {0xa334a9d, 0x897c, 0x4bed,
 #define HASHCHAR(ch) scatter[(unsigned)(ch) & 255u]
 #endif
 
+/* Internal flag in Dictionary.Flags indicating the header was allocated on
+ * the heap by Create/CreateWithAllocator. Bit 31 is reserved for this. */
+#define DICT_HEAP_HEADER 0x80000000u
+
 
 static DATA_TYPE *Create(size_t elementsize,size_t hint);
 static DATA_TYPE *CreateWithAllocator(size_t elementsize,size_t hint,
@@ -303,7 +307,8 @@ static int Equal(const DATA_TYPE *d1,const DATA_TYPE *d2)
     if (d1 == d2) return 1;
     if (d1 == NULL || d2 == NULL)
         return 0;
-    if (d1->count != d2->count || d1->Flags != d2->Flags)
+    if (d1->count != d2->count ||
+        (d1->Flags & ~DICT_HEAP_HEADER) != (d2->Flags & ~DICT_HEAP_HEADER))
         return 0;
     if (d1->size != d2->size || d1->hash != d2->hash)
         return 0;
@@ -485,7 +490,7 @@ static unsigned GetFlags(const DATA_TYPE *Dict)
         NullPtrError("GetFlags");
         return 0;
     }
-    return Dict->Flags;
+    return Dict->Flags & ~DICT_HEAP_HEADER;
 }
 
 static size_t Sizeof(const DATA_TYPE *dict)
@@ -527,8 +532,9 @@ static unsigned SetFlags(DATA_TYPE *Dict,unsigned Flags)
         NullPtrError("SetFlags");
         return 0;
     }
-    oldFlags = Dict->Flags;
-    Dict->Flags = Flags;
+    oldFlags = Dict->Flags & ~DICT_HEAP_HEADER;
+    Dict->Flags = (Flags & ~DICT_HEAP_HEADER) |
+                  (Dict->Flags & DICT_HEAP_HEADER);
     return oldFlags;
 }
 
@@ -550,22 +556,37 @@ static int Apply(DATA_TYPE *Dict,int (*apply)(const CHARTYPE *Key,const void *Va
     size_t i;
     unsigned stamp;
     struct DATALIST *p;
+    void *buf = NULL;
 
     if (Dict == NULL) {
         return	NullPtrError("Apply");
     }
     if (apply == NULL)
         return BadArgError(Dict,"Apply");
+    if ((Dict->Flags & CONTAINER_READONLY) && Dict->ElementSize > 0) {
+        buf = Dict->Allocator->malloc(Dict->ElementSize);
+        if (buf == NULL)
+            return NoMemoryError(Dict,"Apply");
+    }
     stamp = Dict->timestamp;
     for (i = 0; i < Dict->size; i++) {
         for (p = Dict->buckets[i]; p; p = p->Next) {
-            if (Dict->ElementSize)
-                apply(p->Key,p->Value, ExtraArgs);
+            if (Dict->ElementSize) {
+                if (buf != NULL) {
+                    memcpy(buf, p->Value, Dict->ElementSize);
+                    apply(p->Key, buf, ExtraArgs);
+                } else {
+                    apply(p->Key, p->Value, ExtraArgs);
+                }
+            }
             else apply(p->Key,NULL,ExtraArgs);
-            if (Dict->timestamp != stamp)
+            if (Dict->timestamp != stamp) {
+                if (buf != NULL) Dict->Allocator->free(buf);
                 return 0;
+            }
         }
     }
+    if (buf != NULL) Dict->Allocator->free(buf);
     return 1;
 }
 
@@ -698,16 +719,18 @@ static int Clear(DATA_TYPE *Dict)
 ------------------------------------------------------------------------*/
 static int Finalize(DATA_TYPE *Dict)
 {
-
+    unsigned flags;
     int r = Clear(Dict);
     if (0 > r)
         return r;
-    if (Dict->Flags & CONTAINER_HAS_OBSERVER)
+    flags = Dict->Flags;
+    if (flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(Dict,CCL_FINALIZE,NULL,NULL);
     if (Dict->VTable != &EXTERNAL_NAME)
         Dict->Allocator->free(Dict->VTable);
     Dict->Allocator->free(Dict->buckets);
-    Dict->Allocator->free(Dict);
+    if (flags & DICT_HEAP_HEADER)
+        Dict->Allocator->free(Dict);
     return 1;
 }
 
@@ -774,9 +797,20 @@ static int IteratorIsValid(Iterator *it,const char *name,struct ITERATOR **out)
 static size_t GetPosition(Iterator *it)
 {
     struct ITERATOR *d;
+    size_t i, pos = 0;
+    struct DATALIST *p;
     if (!IteratorIsValid(it,"GetPosition",&d))
         return 0;
-    return d->index;
+    if (d->dl == NULL)
+        return 0;
+    for (i = 0; i < d->Dict->size; ++i) {
+        for (p = d->Dict->buckets[i]; p != NULL; p = p->Next) {
+            if (p == d->dl)
+                return pos;
+            ++pos;
+        }
+    }
+    return 0;
 }
 
 static void *IteratorValue(struct ITERATOR *d,struct DATALIST *p)
@@ -902,6 +936,10 @@ static void *GetCurrent(Iterator *it)
     struct ITERATOR *d;
     if (!IteratorIsValid(it,"GetCurrent",&d))
         return NULL;
+    if (d->timestamp != d->Dict->timestamp) {
+        d->Dict->RaiseError(DICT_ERROR_PREFIX ".GetCurrent",CONTAINER_ERROR_OBJECT_CHANGED);
+        return NULL;
+    }
     return IteratorValue(d,d->dl);
 }
 
@@ -1149,7 +1187,8 @@ static DATA_TYPE *Copy(const DATA_TYPE *src)
             rvp = rvp->Next;
         }
     }
-    result->Flags = (src->Flags&~CONTAINER_HAS_OBSERVER);
+    result->Flags = (src->Flags & ~(CONTAINER_HAS_OBSERVER | DICT_HEAP_HEADER)) |
+                    DICT_HEAP_HEADER;
     if (src->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(src,CCL_COPY,result,NULL);
     return result;
@@ -1296,6 +1335,8 @@ static DATA_TYPE *CreateWithAllocator(size_t elementsize,size_t hint,const Conta
     result = InitWithAllocator(Dict,elementsize,hint,allocator);
     if (result == NULL)
         allocator->free(Dict);
+    else
+        result->Flags |= DICT_HEAP_HEADER;
     return result;
 }
 static DATA_TYPE *Create(size_t elementsize,size_t hint)

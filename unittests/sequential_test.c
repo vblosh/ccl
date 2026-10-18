@@ -132,7 +132,19 @@ static int test_append_and_compatibility(void)
 
     iSequentialContainer.SetFlags(dst_sc, CONTAINER_READONLY);
     TEST_REQUIRE(iSequentialContainer.Append(dst_sc, src_sc) == CONTAINER_ERROR_READONLY);
+    {
+        List *empty_source = iList.Create(sizeof(int));
+        TEST_REQUIRE(empty_source != NULL);
+        TEST_REQUIRE(iSequentialContainer.Append(dst_sc, (SequentialContainer *)empty_source) == CONTAINER_ERROR_READONLY);
+        iList.Finalize(empty_source);
+    }
     iSequentialContainer.SetFlags(dst_sc, 0);
+    {
+        struct {
+            void *vTable;
+        } bad_right = { NULL };
+        TEST_REQUIRE(iSequentialContainer.Equal(dst_sc, (SequentialContainer *)&bad_right) == CONTAINER_ERROR_BADARG);
+    }
     iSequentialContainer.Finalize((SequentialContainer *)short_vector);
     short_vector = NULL;
     iSequentialContainer.Finalize((SequentialContainer *)vector);
@@ -269,6 +281,22 @@ static int test_null_arguments(void)
     TEST_REQUIRE(iSequentialContainer.ReplaceAt(null_sc, 0, &value) < 0);
     TEST_REQUIRE(iSequentialContainer.IndexOf(null_sc, &value, NULL, &index) < 0);
     TEST_REQUIRE(iSequentialContainer.Append(null_sc, null_sc) < 0);
+    {
+        SequentialContainerInterface empty_vtable;
+        struct {
+            void *vTable;
+        } dummy;
+        memset(&empty_vtable, 0, sizeof(empty_vtable));
+        dummy.vTable = &empty_vtable;
+        TEST_REQUIRE(iSequentialContainer.Add((SequentialContainer *)&dummy, &value) == CONTAINER_ERROR_INCOMPATIBLE);
+        TEST_REQUIRE(iSequentialContainer.GetElement((SequentialContainer *)&dummy, 0) == NULL);
+        TEST_REQUIRE(iSequentialContainer.Push((SequentialContainer *)&dummy, &value) == CONTAINER_ERROR_INCOMPATIBLE);
+        TEST_REQUIRE(iSequentialContainer.Pop((SequentialContainer *)&dummy, &value) == CONTAINER_ERROR_INCOMPATIBLE);
+        TEST_REQUIRE(iSequentialContainer.InsertAt((SequentialContainer *)&dummy, 0, &value) == CONTAINER_ERROR_INCOMPATIBLE);
+        TEST_REQUIRE(iSequentialContainer.EraseAt((SequentialContainer *)&dummy, 0) == CONTAINER_ERROR_INCOMPATIBLE);
+        TEST_REQUIRE(iSequentialContainer.ReplaceAt((SequentialContainer *)&dummy, 0, &value) == CONTAINER_ERROR_INCOMPATIBLE);
+        TEST_REQUIRE(iSequentialContainer.IndexOf((SequentialContainer *)&dummy, &value, NULL, &index) == CONTAINER_ERROR_INCOMPATIBLE);
+    }
     return 0;
 
 cleanup:

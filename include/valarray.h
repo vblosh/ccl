@@ -11,7 +11,6 @@ extern "C" {
 #endif
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 
@@ -31,7 +30,6 @@ extern ValArraySize_tInterface iValArraySize_t;
  ****************************************************************************/
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 
@@ -42,14 +40,13 @@ extern ValArraySize_tInterface iValArraySize_t;
 #define __IS_INTEGER__
 #include "valarraygen.h"
 #undef __IS_INTEGER__
-extern ValArrayInterface iValArrayShort;
+extern ValArrayShortInterface iValArrayShort;
 
 /****************************************************************************
  *          ValArrayInt                                                     *
  ****************************************************************************/
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 #define _ValArray _ValArrayInt
@@ -59,14 +56,13 @@ extern ValArrayInterface iValArrayShort;
 #define __IS_INTEGER__
 #include "valarraygen.h"
 #undef __IS_INTEGER__
-extern ValArrayInterface iValArrayInt;
+extern ValArrayIntInterface iValArrayInt;
 
 /****************************************************************************
  *          ValArrayLong                                                    *
  ****************************************************************************/
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 #define _ValArray _ValArrayLong
@@ -76,7 +72,7 @@ extern ValArrayInterface iValArrayInt;
 #define __IS_INTEGER__
 #include "valarraygen.h"
 #undef __IS_INTEGER__
-extern ValArrayInterface iValArrayLong;
+extern ValArrayLongInterface iValArrayLong;
 
 
 /****************************************************************************
@@ -84,7 +80,6 @@ extern ValArrayInterface iValArrayLong;
  ****************************************************************************/
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 #define _ValArray _ValArrayDouble
@@ -99,7 +94,6 @@ extern ValArrayDoubleInterface iValArrayDouble;
  ****************************************************************************/
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 #define _ValArray _ValArrayLongDouble
@@ -107,14 +101,13 @@ extern ValArrayDoubleInterface iValArrayDouble;
 #define ValArrayInterface ValArrayLongDoubleInterface
 #define ValArray ValArrayLongDouble
 #include "valarraygen.h"
-extern ValArrayInterface iValArrayLongDouble;
+extern ValArrayLongDoubleInterface iValArrayLongDouble;
 
 /****************************************************************************
  *          ValArrayLLong                                                *
  ****************************************************************************/
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 #define _ValArray _ValArrayLLong
@@ -124,14 +117,13 @@ extern ValArrayInterface iValArrayLongDouble;
 #define __IS_INTEGER__
 #include "valarraygen.h"
 #undef __IS_INTEGER__
-extern ValArrayInterface iValArrayLLong;
+extern ValArrayLLongInterface iValArrayLLong;
 
 /****************************************************************************
  *          ValArrayULLong                                                *
  ****************************************************************************/
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 #define _ValArray _ValArrayULLong
@@ -143,7 +135,7 @@ extern ValArrayInterface iValArrayLLong;
 #include "valarraygen.h"
 #undef __IS_INTEGER__
 #undef __IS_UNSIGNED__
-extern ValArrayInterface iValArrayULLong;
+extern ValArrayULLongInterface iValArrayULLong;
 
 
 /****************************************************************************
@@ -151,7 +143,6 @@ extern ValArrayInterface iValArrayULLong;
  ****************************************************************************/
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 #define _ValArray _ValArrayFloat
@@ -159,7 +150,7 @@ extern ValArrayInterface iValArrayULLong;
 #define ValArrayInterface ValArrayFloatInterface
 #define ValArray ValArrayFloat
 #include "valarraygen.h"
-extern ValArrayInterface iValArrayFloat;
+extern ValArrayFloatInterface iValArrayFloat;
 
 
 /****************************************************************************
@@ -167,7 +158,6 @@ extern ValArrayInterface iValArrayFloat;
  ****************************************************************************/
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 #define _ValArray _ValArrayUInt
@@ -179,12 +169,11 @@ extern ValArrayInterface iValArrayFloat;
 #include "valarraygen.h"
 #undef __IS_UNSIGNED__
 #undef __IS_INTEGER__
-extern ValArrayInterface iValArrayUInt;
+extern ValArrayUIntInterface iValArrayUInt;
 
 
 #undef ElementType
 #undef ValArrayInterface
-#undef ElementType
 #undef ValArray
 #undef _ValArray
 

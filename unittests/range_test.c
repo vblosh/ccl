@@ -22,6 +22,16 @@ static void *capture_error(const char *name, int code, ...)
     return NULL;
 }
 
+static int custom_range_calls;
+static int custom_range_code;
+static void *custom_range_handler(const char *name, int code, ...)
+{
+    (void)name;
+    ++custom_range_calls;
+    custom_range_code = code;
+    return NULL;
+}
+
 static void *range_test_malloc(size_t size)
 {
     ++allocator_malloc_calls;
@@ -639,7 +649,8 @@ static int test_bad_arguments(void)
     Range *unknown = NULL;
     RangeCursor *cursor = NULL;
     Vector *opaqueVector = NULL;
-    Vector *vector = (Vector *)(uintptr_t)1;
+    Vector *vector = NULL;
+    Vector *sentinel_vector = (Vector *)(uintptr_t)1;
     const void *element = NULL;
     ErrorFunction old = iError.SetErrorFunction(capture_error);
 
@@ -722,6 +733,31 @@ static int test_bad_arguments(void)
     TEST_REQUIRE(iRange.Open(alias, &cursor) == CONTAINER_ERROR_BADARG);
     TEST_REQUIRE(iRange.Finalize(alias) == CONTAINER_ERROR_BADARG);
     alias = NULL;
+    {
+        strCollection *str_col = istrCollection.Create(1);
+        Range *str_range = NULL;
+        TEST_REQUIRE(str_col != NULL);
+        captured_errors = 0;
+        TEST_REQUIRE(iRange.FromSequential((SequentialContainer *)str_col, &str_range) == CONTAINER_ERROR_INCOMPATIBLE);
+        TEST_REQUIRE(captured_errors > 0 && captured_code == CONTAINER_ERROR_INCOMPATIBLE);
+        istrCollection.Finalize(str_col);
+    }
+    {
+        Range *base_range = NULL;
+        Range *parented_alias = NULL;
+        TEST_REQUIRE(iRange.FromArray(values, 1, sizeof(int), &base_range) == 1);
+        iRange.SetErrorFunction(base_range, custom_range_handler);
+        parented_alias = base_range;
+        TEST_REQUIRE(iRange.Take(&base_range, 1) == 1);
+        custom_range_calls = 0;
+        TEST_REQUIRE(iRange.Filter(&parented_alias, is_even, NULL) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(custom_range_calls == 1 && custom_range_code == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iRange.Open(parented_alias, &cursor) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(custom_range_calls == 2 && custom_range_code == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iRange.Finalize(parented_alias) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(custom_range_calls == 3 && custom_range_code == CONTAINER_ERROR_BADARG);
+        iRange.Finalize(base_range);
+    }
 
     /* Size zero is allowed for an opaque generic source, but copying
      * terminals reject it explicitly. */
@@ -736,8 +772,8 @@ static int test_bad_arguments(void)
                                     &unknown) == 1);
     TEST_REQUIRE(iRange.FindIf(unknown, is_even, NULL, &output) ==
                  CONTAINER_ERROR_INCOMPATIBLE);
-    TEST_REQUIRE(iRange.ToVector(unknown, &vector) ==
-                 CONTAINER_ERROR_INCOMPATIBLE && vector == NULL);
+    TEST_REQUIRE(iRange.ToVector(unknown, &sentinel_vector) ==
+                 CONTAINER_ERROR_INCOMPATIBLE && sentinel_vector == NULL);
     iRange.Finalize(unknown);
     unknown = NULL;
     iVector.Finalize(opaqueVector);
@@ -747,12 +783,76 @@ static int test_bad_arguments(void)
     return 0;
 
 cleanup:
+    if (vector) iVector.Finalize(vector);
     if (cursor) iRange.DeleteCursor(cursor);
     if (temporary) iRange.Finalize(temporary);
     if (unknown) iRange.Finalize(unknown);
     if (opaqueVector) iVector.Finalize(opaqueVector);
     if (range) iRange.Finalize(range);
     iError.SetErrorFunction(old);
+    return -1;
+}
+
+static int test_edge_cases(void)
+{
+    int values[] = {10, 20, 30};
+    Range *range = NULL;
+    Range *empty = NULL;
+    Vector *vec = NULL;
+
+    /* Take(0) yields an empty range immediately */
+    TEST_REQUIRE(iRange.FromArray(values, 3, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Take(&range, 0) == 1);
+    TEST_REQUIRE(iRange.ToVector(range, &vec) == 1 && iVector.Size(vec) == 0);
+    iVector.Finalize(vec);
+    vec = NULL;
+    TEST_REQUIRE(iRange.Finalize(range) == 1);
+    range = NULL;
+
+    /* Drop(0) yields all elements unmodified */
+    TEST_REQUIRE(iRange.FromArray(values, 3, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Drop(&range, 0) == 1);
+    TEST_REQUIRE(iRange.ToVector(range, &vec) == 1 && iVector.Size(vec) == 3);
+    iVector.Finalize(vec);
+    vec = NULL;
+    TEST_REQUIRE(iRange.Finalize(range) == 1);
+    range = NULL;
+
+    /* Drop(N > size) cleanly yields an empty range */
+    TEST_REQUIRE(iRange.FromArray(values, 3, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Drop(&range, 10) == 1);
+    TEST_REQUIRE(iRange.ToVector(range, &vec) == 1 && iVector.Size(vec) == 0);
+    iVector.Finalize(vec);
+    vec = NULL;
+    TEST_REQUIRE(iRange.Finalize(range) == 1);
+    range = NULL;
+
+    /* Concat with empty left */
+    TEST_REQUIRE(iRange.FromArray(NULL, 0, sizeof(int), &empty) == 1);
+    TEST_REQUIRE(iRange.FromArray(values, 3, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Concat(&empty, &range) == 1 && range == NULL);
+    TEST_REQUIRE(iRange.ToVector(empty, &vec) == 1 && iVector.Size(vec) == 3);
+    iVector.Finalize(vec);
+    vec = NULL;
+    TEST_REQUIRE(iRange.Finalize(empty) == 1);
+    empty = NULL;
+
+    /* Concat with empty right */
+    TEST_REQUIRE(iRange.FromArray(values, 3, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.FromArray(NULL, 0, sizeof(int), &empty) == 1);
+    TEST_REQUIRE(iRange.Concat(&range, &empty) == 1 && empty == NULL);
+    TEST_REQUIRE(iRange.ToVector(range, &vec) == 1 && iVector.Size(vec) == 3);
+    iVector.Finalize(vec);
+    vec = NULL;
+    TEST_REQUIRE(iRange.Finalize(range) == 1);
+    range = NULL;
+
+    return 0;
+
+cleanup:
+    if (vec) iVector.Finalize(vec);
+    if (empty) iRange.Finalize(empty);
+    if (range) iRange.Finalize(range);
     return -1;
 }
 
@@ -765,6 +865,7 @@ static const TestCase tests[] = {
     {"callback and transaction errors", test_callback_and_transaction_errors},
     {"allocator failures and empty range", test_allocator_failures_and_empty_range},
     {"bad arguments", test_bad_arguments},
+    {"edge cases", test_edge_cases},
 };
 
 const TestSuite *ccl_get_test_suite(void)

@@ -17,6 +17,8 @@ static const guid WStringListGuid = {0xA0543963,0xCBAC,0x4AFB,
 #undef STRCPY
 #undef STRLEN
 #undef STRCMP
+#undef DATA_TYPE
+#undef StringListGuid
 #undef iSTRINGLIST
 #undef INTERFACE
 #undef LIST_ELEMENT

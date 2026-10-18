@@ -1,6 +1,7 @@
 #ifndef DATA_TYPE
 #error "The symbol DATA_TYPE MUST be defined"
 #else
+#include <limits.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,7 +17,13 @@ extern "C" {
 #undef ITERATOR
 #undef INTERFACE_NAME
 #undef VECTOR_ELEMENT
+#undef VECTOR_STRUCT_INTERNAL_NAME
 #undef INTERFACE_STRUCT_INTERNAL_NAME
+#undef CONCAT
+#undef CONCAT3_
+#undef CONCAT3
+#undef EVAL
+#undef ERROR_RETURN
 
 #define CONCAT(x,y) x ## y
 #define CONCAT3_(a,b,c) a##b##c
@@ -149,6 +156,7 @@ struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
 #undef INTERFACE_NAME
 #undef VECTOR_STRUCT_INTERNAL_NAME
 #undef INTERFACE_STRUCT_INTERNAL_NAME
+#undef DEFAULT_START_SIZE
 #endif
 #ifdef __cplusplus
 }

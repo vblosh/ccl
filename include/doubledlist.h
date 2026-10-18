@@ -20,4 +20,5 @@
 #undef CONCAT3
 #undef EVAL
 #undef ERROR_RETURN
+#undef DEFAULT_START_SIZE
 #endif

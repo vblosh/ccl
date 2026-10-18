@@ -4,3 +4,4 @@
 #define COMPARE_EXPRESSION(A, B) ((*B)->Data > (*A)->Data ? -1 : (*B)->Data != (*A)->Data)
 #include "dlistgen.c"
 #undef DATA_TYPE
+#undef COMPARE_EXPRESSION

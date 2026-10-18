@@ -1,3 +1,6 @@
+#if !defined(DATA_TYPE) || !defined(CHARTYPE)
+#error "The symbols DATA_TYPE and CHARTYPE MUST be defined"
+#else
 #ifndef __containers_h__
 #include "containers.h"
 #endif
@@ -5,6 +8,7 @@
 extern "C" {
 #endif
 #undef CONCAT
+#undef CONCAT3_
 #undef CONCAT3
 #undef EVAL
 #undef iSTRINGLIST
@@ -14,6 +18,8 @@ extern "C" {
 #undef ITERATOR
 #undef INTERFACE_STRUCT_INTERNAL_NAME
 #undef LIST_STRUCT_INTERNAL_NAME
+#undef MINIMUM_ARRAY_INDEX
+#undef STRINGLIST_MAGIC_NUMBER
 
 #define CONCAT(x,y) x ## y
 #define CONCAT3_(a,b,c) a##b##c
@@ -154,4 +160,5 @@ struct INTERFACE_STRUCT_INTERNAL_NAME(DATA_TYPE) {
 extern INTERFACE(DATA_TYPE) iSTRINGLIST(DATA_TYPE);
 #ifdef __cplusplus
 }
+#endif
 #endif

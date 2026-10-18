@@ -1,3 +1,6 @@
+#if !defined(ElementType) || !defined(ValArray) || !defined(_ValArray) || !defined(ValArrayInterface)
+#error "The symbols ElementType, ValArray, _ValArray, and ValArrayInterface MUST be defined"
+#else
 /****************************************************************************
  *          ValArrays                                                     *
  ****************************************************************************/
@@ -119,3 +122,4 @@ typedef struct {
     int (*RemoveRange)(ValArray *src,size_t start,size_t end);
     int (*Resize)(ValArray *src, size_t newSize);
 } ValArrayInterface;
+#endif

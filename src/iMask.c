@@ -25,19 +25,24 @@ static Mask *CreateFromMask(size_t n,const char *data)
 static Mask *Copy(const Mask *src)
 {
     Mask *result;
+    const ContainerAllocator *allocator;
 
-    if (src == NULL) return NULL;
+    if (src == NULL) {
+        iError.NullPtrError("iMask.Copy");
+        return NULL;
+    }
     if (src->length > SIZE_MAX - sizeof(Mask)) {
         iError.RaiseError("iMask.Copy",CONTAINER_ERROR_NOMEMORY);
         return NULL;
     }
-    result = src->Allocator->malloc(src->length + sizeof(Mask));
+    allocator = src->Allocator ? src->Allocator : CurrentAllocator;
+    result = allocator->malloc(src->length + sizeof(Mask));
     if (result == NULL) {
         iError.RaiseError("iMask.Copy",CONTAINER_ERROR_NOMEMORY);
         return NULL;
     }
     memcpy(result->data,src->data,src->length);
-    result->Allocator = src->Allocator;
+    result->Allocator = allocator;
     result->length = src->length;
     return result;
 }
@@ -59,14 +64,14 @@ static int SetElement(Mask *m,size_t idx,int val)
     m->data[idx]=(char)val;
     return 1;
 }
-int GetElement(const Mask *m,size_t position)
+static int GetElement(const Mask *m,size_t position)
 {
 	if (m == NULL) {
 		iError.RaiseError("iMask.GetElement",CONTAINER_ERROR_BADARG);
 		return 0;
 	}
 	if (position >= m->length) {
-		iError.RaiseError("iMask.GetElement",CONTAINER_ERROR_INDEX);
+		iError.RaiseError("iMask.GetElement",CONTAINER_ERROR_INDEX,m,position);
 		return 0;
 	}
     return m->data[position] ;

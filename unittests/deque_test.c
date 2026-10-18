@@ -13,6 +13,7 @@ static unsigned observed_pop;
 static unsigned observed_clear;
 static unsigned observed_copy;
 static unsigned observed_finalize;
+static unsigned observed_erase;
 static const char *last_error_name;
 static int last_error_code;
 
@@ -51,6 +52,8 @@ static void observe(const void *object, unsigned operation,
         ++observed_copy;
     else if (operation == CCL_FINALIZE)
         ++observed_finalize;
+    else if (operation == CCL_ERASE_AT)
+        ++observed_erase;
 }
 
 static int check_sequence(Deque *d, const int *expected, size_t n)
@@ -253,6 +256,15 @@ static int test_iterator_and_errors(void)
                  heap_it->GetNext(heap_it) != NULL &&
                  heap_it->GetPrevious(heap_it) != NULL &&
                  heap_it->GetPrevious(heap_it) == NULL);
+    TEST_REQUIRE(heap_it->GetFirst(heap_it) != NULL);
+    TEST_REQUIRE(heap_it->GetPosition(heap_it) == 0);
+    value = (int *)heap_it->GetLast(heap_it);
+    TEST_REQUIRE(value != NULL && *value == 8);
+    TEST_REQUIRE(heap_it->GetPosition(heap_it) == 1);
+    value = (int *)heap_it->Seek(heap_it, 0);
+    TEST_REQUIRE(value != NULL && *value == 7);
+    TEST_REQUIRE(heap_it->GetPosition(heap_it) == 0);
+    TEST_REQUIRE(heap_it->Seek(heap_it, 2) == NULL);
     TEST_REQUIRE(iDeque.DeleteIterator(heap_it) == 1);
     heap_it = NULL;
     TEST_REQUIRE(iDeque.Front(d, NULL) == CONTAINER_ERROR_BADARG &&
@@ -305,16 +317,19 @@ static int test_persistence_observer_and_init(void)
     int out;
 
     observed_add = observed_pop = observed_clear = observed_copy = 0;
-    observed_finalize = 0;
+    observed_finalize = observed_erase = 0;
     d = iDeque.Create(sizeof(int));
     TEST_REQUIRE(d != NULL);
     TEST_REQUIRE(iObserver.Subscribe(d, observe,
                                      CCL_ADD | CCL_POP | CCL_CLEAR |
-                                     CCL_COPY | CCL_FINALIZE) == 1);
+                                     CCL_COPY | CCL_FINALIZE | CCL_ERASE_AT) == 1);
     TEST_REQUIRE(iDeque.PushBack(d, &values[0]) == 1);
     TEST_REQUIRE(iDeque.PushBack(d, &values[1]) == 1);
     TEST_REQUIRE(iDeque.PushBack(d, &values[2]) == 1);
     TEST_REQUIRE(observed_add == 3);
+    TEST_REQUIRE(iDeque.Erase(d, &values[1]) == 1);
+    TEST_REQUIRE(observed_erase == 1);
+    TEST_REQUIRE(iDeque.PushBack(d, &values[1]) == 1);
     stream = ccl_test_tmpfile();
     TEST_REQUIRE(stream != NULL && iDeque.Save(d, stream, save_int, NULL) == 1);
     rewind(stream);
@@ -330,7 +345,7 @@ static int test_persistence_observer_and_init(void)
     rewind(stream);
     bad = iDeque.Load(stream, fail_load, NULL);
     TEST_REQUIRE(bad == NULL);
-    TEST_REQUIRE(iDeque.PopFront(d, &out) == 1 && out == 13);
+    TEST_REQUIRE(iDeque.PopFront(d, &out) == 1 && out == 12);
     TEST_REQUIRE(observed_pop == 1);
     TEST_REQUIRE(iDeque.Clear(d) == 0 && observed_clear == 1);
     {

@@ -496,7 +496,7 @@ static PQueue *Copy(const PQueue *src)
 }
 
 static int collect_ring(PQueueElement *head, PQueueElement **nodes,
-                        size_t *index)
+                        size_t *index, size_t limit)
 {
     PQueueElement *x;
 
@@ -504,8 +504,10 @@ static int collect_ring(PQueueElement *head, PQueueElement **nodes,
         return 1;
     x = head;
     do {
+        if (*index >= limit)
+            return 0;
         nodes[(*index)++] = x;
-        if (!collect_ring(x->Child, nodes, index))
+        if (!collect_ring(x->Child, nodes, index, limit))
             return 0;
         x = x->Right;
     } while (x != head);
@@ -525,6 +527,8 @@ static int Equal(const PQueue *left, const PQueue *right)
         return 1;
     if (left == NULL || right == NULL)
         return 0;
+    if (left == right)
+        return 1;
     if (left->ElementSize != right->ElementSize ||
         left->count != right->count)
         return 0;
@@ -551,8 +555,9 @@ static int Equal(const PQueue *left, const PQueue *right)
 
     i = 0;
     j = 0;
-    if (!collect_ring(left->Root, left_nodes, &i) ||
-        !collect_ring(right->Root, right_nodes, &j)) {
+    if (!collect_ring(left->Root, left_nodes, &i, left->count) ||
+        !collect_ring(right->Root, right_nodes, &j, right->count) ||
+        i != left->count || j != right->count) {
         left->Allocator->free(left_nodes);
         right->Allocator->free(right_nodes);
         right->Allocator->free(used);
@@ -594,10 +599,6 @@ static PQueue *Union(PQueue *left, PQueue *right)
     if (left->ElementSize != right->ElementSize) {
         iError.RaiseError("iPQueue.Union", CONTAINER_ERROR_INCOMPATIBLE);
         return NULL;
-    }
-    if (left->Root == NULL) {
-        Finalize(left);
-        return right;
     }
     if (right->Root == NULL) {
         Finalize(right);

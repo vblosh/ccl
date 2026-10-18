@@ -75,13 +75,14 @@ static int load_scalar(void *element, void *arg, FILE *stream)
 }
 
 static unsigned observer_events;
+static size_t last_observed_insert_at_pos;
 
 static void observe_all(const void *object, unsigned operation,
                         const void *extra[])
 {
     (void)object;
-    (void)operation;
-    (void)extra;
+    if (operation == CCL_INSERT_AT)
+        last_observed_insert_at_pos = (size_t)(uintptr_t)extra[1];
     ++observer_events;
 }
 
@@ -646,6 +647,7 @@ static int test_full_branch_matrix(void)
     TEST_REQUIRE(iDlist.PushFront(list, &one) == 1);
     TEST_REQUIRE(iDlist.PushBack(list, &one) == 1);
     TEST_REQUIRE(iDlist.InsertAt(list, 1, &one) == 1);
+    TEST_REQUIRE(last_observed_insert_at_pos == 1);
     TEST_REQUIRE(iDlist.ReplaceAt(list, 1, &one) == 1);
     TEST_REQUIRE(observer_events > 0);
     TEST_REQUIRE(iObserver.Unsubscribe(list, observe_all) == 1);

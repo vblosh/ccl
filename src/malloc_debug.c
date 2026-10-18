@@ -16,10 +16,14 @@
   storage. Registry records are ordinary libc allocations and therefore do
   not recurse through this allocator.
 */
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include "containers.h"
 
 #define SIGNATURE ((size_t)0xdeadbeef)
 #define MAGIC     ((size_t)0xbeefdead)
+#define PAD_GUARD ((unsigned char)0xa5)
 #define DEBUG_HEADER_WORDS 2
 #define DEBUG_TRAILER_WORDS 1
 #define DEBUG_OVERHEAD_WORDS \
@@ -31,6 +35,7 @@ typedef struct DebugAllocation DebugAllocation;
 struct DebugAllocation {
     void *base;
     void *user;
+    size_t requested_size;
     size_t total_size;
     DebugAllocation *next;
 };
@@ -117,6 +122,9 @@ static int allocation_is_intact(const DebugAllocation *record)
 {
     size_t *header = (size_t *)record->base;
     size_t *footer;
+    const unsigned char *pad;
+    size_t aligned_user_size;
+    size_t i;
 
     if (header[0] != SIGNATURE || header[1] != record->total_size)
         return CONTAINER_ERROR_BADPOINTER;
@@ -124,6 +132,13 @@ static int allocation_is_intact(const DebugAllocation *record)
                         record->total_size - sizeof(size_t));
     if (*footer != MAGIC)
         return CONTAINER_ERROR_BUFFEROVERFLOW;
+    aligned_user_size = record->total_size -
+                        DEBUG_OVERHEAD_WORDS * sizeof(size_t);
+    pad = (const unsigned char *)record->user + record->requested_size;
+    for (i = 0; i < aligned_user_size - record->requested_size; ++i) {
+        if (pad[i] != PAD_GUARD)
+            return CONTAINER_ERROR_BUFFEROVERFLOW;
+    }
     return 0;
 }
 
@@ -155,12 +170,15 @@ static void *Malloc(size_t size)
     header = (size_t *)base;
     header[0] = SIGNATURE;
     header[1] = total;
-    memset(user, 0, aligned);
+    memset(user, 0, size);
+    if (aligned > size)
+        memset(user + size, PAD_GUARD, aligned - size);
     footer = (size_t *)(base + total - sizeof(size_t));
     *footer = MAGIC;
 
     record->base = base;
     record->user = user;
+    record->requested_size = size;
     record->total_size = total;
     record->next = LiveAllocations;
     LiveAllocations = record;
@@ -182,10 +200,7 @@ static void Free(void *pp)
        succeeds: pp may point to foreign memory or to an already freed block. */
     record = find_live(pp, &previous);
     if (record == NULL) {
-        if (was_freed(pp)) {
-            iError.RaiseError("Free", CONTAINER_ERROR_BADPOINTER);
-            return;
-        }
+        (void)was_freed(pp);
         iError.RaiseError("Free", CONTAINER_ERROR_BADPOINTER);
         return;
     }
@@ -238,12 +253,21 @@ static void *Realloc(void *ptr, size_t newsize)
 
     oldsize = record->total_size -
               DEBUG_OVERHEAD_WORDS * sizeof(size_t);
-    if (oldsize == aligned_newsize)
+    if (oldsize == aligned_newsize) {
+        if (newsize > record->requested_size)
+            memset((char *)ptr + record->requested_size, 0,
+                   newsize - record->requested_size);
+        if (aligned_newsize > newsize)
+            memset((char *)ptr + newsize, PAD_GUARD,
+                   aligned_newsize - newsize);
+        record->requested_size = newsize;
         return ptr;
+    }
 
     result = Malloc(newsize);
     if (result != NULL) {
-        copy_size = oldsize < aligned_newsize ? oldsize : aligned_newsize;
+        copy_size = record->requested_size < newsize ?
+                    record->requested_size : newsize;
         memcpy(result, ptr, copy_size);
         Free(ptr);
     }

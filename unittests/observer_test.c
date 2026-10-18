@@ -302,8 +302,10 @@ static int test_delivery_and_unsubscribe(void)
     TEST_REQUIRE(iObserver.Unsubscribe(&a, callback_b) == 1);
     TEST_REQUIRE(iObserver.Unsubscribe(&a, callback_b) == 0);
     TEST_REQUIRE(iObserver.Unsubscribe(&a, callback_a) == 2);
+    TEST_REQUIRE((a.base.Flags & CONTAINER_HAS_OBSERVER) == 0);
     TEST_REQUIRE(iObserver.Unsubscribe(&a, callback_a) == 0);
     TEST_REQUIRE(iObserver.Unsubscribe(&b, NULL) == 1);
+    TEST_REQUIRE((b.base.Flags & CONTAINER_HAS_OBSERVER) == 0);
     TEST_REQUIRE(iObserver.Unsubscribe(NULL, callback_b) == 1);
     TEST_REQUIRE(iObserver.Unsubscribe(NULL, NULL) == 0);
     TEST_REQUIRE(iObserver.Unsubscribe(&c, callback_a) == 0);

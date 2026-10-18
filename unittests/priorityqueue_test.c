@@ -287,7 +287,7 @@ static int test_union_and_incompatible_inputs(void)
     value = 33;
     TEST_REQUIRE(iPQueue.Add(right, 3, &value) == 1);
     merged = iPQueue.Union(left, right);
-    TEST_REQUIRE(merged == right);
+    TEST_REQUIRE(merged == left);
     left = NULL;
     right = NULL;
     TEST_REQUIRE(iPQueue.Pop(merged, &output) == 3 && output == 33);

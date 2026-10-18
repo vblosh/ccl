@@ -402,7 +402,11 @@ static int Replace(HashTable *ht,const void *key,size_t klen,const void *val)
         if (he->hash == hash
             && he->klen == klen
             && memcmp(he->key, key, klen) == 0) {
-            memcpy(he->val,val,ht->ElementSize);
+            if (he->val != val) {
+                if (ht->DestructorFn)
+                    ht->DestructorFn(he->val);
+                memcpy(he->val,val,ht->ElementSize);
+            }
             ht->timestamp++;
             return 1;
         }
@@ -622,6 +626,7 @@ static int Finalize(HashTable *ht)
 
     if (ht == NULL)
         return NullPtrError("Finalize");
+    ht->Flags &= ~CONTAINER_READONLY;
     result = Clear(ht);
     iPool.Finalize(ht->pool);
     return result;
@@ -1033,7 +1038,7 @@ fail:
     if (keybuf) free(keybuf);
     if (valbuf) free(valbuf);
     if (result != NULL)
-        iPool.Finalize(result->pool);
+        Finalize(result);
     return NULL;
 }
 
@@ -1137,7 +1142,7 @@ static int ReplaceWithIterator(Iterator *it, void *data,int direction)
     }
     li = (struct HashTableIterator *)it;
     (void)direction;
-    if (li->ht == NULL || li->Current == NULL || li->Current->This == NULL)
+    if (li->ht == NULL)
         return 0;
     if (li->timestamp != li->ht->timestamp) {
         table_error(li->ht, "Replace",CONTAINER_ERROR_OBJECT_CHANGED);
@@ -1146,14 +1151,18 @@ static int ReplaceWithIterator(Iterator *it, void *data,int direction)
     if (li->ht->Flags & CONTAINER_READONLY) {
         return readonly_error(li->ht, "Replace");
     }
-    if (li->ht->count == 0)
+    if (li->ht->count == 0 || li->Current == NULL || li->Current->This == NULL)
         return 0;
     current = *li->Current;
     GetNext(it);
     if (data == NULL)
         result = Remove(li->ht, current.This->key,current.This->klen);
     else {
-        memcpy(current.This->val,data,li->ht->ElementSize);
+        if (current.This->val != data) {
+            if (li->ht->DestructorFn)
+                li->ht->DestructorFn(current.This->val);
+            memcpy(current.This->val,data,li->ht->ElementSize);
+        }
         li->ht->timestamp++;
         result = 1;
     }
@@ -1168,12 +1177,14 @@ static Iterator *NewIterator(HashTable *ht)
     struct HashTableIterator *result;
 
     if (ht == NULL || ht->Allocator == NULL || ht->Allocator->malloc == NULL) {
-        table_error(ht, "InitIterator",CONTAINER_ERROR_BADARG);
+        table_error(ht, "iHashTable.NewIterator",CONTAINER_ERROR_BADARG);
         return NULL;
     }
     result = ht->Allocator->malloc(sizeof(struct HashTableIterator));
-    if (result == NULL)
+    if (result == NULL) {
+        table_error(ht, "iHashTable.NewIterator",CONTAINER_ERROR_NOMEMORY);
         return NULL;
+    }
     result->it.GetNext = GetNext;
     result->it.GetPrevious = GetNext;
     result->it.GetFirst = GetFirst;
@@ -1226,12 +1237,14 @@ static int DeleteIterator(Iterator *it)
     HashTable *ht;
 
     if (it == NULL)
-        return CONTAINER_ERROR_BADARG;
+        return NullPtrError("DeleteIterator");
     d = (struct HashTableIterator *)it;
     ht = d->ht;
     if (d->Magic == HASHTABLE_MAGIC_NUMBER && ht != NULL &&
-        ht->Allocator != NULL && ht->Allocator->free != NULL)
+        ht->Allocator != NULL && ht->Allocator->free != NULL) {
+        d->Magic = 0;
         ht->Allocator->free(d);
+    }
     return 1;
 }
 

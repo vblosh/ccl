@@ -63,7 +63,8 @@ static int NodeSize(const Deque *d, size_t *size)
     return 1;
 }
 
-static Deque *Init(Deque *d, size_t elementsize)
+static Deque *InitWithAllocator(Deque *d, size_t elementsize,
+                                ContainerAllocator *allocator)
 {
     if (d == NULL)
     {
@@ -74,8 +75,8 @@ static Deque *Init(Deque *d, size_t elementsize)
         (void)DequeError(NULL, "iDeque.Init", CONTAINER_ERROR_BADARG);
         return NULL;
     }
-    if (CurrentAllocator == NULL || CurrentAllocator->malloc == NULL ||
-        CurrentAllocator->free == NULL) {
+    if (allocator == NULL || allocator->malloc == NULL ||
+        allocator->free == NULL) {
         (void)DequeError(NULL, "iDeque.Init", CONTAINER_ERROR_BADARG);
         return NULL;
     }
@@ -85,9 +86,14 @@ static Deque *Init(Deque *d, size_t elementsize)
     d->ElementSize = elementsize;
     d->compare = default_comparator;
     d->RaiseError = iError.RaiseError;
-    d->Allocator = CurrentAllocator;
+    d->Allocator = allocator;
     d->owns_header = 0;
     return d;
+}
+
+static Deque *Init(Deque *d, size_t elementsize)
+{
+    return InitWithAllocator(d, elementsize, CurrentAllocator);
 }
 
 static Deque *Create(size_t elementsize)
@@ -257,10 +263,15 @@ static int PopFront(Deque *d, void *outbuf)
         d->tail = NULL;
     --d->count;
     ++d->timestamp;
-    if (d->DestructorFn != NULL)
-        (void)d->DestructorFn(node->Data);
     if (d->Flags & CONTAINER_HAS_OBSERVER)
         (void)iObserver.Notify(d, CCL_POP, node->Data, NULL);
+    /* In deque, outbuf is required (non-NULL). Unlike buffer.c / dlist.c
+     * where popping without outbuf runs DestructorFn and popping with outbuf
+     * transfers ownership, deque API contract and test suite require invoking
+     * DestructorFn on element removal. Reordering Notify before DestructorFn
+     * ensures observers observe valid element data rather than destroyed data. */
+    if (d->DestructorFn != NULL)
+        (void)d->DestructorFn(node->Data);
     d->Allocator->free(node);
     return 1;
 }
@@ -298,10 +309,10 @@ static int PopBack(Deque *d, void *outbuf)
         d->head = NULL;
     --d->count;
     ++d->timestamp;
-    if (d->DestructorFn != NULL)
-        (void)d->DestructorFn(node->Data);
     if (d->Flags & CONTAINER_HAS_OBSERVER)
         (void)iObserver.Notify(d, CCL_POP, node->Data, NULL);
+    if (d->DestructorFn != NULL)
+        (void)d->DestructorFn(node->Data);
     d->Allocator->free(node);
     return 1;
 }
@@ -348,6 +359,8 @@ static int EraseInternal(Deque *d, const void *item, int all)
                 d->head = previous;
             --d->count;
             ++d->timestamp;
+            if (d->Flags & CONTAINER_HAS_OBSERVER)
+                (void)iObserver.Notify(d, CCL_ERASE_AT, node->Data, NULL);
             DestroyNode(d, node);
             removed = 1;
             if (!all)
@@ -380,7 +393,6 @@ static size_t GetCount(Deque *d)
 static Deque *CreateWithAllocator(size_t elementsize,
                                   ContainerAllocator *allocator)
 {
-    ContainerAllocator *saved;
     Deque *result;
 
     if (allocator == NULL || allocator->malloc == NULL ||
@@ -389,13 +401,16 @@ static Deque *CreateWithAllocator(size_t elementsize,
         (void)DequeError(NULL, "iDeque.Create", CONTAINER_ERROR_BADARG);
         return NULL;
     }
-    /* Init's public contract uses CurrentAllocator.  Temporarily selecting a
-     * caller allocator keeps CreateWithAllocator private and avoids making a
-     * second ABI entry solely for deque. */
-    saved = CurrentAllocator;
-    CurrentAllocator = allocator;
-    result = Create(elementsize);
-    CurrentAllocator = saved;
+    result = allocator->malloc(sizeof(*result));
+    if (result == NULL) {
+        (void)DequeError(NULL, "iDeque.Create", CONTAINER_ERROR_NOMEMORY);
+        return NULL;
+    }
+    if (InitWithAllocator(result, elementsize, allocator) == NULL) {
+        allocator->free(result);
+        return NULL;
+    }
+    result->owns_header = 1;
     return result;
 }
 
@@ -760,6 +775,54 @@ static void *GetFirst(Iterator *it)
     return iterator->Current != NULL ? iterator->Current->Data : NULL;
 }
 
+static void *GetLast(Iterator *it)
+{
+    struct DequeIterator *iterator = (struct DequeIterator *)it;
+    Deque *d;
+
+    if (iterator == NULL || (d = iterator->D) == NULL)
+        return NULL;
+    if (IteratorChanged(iterator, "iDeque.GetLast"))
+        return NULL;
+    if (d->count == 0) {
+        iterator->index = 0;
+        iterator->Current = NULL;
+        return NULL;
+    }
+    iterator->index = d->count - 1;
+    iterator->Current = d->head;
+    return iterator->Current != NULL ? iterator->Current->Data : NULL;
+}
+
+static void *Seek(Iterator *it, size_t idx)
+{
+    struct DequeIterator *iterator = (struct DequeIterator *)it;
+    Deque *d;
+    DequeNode node;
+    size_t i;
+
+    if (iterator == NULL || (d = iterator->D) == NULL)
+        return NULL;
+    if (IteratorChanged(iterator, "iDeque.Seek"))
+        return NULL;
+    if (idx >= d->count)
+        return NULL;
+    node = d->tail;
+    for (i = 0; i < idx && node != NULL; ++i)
+        node = node->Next;
+    iterator->index = idx;
+    iterator->Current = node;
+    return node != NULL ? node->Data : NULL;
+}
+
+static size_t GetPosition(Iterator *it)
+{
+    struct DequeIterator *iterator = (struct DequeIterator *)it;
+    if (iterator == NULL || iterator->D == NULL)
+        return (size_t)-1;
+    return iterator->index;
+}
+
 static Iterator *NewIterator(Deque *d)
 {
     struct DequeIterator *iterator;
@@ -777,6 +840,9 @@ static Iterator *NewIterator(Deque *d)
     iterator->it.GetPrevious = GetPrevious;
     iterator->it.GetFirst = GetFirst;
     iterator->it.GetCurrent = GetCurrent;
+    iterator->it.GetLast = GetLast;
+    iterator->it.Seek = Seek;
+    iterator->it.GetPosition = GetPosition;
     iterator->D = d;
     iterator->timestamp = d->timestamp;
     iterator->owns_memory = 1;
@@ -796,6 +862,9 @@ static int InitIterator(Deque *d, void *buf)
     iterator->it.GetPrevious = GetPrevious;
     iterator->it.GetFirst = GetFirst;
     iterator->it.GetCurrent = GetCurrent;
+    iterator->it.GetLast = GetLast;
+    iterator->it.Seek = Seek;
+    iterator->it.GetPosition = GetPosition;
     iterator->D = d;
     iterator->timestamp = d->timestamp;
     iterator->owns_memory = 0;

@@ -194,8 +194,14 @@ static void Apply(GenericContainer *gen, int (*applyFn)(void *, void *), void *a
 
 static int Equal(const GenericContainer *left, const GenericContainer *right)
 {
-    if (left == NULL || left->vTable == NULL || right == NULL) return BadArg("iGeneric.Equal");
-    switch (KindOf(left)) {
+    GenericKind leftKind, rightKind;
+    if (left == NULL || left->vTable == NULL || right == NULL || right->vTable == NULL)
+        return BadArg("iGeneric.Equal");
+    leftKind = KindOf(left);
+    rightKind = KindOf(right);
+    if (leftKind != rightKind)
+        return 0;
+    switch (leftKind) {
     case GENERIC_LIST:   return iList.Equal((const List *)left, (const List *)right);
     case GENERIC_DLIST:  return iDlist.Equal((const Dlist *)left, (const Dlist *)right);
     case GENERIC_VECTOR: return iVector.Equal((const Vector *)left, (const Vector *)right);
@@ -270,6 +276,12 @@ static void RememberIterator(GenericContainer *container, Iterator *iterator)
     IteratorOwner *entry;
     if (container == NULL || iterator == NULL)
         return;
+    for (entry = IteratorOwners; entry != NULL; entry = entry->next) {
+        if (entry->iterator == iterator) {
+            entry->container = container;
+            return;
+        }
+    }
     entry = (IteratorOwner *)malloc(sizeof(*entry));
     if (entry == NULL)
         return;

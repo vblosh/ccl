@@ -205,6 +205,35 @@ static int test_narrow_results_and_buffers(void)
     iMask.SetElement(mask,2,1);
     selected = istrCollection.SelectCopy(sc,mask);
     TEST_REQUIRE(selected != NULL && istrCollection.Size(selected) == 2);
+    TEST_REQUIRE(istrCollection.SelectCopy(NULL, mask) == NULL);
+    TEST_REQUIRE(istrCollection.SelectCopy(sc, NULL) == NULL);
+    TEST_REQUIRE(istrCollection.PopFront(NULL, out, sizeof(out)) == 0);
+    TEST_REQUIRE(istrCollection.GetCapacity(NULL) == 0);
+    {
+        Iterator *dummy_it = istrCollection.NewIterator(sc);
+        TEST_REQUIRE(dummy_it != NULL);
+        TEST_REQUIRE(dummy_it->GetPosition(NULL) == SIZE_MAX);
+        TEST_REQUIRE(dummy_it->GetLast(NULL) == NULL);
+        istrCollection.DeleteIterator(dummy_it);
+    }
+    {
+        strCollection *flags_sc = istrCollection.Create(3);
+        strCollection *flags_sel = NULL;
+        TEST_REQUIRE(flags_sc != NULL);
+        istrCollection.Add(flags_sc, "a");
+        istrCollection.Add(flags_sc, "b");
+        istrCollection.Add(flags_sc, "c");
+        istrCollection.SetFlags(flags_sc, CONTAINER_READONLY);
+        istrCollection.SetDestructor(flags_sc, count_destructor);
+        flags_sel = istrCollection.SelectCopy(flags_sc, mask);
+        TEST_REQUIRE(flags_sel != NULL);
+        TEST_REQUIRE(istrCollection.GetFlags(flags_sel) == CONTAINER_READONLY);
+        destructor_count = 0;
+        istrCollection.Finalize(flags_sel);
+        TEST_REQUIRE(destructor_count == 2);
+        istrCollection.SetFlags(flags_sc, 0);
+        istrCollection.Finalize(flags_sc);
+    }
 
     TEST_REQUIRE(istrCollection.PopFront(sc,out,sizeof(out)) == strlen("alpha one")+1);
     TEST_REQUIRE(strcmp(out,"alpha one") == 0);

@@ -95,6 +95,8 @@ static int Notify(const void *ObservedObject,unsigned operation,const void *Extr
 		iError.RaiseError("iObserver.Notify",CONTAINER_ERROR_BADARG);
 		return CONTAINER_ERROR_BADARG;
 	}
+	if (ObserverVector == NULL)
+		return 0;
 
 	ExtraInfo[0] = ExtraInfo1;
 	ExtraInfo[1] = ExtraInfo2;
@@ -116,6 +118,9 @@ static int Notify(const void *ObservedObject,unsigned operation,const void *Extr
 static size_t Unsubscribe(void *ObservedObject,ObserverFunction callback)
 {
 	size_t idx=0,count=0;
+
+	if (ObserverVector == NULL)
+		return 0;
 
 	if (ObservedObject == NULL) {
 		/* Erase all observers that have the specified function. This means that the
@@ -142,6 +147,17 @@ static size_t Unsubscribe(void *ObservedObject,ObserverFunction callback)
 			memset(ObserverVector+idx,0,sizeof(Observer));
 			count++;
 		}
+	}
+	if (ObservedObject != NULL && count > 0) {
+		int has_remaining = 0;
+		for (idx = 0; idx < vsize; idx++) {
+			if (ObserverVector[idx].ObservedObject == ObservedObject) {
+				has_remaining = 1;
+				break;
+			}
+		}
+		if (!has_remaining)
+			((GenericContainer *)ObservedObject)->Flags &= ~CONTAINER_HAS_OBSERVER;
 	}
 	return count;
 }

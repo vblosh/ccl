@@ -43,9 +43,11 @@ static int test_basic_sizes_are_aligned_zeroed_and_writable(void)
         memory = (unsigned char *)iDebugMalloc.malloc(size);
         TEST_REQUIRE(memory != NULL);
         TEST_REQUIRE(((uintptr_t)memory % sizeof(size_t)) == 0);
-        for (j = 0; j < ((size + sizeof(size_t) - 1) &
-                         ~(sizeof(size_t) - 1)); ++j)
+        for (j = 0; j < size; ++j)
             TEST_REQUIRE(memory[j] == 0);
+        for (; j < ((size + sizeof(size_t) - 1) &
+                    ~(sizeof(size_t) - 1)); ++j)
+            TEST_REQUIRE(memory[j] == 0xa5);
         for (j = 0; j < size; ++j)
             memory[j] = (unsigned char)(j + 1);
         iDebugMalloc.free(memory);
@@ -270,6 +272,38 @@ cleanup:
     return -1;
 }
 
+static int test_padding_overwrite_is_reported_without_invalid_access(void)
+{
+    unsigned char *memory = NULL;
+    ErrorFunction old_error = NULL;
+
+    memory = (unsigned char *)iDebugMalloc.malloc(13);
+    TEST_REQUIRE(memory != NULL);
+    /* Corrupt byte 13, which is inside alignment padding [13, 16) */
+    memory[13] = 0;
+
+    old_error = iError.SetErrorFunction(capture_error);
+    clear_capture();
+    iDebugMalloc.free(memory);
+    TEST_REQUIRE(captured.count == 1);
+    TEST_REQUIRE(captured.code == CONTAINER_ERROR_BUFFEROVERFLOW);
+    TEST_REQUIRE(strcmp(captured.operation, "Free") == 0);
+    iError.SetErrorFunction(old_error);
+
+    memory[13] = 0xa5;
+    iDebugMalloc.free(memory);
+    return 0;
+
+cleanup:
+    if (old_error != NULL)
+        iError.SetErrorFunction(old_error);
+    if (memory != NULL) {
+        memory[13] = 0xa5;
+        iDebugMalloc.free(memory);
+    }
+    return -1;
+}
+
 static const TestCase tests[] = {
     {"basic sizes are aligned, zeroed, and writable",
      test_basic_sizes_are_aligned_zeroed_and_writable},
@@ -289,6 +323,8 @@ static const TestCase tests[] = {
      test_footer_overwrite_is_reported_without_invalid_access},
     {"realloc bad pointer is rejected",
      test_realloc_bad_pointer_is_rejected},
+    {"padding overwrite is reported safely",
+     test_padding_overwrite_is_reported_without_invalid_access},
 };
 
 static const TestSuite suite = {

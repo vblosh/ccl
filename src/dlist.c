@@ -204,15 +204,18 @@ static int DefaultDlistCompareFunction(const void *left,const void *right,Compar
 
 static Dlist *InitWithAllocator(Dlist *result,size_t elementsize,const  ContainerAllocator *allocator)
 {
-    if (result == NULL || elementsize == 0 ||
-        elementsize > SIZE_MAX - sizeof(DlistElement)) {
-        iError.NullPtrError("iDlist.Create");
+    if (result == NULL) {
+        iError.NullPtrError("iDlist.Init");
+        return NULL;
+    }
+    if (elementsize == 0 || elementsize > SIZE_MAX - sizeof(DlistElement)) {
+        iError.RaiseError("iDlist.Init", CONTAINER_ERROR_BADARG);
         return NULL;
     }
     if (allocator == NULL || allocator->malloc == NULL ||
         allocator->free == NULL || allocator->calloc == NULL ||
         allocator->realloc == NULL) {
-        iError.NullPtrError("iDlist.Create");
+        iError.RaiseError("iDlist.Init", CONTAINER_ERROR_BADARG);
         return NULL;
     }
     memset(result,0,sizeof(Dlist));
@@ -252,8 +255,11 @@ static Dlist *CreateWithAllocator(size_t elementsize,const ContainerAllocator *a
         elementsize > SIZE_MAX - sizeof(DlistElement) ||
         allocator->malloc == NULL || allocator->free == NULL ||
         allocator->calloc == NULL || allocator->realloc == NULL) {
-	    iError.NullPtrError("iDlist.Create");
-	    return NULL;
+        if (allocator == NULL)
+            iError.NullPtrError("iDlist.Create");
+        else
+            iError.RaiseError("iDlist.Create", CONTAINER_ERROR_BADARG);
+        return NULL;
     }
     result = allocator->malloc(sizeof(Dlist));
     if (result == NULL) {
@@ -435,10 +441,10 @@ static int Clear(Dlist *l)
     DlistElement *rvp,*next;
 
     if (l == NULL) {
-        return iError.NullPtrError("iDlist.Size");
+        return iError.NullPtrError("iDlist.Clear");
     }
     if (l->Flags & CONTAINER_READONLY) {
-        l->RaiseError("iDlist.Add",CONTAINER_ERROR_READONLY,l);
+        l->RaiseError("iDlist.Clear",CONTAINER_ERROR_READONLY,l);
         return CONTAINER_ERROR_READONLY;
     }
     old_flags = l->Flags;
@@ -602,7 +608,7 @@ static unsigned SetFlags(Dlist *l,unsigned newval)
     unsigned result;
 
     if (l == NULL) {
-        iError.NullPtrError("iDlist.Size");
+        iError.NullPtrError("iDlist.SetFlags");
         return 0;
     }
     result = l->Flags;
@@ -621,7 +627,7 @@ static unsigned SetFlags(Dlist *l,unsigned newval)
 static unsigned GetFlags(const Dlist *l)
 {
     if (l == NULL) {
-        iError.NullPtrError("iDlist.Size");
+        iError.NullPtrError("iDlist.GetFlags");
         return 0;
     }
     return l->Flags;
@@ -658,7 +664,7 @@ static CompareFunction SetCompareFunction(Dlist *l,CompareFunction fn)
 
 
     if (l == NULL) {
-        iError.NullPtrError("iDlist.Size");
+        iError.NullPtrError("iDlist.SetCompareFunction");
         return NULL;
     }
     oldfn = l->Compare;
@@ -687,7 +693,7 @@ static Dlist *Copy(const Dlist *l)
     DlistElement *rvp,*newRvp,*last;
 
     if (l == NULL) {
-        iError.NullPtrError("iDlist.Size");
+        iError.NullPtrError("iDlist.Copy");
         return 0;
     }
     result = CreateWithAllocator(l->ElementSize, l->Allocator);
@@ -740,7 +746,8 @@ static int Finalize(Dlist *l)
     const ContainerAllocator *allocator;
     int owned;
 
-    if (l == NULL) return CONTAINER_ERROR_BADARG;
+    if (l == NULL)
+        return iError.NullPtrError("iDlist.Finalize");
     allocator = l->Allocator;
     owned = DlistHeaderIsOwned(l);
     Flags = l->Flags;
@@ -1039,12 +1046,12 @@ static int PopFront(Dlist *l,void *result)
     l->count--;
     if (result)
         memcpy(result,&le->Data,l->ElementSize);
+    if (l->Flags & CONTAINER_HAS_OBSERVER)
+        iObserver.Notify(l,CCL_POP,result ? result : le->Data,NULL);
     if (result == NULL && l->DestructorFn != NULL)
         (void)l->DestructorFn(le->Data);
     FreeDlistNode(l, le);
     l->timestamp++;
-    if (l->Flags & CONTAINER_HAS_OBSERVER)
-        iObserver.Notify(l,CCL_POP,result,NULL);
 
     return 1;
 }
@@ -1072,6 +1079,8 @@ static int PopBack(Dlist *l,void *result)
     l->count--;
     if (result)
         memcpy(result,&le->Data,l->ElementSize);
+    if (l->Flags & CONTAINER_HAS_OBSERVER)
+        iObserver.Notify(l,CCL_POP,result ? result : le->Data,NULL);
     if (result == NULL && l->DestructorFn != NULL)
         (void)l->DestructorFn(le->Data);
     FreeDlistNode(l, le);
@@ -1082,6 +1091,7 @@ static int PopBack(Dlist *l,void *result)
 static int InsertAt(Dlist *l,size_t pos,const void *pdata)
 {
     DlistElement *elem;
+    size_t original_pos = pos;
 
     if (l == NULL || pdata == NULL) {
         if (l)
@@ -1095,7 +1105,7 @@ static int InsertAt(Dlist *l,size_t pos,const void *pdata)
         return CONTAINER_ERROR_INDEX;
     }
     if (l->Flags & CONTAINER_READONLY) {
-        l->RaiseError("iDlist.PushBack",CONTAINER_ERROR_READONLY,l);
+        l->RaiseError("iDlist.InsertAt",CONTAINER_ERROR_READONLY,l);
         return CONTAINER_ERROR_READONLY;
     }
     if (pos == l->count) {
@@ -1125,7 +1135,7 @@ static int InsertAt(Dlist *l,size_t pos,const void *pdata)
     l->timestamp++;
     ++l->count;
     if (l->Flags & CONTAINER_HAS_OBSERVER)
-        iObserver.Notify(l,CCL_INSERT_AT,pdata,(void *)pos);
+        iObserver.Notify(l,CCL_INSERT_AT,pdata,(void *)original_pos);
 
     return 1;
 }
@@ -1232,14 +1242,14 @@ static int EraseAt(Dlist *l,size_t position)
     DlistElement *rvp=NULL,*before,*after;
     size_t original_position = position;
 
-    if (l == NULL) return iError.NullPtrError("iDlist.InsertIn");
+    if (l == NULL) return iError.NullPtrError("iDlist.EraseAt");
 
     if (position >= l->count) {
         l->RaiseError("iDlist.EraseAt",CONTAINER_ERROR_INDEX,l,position);
         return CONTAINER_ERROR_INDEX;
     }
     if (l->Flags & CONTAINER_READONLY) {
-        l->RaiseError("iDlist.PushBack",CONTAINER_ERROR_READONLY,l);
+        l->RaiseError("iDlist.EraseAt",CONTAINER_ERROR_READONLY,l);
         return CONTAINER_ERROR_READONLY;
     }
     rvp = l->First;
@@ -1924,8 +1934,6 @@ static int Append(Dlist *l1, Dlist *l2)
     l1->timestamp++;
     if (l1->Flags & CONTAINER_HAS_OBSERVER)
         iObserver.Notify(l1,CCL_APPEND,l2,NULL);
-    if (l2->Flags & CONTAINER_HAS_OBSERVER)
-        iObserver.Notify(l2,CCL_FINALIZE,NULL,NULL);
 
     l2->First = l2->Last = NULL;
     l2->count = 0;
@@ -2332,11 +2340,11 @@ static DlistElement *FirstElement(Dlist *l)
 static DlistElement *LastElement(Dlist *l)
 {
 	if (l == NULL) {
-		iError.NullPtrError("FirstElement");
+		iError.NullPtrError("LastElement");
 		return NULL;
 	}
 	if (l->Flags&CONTAINER_READONLY) {
-		iError.RaiseError("FirstElement",CONTAINER_ERROR_READONLY,l);
+		iError.RaiseError("LastElement",CONTAINER_ERROR_READONLY,l);
 		return NULL;
 	}
 	return l->Last;
@@ -2431,7 +2439,7 @@ static int RotateRight(Dlist * l, size_t n)
     if (l == NULL)
         return iError.NullPtrError("iDlist.RotateRight");
     if (l->Flags & CONTAINER_READONLY) {
-        l->RaiseError("iDlist.RotateLeft",CONTAINER_ERROR_READONLY,l);
+        l->RaiseError("iDlist.RotateRight",CONTAINER_ERROR_READONLY,l);
         return CONTAINER_ERROR_READONLY;
     }
     if (l->count < 2 || n == 0)

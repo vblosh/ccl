@@ -547,12 +547,88 @@ cleanup:
     return result;
 }
 
+static int test_review_findings_hashtable(void)
+{
+    HashTable *ro_table = NULL;
+    HashTable *ht = NULL;
+    Iterator *it = NULL;
+    Iterator *del_it = NULL;
+    int val = 42;
+    int new_val = 200;
+    int *stored = NULL;
+    int result = -1;
+
+    /* 1. Finalize on read-only table invokes DestructorFn and returns success */
+    ro_table = iHashTable.Create(sizeof(int));
+    TEST_REQUIRE(ro_table != NULL);
+    destructor_calls = 0;
+    TEST_REQUIRE(iHashTable.Add(ro_table, "k", 1, &val) == 1);
+    iHashTable.SetDestructor(ro_table, count_destructor);
+    iHashTable.SetFlags(ro_table, CONTAINER_READONLY);
+    TEST_REQUIRE(iHashTable.Finalize(ro_table) == 1);
+    TEST_REQUIRE(destructor_calls == 1);
+    ro_table = NULL;
+
+    /* 2. Replace: self-replacement and displaced destructor */
+    ht = iHashTable.Create(sizeof(int));
+    TEST_REQUIRE(ht != NULL);
+    val = 100;
+    TEST_REQUIRE(iHashTable.Add(ht, "key", 3, &val) == 1);
+    stored = (int *)iHashTable.GetElement(ht, "key", 3);
+    TEST_REQUIRE(stored != NULL && *stored == 100);
+    destructor_calls = 0;
+    iHashTable.SetDestructor(ht, count_destructor);
+    /* Self-replacement */
+    TEST_REQUIRE(iHashTable.Replace(ht, "key", 3, stored) == 1);
+    TEST_REQUIRE(destructor_calls == 0);
+    /* Displaced value destructor */
+    new_val = 200;
+    TEST_REQUIRE(iHashTable.Replace(ht, "key", 3, &new_val) == 1);
+    TEST_REQUIRE(destructor_calls == 1);
+
+    /* 3. ReplaceWithIterator: self-replacement and timestamp check */
+    it = iHashTable.NewIterator(ht);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    stored = (int *)it->GetCurrent(it);
+    destructor_calls = 0;
+    TEST_REQUIRE(it->Replace(it, stored, 0) == 1);
+    TEST_REQUIRE(destructor_calls == 0);
+
+    /* Timestamp change reporting even if iterator is at end */
+    while (it->GetNext(it) != NULL) {}
+    val = 300;
+    TEST_REQUIRE(iHashTable.Add(ht, "key2", 4, &val) == 1);
+    TEST_REQUIRE(it->Replace(it, &val, 0) == CONTAINER_ERROR_OBJECT_CHANGED);
+    iHashTable.DeleteIterator(it);
+    it = NULL;
+
+    /* 4. DeleteIterator Magic clear on double free and NULL check */
+    del_it = iHashTable.NewIterator(ht);
+    TEST_REQUIRE(del_it != NULL);
+    TEST_REQUIRE(iHashTable.DeleteIterator(del_it) == 1);
+    TEST_REQUIRE(iHashTable.DeleteIterator(del_it) == 1);
+    TEST_REQUIRE(iHashTable.DeleteIterator(NULL) < 0);
+
+    result = 0;
+
+cleanup:
+    if (it != NULL)
+        iHashTable.DeleteIterator(it);
+    if (ht != NULL)
+        iHashTable.Finalize(ht);
+    if (ro_table != NULL)
+        iHashTable.Finalize(ro_table);
+    return result;
+}
+
 static const TestCase hashtable_tests[] = {
     {"basic binary keys and large values", test_basic_binary_and_large_values},
     {"resize and iterators", test_resize_and_iterators},
     {"copy merge callbacks and destructor", test_copy_merge_callbacks_and_destructor},
     {"save and load", test_save_and_load},
     {"argument validation and readonly", test_argument_validation_and_readonly},
+    {"review findings hashtable fixes", test_review_findings_hashtable},
 };
 
 static const TestSuite hashtable_suite = {

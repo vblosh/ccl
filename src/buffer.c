@@ -96,6 +96,7 @@ static int enlargeBuffer(StreamBuffer *b,size_t chunkSize)
 	char *p;
 	size_t newSiz;
 	size_t growth;
+	size_t oldSiz;
 
 	/* chunkSize is the required capacity, not an additive increment. */
 	if (chunkSize <= b->Size)
@@ -109,9 +110,11 @@ static int enlargeBuffer(StreamBuffer *b,size_t chunkSize)
 		newSiz = b->Size + growth;
 	if (newSiz < chunkSize)
 		newSiz = chunkSize;
+	oldSiz = b->Size;
 	p = b->Allocator->realloc(b->Data,newSiz);
 	if (p == NULL)
 		return CONTAINER_ERROR_NOMEMORY;
+	memset(p + oldSiz, 0, newSiz - oldSiz);
 	b->Data = p;
 	b->Size = newSiz;
 	return 1;
@@ -224,6 +227,7 @@ static char *GetData(const StreamBuffer *b)
 static int Resize(StreamBuffer *b,size_t newSize)
 {
 	char *tmp;
+	size_t oldSize;
 
 	if (b == NULL) {
 		iError.RaiseError("iStreamBuffer.Resize",CONTAINER_ERROR_BADARG);
@@ -238,11 +242,14 @@ static int Resize(StreamBuffer *b,size_t newSize)
 		b->Cursor = 0;
 		return 1;
 	}
+	oldSize = b->Size;
 	tmp = b->Allocator->realloc(b->Data,newSize);
 	if (tmp == NULL) {
 		iError.RaiseError("iStreamBuffer.Resize",CONTAINER_ERROR_NOMEMORY);
 		return CONTAINER_ERROR_NOMEMORY;
 	}
+	if (newSize > oldSize)
+		memset(tmp + oldSize, 0, newSize - oldSize);
 	b->Data = tmp;
 	b->Size = newSize;
 	if (b->Cursor > newSize)
@@ -359,7 +366,7 @@ static int PopFront(CircularBuffer *b,void *result)
     data = &(b->data[(b->tail % b->maxCount) * b->ElementSize]);
 	if (result)
 		memcpy(result,data,b->ElementSize);
-	if (b->DestructorFn)
+	else if (b->DestructorFn)
 		b->DestructorFn(data);
 	memset(data,0,b->ElementSize);
 	b->tail++;

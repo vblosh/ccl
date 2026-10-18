@@ -100,15 +100,29 @@ static ContainerAllocator failing_allocator = {
     failing_malloc, failing_free, failing_realloc, failing_calloc
 };
 
+#include <stdarg.h>
+
 static struct {
     const char *operation;
     int code;
+    const void *obj;
+    size_t idx;
 } last_error;
 
 static void *capture_error(const char *operation,int code,...)
 {
+    va_list ap;
+    va_start(ap, code);
     last_error.operation = operation;
     last_error.code = code;
+    if (code == CONTAINER_ERROR_INDEX) {
+        last_error.obj = va_arg(ap, const void *);
+        last_error.idx = va_arg(ap, size_t);
+    } else {
+        last_error.obj = NULL;
+        last_error.idx = 0;
+    }
+    va_end(ap);
     return NULL;
 }
 
@@ -116,6 +130,8 @@ static void reset_error(void)
 {
     last_error.operation = NULL;
     last_error.code = 0;
+    last_error.obj = NULL;
+    last_error.idx = 0;
 }
 
 static int error_is(const char *operation,int code)
@@ -179,6 +195,7 @@ static int test_bounds_and_clear(void)
     TEST_REQUIRE(error_is("iMask.Set",CONTAINER_ERROR_INDEX));
     TEST_REQUIRE(iMask.GetElement(mask,3) == 0);
     TEST_REQUIRE(error_is("iMask.GetElement",CONTAINER_ERROR_INDEX));
+    TEST_REQUIRE(last_error.obj == mask && last_error.idx == 3);
     TEST_REQUIRE(iMask.GetElement(mask,SIZE_MAX) == 0);
     TEST_REQUIRE(error_is("iMask.GetElement",CONTAINER_ERROR_INDEX));
     TEST_REQUIRE(iMask.Clear(mask) == 1);
@@ -351,6 +368,8 @@ static int test_null_arguments(void)
     TEST_REQUIRE(error_is("iMask.PopulationCount",CONTAINER_ERROR_BADARG));
     TEST_REQUIRE(iMask.Size(NULL) == 0);
     TEST_REQUIRE(iMask.Sizeof(NULL) == iMask.Sizeof(NULL));
+    TEST_REQUIRE(iMask.Copy(NULL) == NULL);
+    TEST_REQUIRE(error_is("iMask.Copy",CONTAINER_ERROR_BADARG));
     result = 0;
 
 cleanup:

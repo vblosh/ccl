@@ -47,6 +47,15 @@ static int collect_int(const void *value, void *arg)
     return 1;
 }
 
+static int mutating_apply(const void *value, void *arg)
+{
+    TreeMap *tree = (TreeMap *)arg;
+    int extra = 999;
+    (void)value;
+    iTreeMap.Add(tree, &extra, NULL);
+    return 1;
+}
+
 static void cleanup_tree(TreeMap **tree)
 {
     if (*tree != NULL) {
@@ -120,6 +129,10 @@ static int test_custom_compare_context_and_insert(void)
     copy = iTreeMap.Copy(tree);
     TEST_REQUIRE(copy != NULL);
     TEST_REQUIRE(iTreeMap.Equal(tree, copy) == 1);
+    error_calls = 0;
+    TEST_REQUIRE(iTreeMap.Add(copy, NULL, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(error_calls > 0);
+    TEST_REQUIRE(iTreeMap.Apply(tree, mutating_apply, tree) == CONTAINER_ERROR_OBJECT_CHANGED);
     result = 0;
 
 cleanup:
@@ -155,10 +168,16 @@ static int test_destructor_erase_replace_clear(void)
     TEST_REQUIRE(iTreeMap.Contains(tree, &one, NULL) == 1);
     TEST_REQUIRE(destructor_calls == 3);
     TEST_REQUIRE(iTreeMap.Clear(tree) == 1);
-    TEST_REQUIRE(destructor_calls == 5);
     TEST_REQUIRE(iTreeMap.Add(tree, &three, NULL) == 1);
+    {
+        TreeMap *copy_tree = iTreeMap.Copy(tree);
+        int saved_destructors = destructor_calls;
+        TEST_REQUIRE(copy_tree != NULL);
+        iTreeMap.Finalize(copy_tree);
+        TEST_REQUIRE(destructor_calls > saved_destructors);
+    }
     TEST_REQUIRE(iTreeMap.Clear(tree) == 1);
-    TEST_REQUIRE(destructor_calls == 6);
+    TEST_REQUIRE(destructor_calls == 7);
     result = 0;
 
 cleanup:

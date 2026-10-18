@@ -410,6 +410,46 @@ cleanup:
     return -1;
 }
 
+static int test_review_findings_generic(void)
+{
+    List *list = NULL;
+    Vector *vec = NULL;
+    GenericContainer bad_right;
+    unsigned char iter_buf[512];
+    int val = 42;
+    int result = -1;
+
+    list = iList.Create(sizeof(int));
+    vec = iVector.Create(sizeof(int), 4);
+    TEST_REQUIRE(list != NULL && vec != NULL);
+    TEST_REQUIRE(iList.Add(list, &val) == 1);
+    TEST_REQUIRE(iVector.Add(vec, &val) == 1);
+
+    /* 1. Cross-container equality must return 0 instead of type confusion */
+    TEST_REQUIRE(iGeneric.Equal((const GenericContainer *)list,
+                                (const GenericContainer *)vec) == 0);
+    TEST_REQUIRE(iGeneric.Equal((const GenericContainer *)vec,
+                                (const GenericContainer *)list) == 0);
+
+    /* Right vtable NULL must return BadArg (< 0) */
+    memset(&bad_right, 0, sizeof(bad_right));
+    TEST_REQUIRE(iGeneric.Equal((const GenericContainer *)list, &bad_right) < 0);
+
+    /* 2. RememberIterator: repeated InitIterator on same placement buffer */
+    TEST_REQUIRE(iGeneric.InitIterator((GenericContainer *)list, iter_buf) == 1);
+    TEST_REQUIRE(iGeneric.InitIterator((GenericContainer *)list, iter_buf) == 1);
+    TEST_REQUIRE(iGeneric.DeleteIterator((Iterator *)iter_buf) == 1);
+
+    result = 0;
+
+cleanup:
+    if (list != NULL)
+        iList.Finalize(list);
+    if (vec != NULL)
+        iVector.Finalize(vec);
+    return result;
+}
+
 static const TestCase tests[] = {
     {"list dispatch", test_list_dispatch},
     {"other concrete dispatch", test_other_concrete_dispatch},
@@ -417,6 +457,7 @@ static const TestCase tests[] = {
     {"concrete iterators", test_concrete_iterators},
     {"string dispatch", test_string_dispatch},
     {"null arguments", test_null_arguments},
+    {"review findings generic fixes", test_review_findings_generic},
 };
 
 const TestSuite *ccl_get_test_suite(void)

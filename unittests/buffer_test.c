@@ -92,6 +92,9 @@ static int test_stream_resize_and_overflow(void)
 	TEST_REQUIRE(iStreamBuffer.GetPosition(buffer) == 0);
 	TEST_REQUIRE(iStreamBuffer.Write(buffer, (void *)"x", 1) == 1);
 	TEST_REQUIRE(iStreamBuffer.GetData(buffer)[0] == 'x');
+	TEST_REQUIRE(iStreamBuffer.Resize(buffer, 32) == 1);
+	for (size_t k = 1; k < 32; k++)
+		TEST_REQUIRE(iStreamBuffer.GetData(buffer)[k] == 0);
 	TEST_REQUIRE(iStreamBuffer.SetPosition(buffer, 1) == 1);
 	TEST_REQUIRE(iStreamBuffer.Write(buffer, (void *)"x", SIZE_MAX) == 0);
 	TEST_REQUIRE(last_error == CONTAINER_ERROR_BUFFEROVERFLOW);
@@ -298,9 +301,8 @@ static int test_circular_fifo_and_destructors(void)
 	TEST_REQUIRE(iCircularBuffer.PopFront(ring, &value) == 1 && value == 4);
 	TEST_REQUIRE(iCircularBuffer.PopFront(ring, &value) == 0);
 	TEST_REQUIRE(iCircularBuffer.PeekFront(ring, &value) == 0);
-	TEST_REQUIRE(destructor_count == 4);
-	TEST_REQUIRE(destructor_values[0] == 1 && destructor_values[1] == 2 &&
-			destructor_values[2] == 3 && destructor_values[3] == 4);
+	TEST_REQUIRE(destructor_count == 2);
+	TEST_REQUIRE(destructor_values[0] == 1 && destructor_values[1] == 2);
 	TEST_REQUIRE(iCircularBuffer.SetDestructor(ring, NULL) == record_destructor);
 	TEST_REQUIRE(iCircularBuffer.SetDestructor(ring, record_destructor) == NULL);
 	single = iCircularBuffer.Create(sizeof(int), 1);
@@ -326,15 +328,15 @@ static int test_circular_fifo_and_destructors(void)
 	TEST_REQUIRE(iCircularBuffer.Size(wrapped) == 3);
 	TEST_REQUIRE(iCircularBuffer.Clear(wrapped) == 1);
 	TEST_REQUIRE(iCircularBuffer.Size(wrapped) == 0);
-	TEST_REQUIRE(destructor_count == 4);
-	TEST_REQUIRE(destructor_values[0] == 1 && destructor_values[1] == 2 &&
-			destructor_values[2] == 3 && destructor_values[3] == 4);
+	TEST_REQUIRE(destructor_count == 3);
+	TEST_REQUIRE(destructor_values[0] == 2 && destructor_values[1] == 3 &&
+			destructor_values[2] == 4);
 	/* A newly added item after Clear is destroyed by Finalize. */
 	value = 5;
 	TEST_REQUIRE(iCircularBuffer.Add(wrapped, &value) == 1);
 	TEST_REQUIRE(iCircularBuffer.Finalize(wrapped) == 1);
 	wrapped = NULL;
-	TEST_REQUIRE(destructor_count == 5);
+	TEST_REQUIRE(destructor_count == 4);
 	result = 0;
 
 cleanup:

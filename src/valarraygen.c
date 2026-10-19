@@ -1005,8 +1005,10 @@ static void *GetNext(Iterator *it)
 		iError.RaiseError("ValArray.GetNext",CONTAINER_ERROR_WRONG_ITERATOR);
 		return NULL;
 	}
-	if (ali->index >= AL->count)
+	if (AL->count == 0 || (ali->index != (size_t)-1 && ali->index >= AL->count - 1)) {
+		ali->Current = NULL;
 		return NULL;
+	}
 	if (ali->timestamp != AL->timestamp) {
 		iValArrayInterface.RaiseError("GetNext",CONTAINER_ERROR_OBJECT_CHANGED);
 		return NULL;

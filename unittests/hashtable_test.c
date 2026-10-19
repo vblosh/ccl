@@ -603,11 +603,16 @@ static int test_review_findings_hashtable(void)
     iHashTable.DeleteIterator(it);
     it = NULL;
 
-    /* 4. DeleteIterator Magic clear on double free and NULL check */
+    /* 4. DeleteIterator heap, placement, and NULL check */
     del_it = iHashTable.NewIterator(ht);
     TEST_REQUIRE(del_it != NULL);
     TEST_REQUIRE(iHashTable.DeleteIterator(del_it) == 1);
-    TEST_REQUIRE(iHashTable.DeleteIterator(del_it) == 1);
+    del_it = NULL;
+    {
+        char storage[sizeof(struct HashTableIterator)];
+        TEST_REQUIRE(iHashTable.InitIterator(ht, storage) == 1);
+        TEST_REQUIRE(iHashTable.DeleteIterator((Iterator *)storage) == 1);
+    }
     TEST_REQUIRE(iHashTable.DeleteIterator(NULL) < 0);
 
     result = 0;

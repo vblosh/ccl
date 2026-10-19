@@ -1198,9 +1198,9 @@ static int test_valarray_edge_paths(void)
     iValArrayInt.SetFlags(observed, CONTAINER_HAS_OBSERVER);
     TEST_ASSERT(valarray_observer_events >= 9,
                 "Observer receives ValArray mutation events");
-    iValArrayInt.Finalize(observed);
     TEST_ASSERT(iObserver.Unsubscribe(observed, valarray_observer_callback) == 1,
                 "ValArray observer unsubscribes");
+    iValArrayInt.Finalize(observed);
     observed = NULL;
 
     iterator = iValArrayInt.NewIterator(left);

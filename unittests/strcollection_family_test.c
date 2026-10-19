@@ -1031,6 +1031,8 @@ static int test_strcollection_coverage_boost(void)
     istrCollection.SetFlags(sc, CONTAINER_READONLY);
     TEST_REQUIRE(istrCollection.InsertIn(sc, 0, sc2) < 0);
     istrCollection.SetFlags(sc, 0);
+    istrCollection.Finalize(sc2);
+    sc2 = NULL;
 
     /* 8. CompareEqual, CompareEqualScalar, SelectCopy */
     eq_mask = istrCollection.CompareEqual(sc, sc, NULL);
@@ -1101,6 +1103,8 @@ static int test_strcollection_coverage_boost(void)
         sc_file = istrCollection.CreateFromFile(tmp_name);
         TEST_REQUIRE(sc_file != NULL);
         TEST_REQUIRE(istrCollection.Size(sc_file) == istrCollection.Size(sc));
+        istrCollection.Finalize(sc_file);
+        sc_file = NULL;
         remove(tmp_name);
 
         wsc = iWstrCollection.InitializeWith(3, (wchar_t **)w_init_data);
@@ -1109,6 +1113,10 @@ static int test_strcollection_coverage_boost(void)
         wsc_file = iWstrCollection.CreateFromFile(tmp_name);
         TEST_REQUIRE(wsc_file != NULL);
         TEST_REQUIRE(iWstrCollection.Size(wsc_file) == 3);
+        iWstrCollection.Finalize(wsc_file);
+        wsc_file = NULL;
+        iWstrCollection.Finalize(wsc);
+        wsc = NULL;
         remove(tmp_name);
 
         TEST_REQUIRE(istrCollection.CreateFromFile(NULL) == NULL);

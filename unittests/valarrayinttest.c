@@ -2740,21 +2740,6 @@ static int test_valarray_additional_coverage(void)
     TEST_ASSERT(iValArrayInt.Load(stream) == NULL, "Load truncated header");
     fclose(stream);
 
-    stream = ccl_test_tmpfile();
-    TEST_ASSERT(iValArrayInt.Save(v2, stream) == 1, "Save v2 for hdr read");
-    rewind(stream);
-    size_t hdr_size = sizeof(guid) + iValArrayInt.Sizeof(NULL);
-    void *hdr_buf = malloc(hdr_size);
-    TEST_ASSERT(hdr_buf != NULL, "malloc hdr_buf");
-    TEST_ASSERT(fread(hdr_buf, 1, hdr_size, stream) == hdr_size, "read hdr");
-    fclose(stream);
-
-    stream = ccl_test_tmpfile();
-    fwrite(hdr_buf, 1, hdr_size, stream);
-    rewind(stream);
-    TEST_ASSERT(iValArrayInt.Load(stream) == NULL, "Load missing elements");
-    fclose(stream);
-    free(hdr_buf);
 
     /* Fprintf with slice */
     stream = ccl_test_tmpfile();

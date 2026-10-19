@@ -733,6 +733,7 @@ static int test_dictionary_coverage_boost(void)
     TEST_REQUIRE(iDictionary.Add(ro_dict, "item", &val1) == 1);
     iDictionary.SetFlags(ro_dict, CONTAINER_READONLY);
     TEST_REQUIRE(iDictionary.Apply(ro_dict, test_apply_fn, NULL) == 1);
+    iDictionary.SetFlags(ro_dict, 0);
 
     /* Apply with NULL callback */
     TEST_REQUIRE(iDictionary.Apply(d1, NULL, NULL) < 0);

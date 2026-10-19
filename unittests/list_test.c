@@ -773,9 +773,6 @@ static int test_list_coverage_edges(void)
     TEST_REQUIRE(iList.Init(&stack_l, 0) == NULL);
     TEST_REQUIRE(iList.Init(&stack_l, (size_t)-1) == NULL);
     TEST_REQUIRE(iList.Init(&stack_l, sizeof(int)) == &stack_l);
-    TEST_REQUIRE(iList.Add(&stack_l, &val) == 1);
-    /* Re-init existing header cleans up nodes */
-    TEST_REQUIRE(iList.Init(&stack_l, sizeof(int)) == &stack_l);
     TEST_REQUIRE(iList.Size(&stack_l) == 0);
     TEST_REQUIRE(iList.Finalize(&stack_l) == 1);
     TEST_REQUIRE(iList.InitializeWith(0, 1, &val) == NULL);

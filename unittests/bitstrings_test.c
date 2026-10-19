@@ -410,6 +410,191 @@ cleanup:
     return result;
 }
 
+static int dummy_apply_cb(int bit, void *arg)
+{
+    *(int *)arg += bit;
+    return 0;
+}
+
+static int test_additional_bitstring_coverage(void)
+{
+    BitString *b = NULL;
+    BitString *b2 = NULL;
+    BitString *empty_bs = NULL;
+    BitString *b_short = NULL;
+    BitString *b_long = NULL;
+    BitString *b_text = NULL;
+    BitString *b_pat = NULL;
+    Iterator *it = NULL;
+    Iterator *it_empty = NULL;
+    FILE *f = NULL;
+    int count = 0;
+    int replacement = 1;
+    size_t idx = 0;
+    unsigned char byte = 0;
+    BitString stack_bs;
+    ContainerAllocator invalid_alloc = { NULL, NULL, NULL, NULL };
+
+    b = iBitString.Create(16);
+    TEST_REQUIRE(b != NULL);
+
+    /* SetCapacity edge cases */
+    TEST_REQUIRE(iBitString.SetCapacity(NULL, 10) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.SetCapacity(b, SIZE_MAX) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.SetCapacity(b, b->capacity * 8) == 1);
+
+    /* PopulationCount and BitBlockCount on NULL */
+    TEST_REQUIRE(iBitString.PopulationCount(NULL) == 0);
+    TEST_REQUIRE(iBitString.BitBlockCount(NULL) == 0);
+
+    /* Contains edge cases */
+    b_short = from_text("1");
+    b_long = from_text("1010");
+    b_text = from_text("1111");
+    b_pat = from_text("10");
+    TEST_REQUIRE(b_short != NULL && b_long != NULL && b_text != NULL && b_pat != NULL);
+    TEST_REQUIRE(iBitString.Contains(b_short, b_long, NULL) == 0);
+    TEST_REQUIRE(iBitString.Contains(b_text, b_pat, NULL) == 0);
+    iBitString.Finalize(b_short); b_short = NULL;
+    iBitString.Finalize(b_long); b_long = NULL;
+    iBitString.Finalize(b_text); b_text = NULL;
+    iBitString.Finalize(b_pat); b_pat = NULL;
+
+    /* Append empty */
+    empty_bs = iBitString.Create(0);
+    TEST_REQUIRE(empty_bs != NULL);
+    TEST_REQUIRE(iBitString.Append(b, empty_bs) == 1);
+    iBitString.Finalize(empty_bs); empty_bs = NULL;
+
+    /* Equal comparisons */
+    TEST_REQUIRE(iBitString.Equal(b, NULL) == 0);
+    TEST_REQUIRE(iBitString.Equal(NULL, b) == 0);
+    b2 = iBitString.Create(16);
+    TEST_REQUIRE(b2 != NULL);
+    TEST_REQUIRE(iBitString.Add(b, 1) == 1);
+    TEST_REQUIRE(iBitString.Add(b2, 1) == 1);
+    TEST_REQUIRE(iBitString.Add(b2, 0) == 1);
+    TEST_REQUIRE(iBitString.Equal(b, b2) == 0);
+    iBitString.Finalize(b2); b2 = NULL;
+
+    /* Algebra assign with NULL left */
+    TEST_REQUIRE(iBitString.OrAssign(NULL, b) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.AndAssign(NULL, b) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.NotAssign(NULL) == CONTAINER_ERROR_BADARG);
+
+    /* InitializeWith and StringToBitString edge cases */
+    TEST_REQUIRE(iBitString.InitializeWith(SIZE_MAX, "x") == NULL);
+    TEST_REQUIRE(iBitString.StringToBitString(NULL) == NULL);
+
+    /* Readonly operations */
+    iBitString.SetFlags(b, CONTAINER_READONLY);
+    TEST_REQUIRE(iBitString.Finalize(b) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iBitString.ReplaceAt(b, 0, 1) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iBitString.PopBack(b) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iBitString.InsertAt(b, 0, 1) == 0);
+    TEST_REQUIRE(iBitString.EraseAt(b, 0) == CONTAINER_ERROR_READONLY);
+    iBitString.SetFlags(b, 0);
+
+    /* NULL error paths */
+    TEST_REQUIRE(iBitString.Clear(NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.Finalize(NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.SetElement(NULL, 0, 1) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.GetElement(NULL, 0) == 0);
+    TEST_REQUIRE(iBitString.BitLeftShift(NULL, 1) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.BitRightShift(NULL, 1) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.SetFlags(NULL, 1) == 0);
+    TEST_REQUIRE(iBitString.Add(NULL, 1) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.ReplaceAt(NULL, 0, 1) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.PopBack(NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.InsertAt(NULL, 0, 1) == (size_t)CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.EraseAt(NULL, 0) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.IndexOf(NULL, 1, NULL, &idx) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.Memset(NULL, 0, 0, 1) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.SetErrorFunction(NULL, NULL) == NULL);
+    TEST_REQUIRE(iBitString.CopyBits(NULL, &byte) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.CopyBits(b, NULL) == CONTAINER_ERROR_BADARG);
+
+    /* Apply coverage */
+    count = 0;
+    TEST_REQUIRE(iBitString.Apply(NULL, dummy_apply_cb, &count) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iBitString.Apply(b, dummy_apply_cb, &count) == 1);
+
+    /* SetElement to 0 */
+    TEST_REQUIRE(iBitString.SetElement(b, 0, 0) == 1);
+    TEST_REQUIRE(iBitString.GetElement(b, 0) == 0);
+
+    /* Iterator branches */
+    it = iBitString.NewIterator(b);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetPrevious(it) == NULL);
+    TEST_REQUIRE(it->GetNext(NULL) == NULL);
+    TEST_REQUIRE(it->GetPrevious(NULL) == NULL);
+    TEST_REQUIRE(it->GetFirst(NULL) == NULL);
+    TEST_REQUIRE(it->GetLast(NULL) == NULL);
+    TEST_REQUIRE(it->Seek(NULL, 0) == NULL);
+    TEST_REQUIRE(it->Seek(it, 9999) == NULL);
+    TEST_REQUIRE(it->GetPosition(NULL) == 0);
+    TEST_REQUIRE(it->Replace(NULL, NULL, 0) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(it->Replace(it, NULL, 0) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(it->GetCurrent(NULL) == NULL);
+
+    /* Invalidate iterator by modifying container */
+    TEST_REQUIRE(it->GetNext(it) != NULL);
+    TEST_REQUIRE(iBitString.Add(b, 1) == 1);
+    TEST_REQUIRE(it->GetNext(it) == NULL);
+    TEST_REQUIRE(it->Replace(it, &replacement, 0) == CONTAINER_ERROR_OBJECT_CHANGED);
+    iBitString.DeleteIterator(it); it = NULL;
+
+    empty_bs = iBitString.Create(0);
+    TEST_REQUIRE(empty_bs != NULL);
+    it_empty = iBitString.NewIterator(empty_bs);
+    TEST_REQUIRE(it_empty != NULL);
+    TEST_REQUIRE(it_empty->GetLast(it_empty) == NULL);
+    iBitString.DeleteIterator(it_empty); it_empty = NULL;
+    iBitString.Finalize(empty_bs); empty_bs = NULL;
+
+    /* Truncated Load */
+    f = ccl_test_tmpfile();
+    TEST_REQUIRE(f != NULL);
+    {
+        size_t file_count = 100;
+        unsigned file_flags = 0;
+        unsigned char partial[5] = { 0 };
+        fwrite(&file_count, sizeof(file_count), 1, f);
+        fwrite(&file_flags, sizeof(file_flags), 1, f);
+        fwrite(partial, 1, sizeof(partial), f);
+        rewind(f);
+        TEST_REQUIRE(iBitString.Load(f, NULL, NULL) == NULL);
+        fclose(f); f = NULL;
+    }
+
+    /* Init and CreateWithAllocator edge cases */
+    TEST_REQUIRE(iBitString.Init(&stack_bs, SIZE_MAX) == NULL);
+    {
+        BitString *ca = iBitString.CreateWithAllocator(10, NULL);
+        TEST_REQUIRE(ca != NULL);
+        iBitString.Finalize(ca);
+    }
+    TEST_REQUIRE(iBitString.CreateWithAllocator(10, &invalid_alloc) == NULL);
+    TEST_REQUIRE(iBitString.CreateWithAllocator(SIZE_MAX, NULL) == NULL);
+
+    iBitString.Finalize(b);
+    return 0;
+
+cleanup:
+    if (f != NULL) fclose(f);
+    if (it != NULL) iBitString.DeleteIterator(it);
+    if (it_empty != NULL) iBitString.DeleteIterator(it_empty);
+    if (empty_bs != NULL) iBitString.Finalize(empty_bs);
+    if (b_short != NULL) iBitString.Finalize(b_short);
+    if (b_long != NULL) iBitString.Finalize(b_long);
+    if (b_text != NULL) iBitString.Finalize(b_text);
+    if (b_pat != NULL) iBitString.Finalize(b_pat);
+    if (b2 != NULL) iBitString.Finalize(b2);
+    if (b != NULL) iBitString.Finalize(b);
+    return -1;
+}
+
 static const TestCase tests[] = {
     { "lifetime and sequence", test_lifetime_and_sequence },
     { "parse, print, and ranges", test_parse_print_ranges },
@@ -418,7 +603,8 @@ static const TestCase tests[] = {
     { "search, shifts, and memset", test_search_shift_and_memset },
     { "allocator and read-only", test_allocator_and_readonly },
     { "iterators and persistence", test_iterators_persistence_and_validation },
-    { "edge and error paths", test_edge_and_error_paths }
+    { "edge and error paths", test_edge_and_error_paths },
+    { "additional bitstring coverage", test_additional_bitstring_coverage }
 };
 
 static const TestSuite suite = {
@@ -431,3 +617,4 @@ const TestSuite *ccl_get_test_suite(void)
 {
     return &suite;
 }
+

@@ -456,6 +456,268 @@ cleanup:
     return -1;
 }
 
+static int bad_save_fn(const void *element, void *arg, FILE *stream)
+{
+    (void)element;
+    (void)arg;
+    (void)stream;
+    return 0;
+}
+
+static int test_deque_coverage_edges(void)
+{
+    Deque *d = NULL;
+    Deque *d2 = NULL;
+    Deque *c = NULL;
+    Deque *placement = NULL;
+    Iterator *it = NULL;
+    FILE *stream = NULL;
+    FILE *ro_stream = NULL;
+    int val = 42;
+    int out = 0;
+    int vals[5] = {10, 20, 30, 40, 50};
+    int i;
+    char buffer[256];
+
+    /* Init NULL / invalid sizes */
+    TEST_REQUIRE(iDeque.Init(NULL, sizeof(int)) == NULL);
+    placement = (Deque *)malloc(iDeque.Sizeof(NULL));
+    TEST_REQUIRE(placement != NULL);
+    TEST_REQUIRE(iDeque.Init(placement, 0) == NULL);
+    TEST_REQUIRE(iDeque.Init(placement, (size_t)-1) == NULL);
+    TEST_REQUIRE(iDeque.Init(placement, sizeof(int)) == placement);
+    /* Finalizing placement with owns_header == 0 */
+    TEST_REQUIRE(iDeque.Finalize(placement) == 1);
+    free(placement);
+    placement = NULL;
+
+    /* Create invalid sizes */
+    TEST_REQUIRE(iDeque.Create(0) == NULL);
+    TEST_REQUIRE(iDeque.Create((size_t)-1) == NULL);
+
+    /* NULL checks on PushBack / PushFront / Pop / Peek */
+    TEST_REQUIRE(iDeque.PushBack(NULL, &val) < 0);
+    TEST_REQUIRE(iDeque.PushFront(NULL, &val) < 0);
+    d = iDeque.Create(sizeof(int));
+    TEST_REQUIRE(d != NULL);
+    TEST_REQUIRE(iDeque.PushFront(d, NULL) < 0);
+
+    TEST_REQUIRE(iDeque.PopFront(NULL, &out) < 0);
+    TEST_REQUIRE(iDeque.PopFront(d, NULL) < 0);
+    TEST_REQUIRE(iDeque.Front(NULL, &out) < 0);
+    TEST_REQUIRE(iDeque.Front(d, NULL) < 0);
+    TEST_REQUIRE(iDeque.PopBack(NULL, &out) < 0);
+    TEST_REQUIRE(iDeque.PopBack(d, NULL) < 0);
+    TEST_REQUIRE(iDeque.Back(NULL, &out) < 0);
+    TEST_REQUIRE(iDeque.Back(d, NULL) < 0);
+    TEST_REQUIRE(iDeque.Reverse(NULL) < 0);
+    TEST_REQUIRE(iDeque.SetDestructor(NULL, count_destructor) == NULL);
+    TEST_REQUIRE(iDeque.SetErrorFunction(NULL, capture_error) != NULL);
+    TEST_REQUIRE(iDeque.SetErrorFunction(d, NULL) != NULL);
+    TEST_REQUIRE(iDeque.InitIterator(NULL, buffer) < 0);
+    TEST_REQUIRE(iDeque.InitIterator(d, NULL) < 0);
+
+    /* Observers on AddLeft, PopBack, Copy, Finalize */
+    observed_add = observed_pop = observed_copy = observed_finalize = 0;
+    TEST_REQUIRE(iObserver.Subscribe(d, observe,
+                                     CCL_ADD | CCL_POP | CCL_CLEAR |
+                                     CCL_COPY | CCL_FINALIZE) == 1);
+    TEST_REQUIRE(iDeque.PushFront(d, &val) == 1);
+    TEST_REQUIRE(observed_add == 1);
+    c = iDeque.Copy(d);
+    TEST_REQUIRE(c != NULL);
+    TEST_REQUIRE(observed_copy == 1);
+    TEST_REQUIRE(iDeque.PopBack(d, &out) == 1 && out == 42);
+    TEST_REQUIRE(observed_pop == 1);
+    TEST_REQUIRE(iDeque.Finalize(c) == 1);
+    c = NULL;
+    iObserver.Unsubscribe(d, observe);
+
+    /* Erase head element and non-existing element */
+    for (i = 0; i < 3; ++i)
+        TEST_REQUIRE(iDeque.PushBack(d, &vals[i]) == 1);
+    /* vals: 10, 20, 30. Head is 30. Erasing 30 hits d->head = previous */
+    TEST_REQUIRE(iDeque.Erase(d, &vals[2]) == 1);
+    /* Not found contains and erase */
+    int missing = 999;
+    TEST_REQUIRE(iDeque.Contains(d, &missing) == 0);
+    TEST_REQUIRE(iDeque.Erase(d, &missing) == 0);
+    TEST_REQUIRE(iDeque.EraseAll(d, &missing) == 0);
+    TEST_REQUIRE(iDeque.Clear(d) == 0);
+
+    /* Equal branches */
+    d2 = iDeque.Create(sizeof(char));
+    TEST_REQUIRE(d2 != NULL);
+    TEST_REQUIRE(iDeque.Equal(NULL, d) == 0);
+    TEST_REQUIRE(iDeque.Equal(d, NULL) == 0);
+    /* ElementSize mismatch */
+    TEST_REQUIRE(iDeque.Equal(d, d2) == 0);
+    iDeque.Finalize(d2);
+    d2 = iDeque.Create(sizeof(int));
+    TEST_REQUIRE(d2 != NULL);
+    for (i = 0; i < 3; ++i) {
+        TEST_REQUIRE(iDeque.PushBack(d, &vals[i]) == 1);
+        TEST_REQUIRE(iDeque.PushBack(d2, &vals[i]) == 1);
+    }
+    TEST_REQUIRE(iDeque.Equal(d, d2) == 1);
+    /* Mismatch in values */
+    int diff = 1234;
+    TEST_REQUIRE(iDeque.PushBack(d, &diff) == 1);
+    int diff2 = 5678;
+    TEST_REQUIRE(iDeque.PushBack(d2, &diff2) == 1);
+    TEST_REQUIRE(iDeque.Equal(d, d2) == 0);
+    iDeque.Finalize(d2);
+    d2 = NULL;
+    (void)iDeque.Clear(d);
+
+    /* Iterators: Seek multi-step, empty GetLast, NULL iterator args, IteratorChanged */
+    for (i = 0; i < 5; ++i)
+        TEST_REQUIRE(iDeque.PushBack(d, &vals[i]) == 1);
+    it = iDeque.NewIterator(d);
+    TEST_REQUIRE(it != NULL);
+    /* Seek loops over nodes */
+    int *seeked = (int *)it->Seek(it, 3);
+    TEST_REQUIRE(seeked != NULL && *seeked == vals[3]);
+    /* NULL it checks */
+    TEST_REQUIRE(it->GetNext(NULL) == NULL);
+    TEST_REQUIRE(it->GetPrevious(NULL) == NULL);
+    TEST_REQUIRE(it->GetCurrent(NULL) == NULL);
+    TEST_REQUIRE(it->GetFirst(NULL) == NULL);
+    TEST_REQUIRE(it->GetLast(NULL) == NULL);
+    TEST_REQUIRE(it->Seek(NULL, 0) == NULL);
+    TEST_REQUIRE(it->GetPosition(NULL) == (size_t)-1);
+    /* IteratorChanged */
+    TEST_REQUIRE(iDeque.PushBack(d, &val) == 1);
+    TEST_REQUIRE(it->GetNext(it) == NULL);
+    TEST_REQUIRE(it->GetPrevious(it) == NULL);
+    TEST_REQUIRE(it->GetCurrent(it) == NULL);
+    TEST_REQUIRE(it->GetFirst(it) == NULL);
+    TEST_REQUIRE(it->GetLast(it) == NULL);
+    TEST_REQUIRE(it->Seek(it, 0) == NULL);
+    iDeque.DeleteIterator(it);
+    it = NULL;
+
+    /* GetLast on empty deque */
+    (void)iDeque.Clear(d);
+    it = iDeque.NewIterator(d);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetLast(it) == NULL);
+    iDeque.DeleteIterator(it);
+    it = NULL;
+
+    /* Save errors */
+    TEST_REQUIRE(iDeque.Save(NULL, stdout, NULL, NULL) < 0);
+    TEST_REQUIRE(iDeque.Save(d, NULL, NULL, NULL) < 0);
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL);
+    TEST_REQUIRE(iDeque.PushBack(d, &val) == 1);
+    TEST_REQUIRE(iDeque.Save(d, stream, bad_save_fn, NULL) == EOF);
+    ro_stream = fopen("/dev/null", "r");
+    if (ro_stream != NULL) {
+        TEST_REQUIRE(iDeque.Save(d, ro_stream, NULL, NULL) == EOF);
+        fclose(ro_stream);
+        ro_stream = NULL;
+    }
+
+    /* Load errors and corruption */
+    /* 1. Empty file */
+    rewind(stream);
+    TEST_REQUIRE(iDeque.Load(stream, NULL, NULL) == NULL);
+    /* 2. Wrong GUID */
+    rewind(stream);
+    TEST_REQUIRE(fwrite("bad_guid_bytes_!", 1, 16, stream) == 16);
+    rewind(stream);
+    TEST_REQUIRE(iDeque.Load(stream, NULL, NULL) == NULL);
+    /* 3. Truncated header (valid GUID, but EOF right after) */
+    rewind(stream);
+    TEST_REQUIRE(iDeque.Save(d, stream, NULL, NULL) == 1);
+    /* Read valid GUID from saved stream */
+    rewind(stream);
+    char guid_buf[16];
+    TEST_REQUIRE(fread(guid_buf, 1, 16, stream) == 16);
+    fclose(stream);
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    rewind(stream);
+    TEST_REQUIRE(iDeque.Load(stream, NULL, NULL) == NULL);
+
+    /* 4. Corrupted version / 0 element size */
+    uint32_t bad_version = 999;
+    uint32_t flags = 0;
+    uint64_t bad_elem_size = 0;
+    uint64_t count = 1;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&bad_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&bad_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&count, 1, 8, stream) == 8);
+    rewind(stream);
+    TEST_REQUIRE(iDeque.Load(stream, NULL, NULL) == NULL);
+
+    /* 5. Oversized element_size */
+    uint32_t good_version = 1;
+    uint64_t huge_elem_size = (uint64_t)-1;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&good_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&huge_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&count, 1, 8, stream) == 8);
+    rewind(stream);
+    TEST_REQUIRE(iDeque.Load(stream, NULL, NULL) == NULL);
+
+    /* 6. Oversized count */
+    uint64_t norm_elem_size = 64;
+    uint64_t huge_count = (uint64_t)-1;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&good_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&norm_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&huge_count, 1, 8, stream) == 8);
+    rewind(stream);
+    TEST_REQUIRE(iDeque.Load(stream, NULL, NULL) == NULL);
+
+    /* 7. Truncated data read */
+    uint64_t valid_elem_size = sizeof(int);
+    uint64_t expected_count = 5;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&good_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&valid_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&expected_count, 1, 8, stream) == 8);
+    /* Write only 1 int instead of 5 */
+    TEST_REQUIRE(fwrite(&val, 1, sizeof(int), stream) == sizeof(int));
+    rewind(stream);
+    TEST_REQUIRE(iDeque.Load(stream, NULL, NULL) == NULL);
+
+    fclose(stream);
+    stream = NULL;
+    iDeque.Finalize(d);
+    d = NULL;
+    return 0;
+
+cleanup:
+    if (it != NULL)
+        iDeque.DeleteIterator(it);
+    if (ro_stream != NULL)
+        fclose(ro_stream);
+    if (stream != NULL)
+        fclose(stream);
+    if (placement != NULL)
+        free(placement);
+    if (c != NULL)
+        iDeque.Finalize(c);
+    if (d2 != NULL)
+        iDeque.Finalize(d2);
+    if (d != NULL)
+        iDeque.Finalize(d);
+    return -1;
+}
+
 static const TestCase deque_tests[] = {
     {"links, endpoints, and lifetime", test_links_and_lifetime},
     {"search, mutation, copy, and reverse", test_search_mutation_copy_reverse},
@@ -463,6 +725,7 @@ static const TestCase deque_tests[] = {
     {"iterators and errors", test_iterator_and_errors},
     {"persistence, observers, and placement", test_persistence_observer_and_init},
     {"bad arguments", test_bad_arguments},
+    {"coverage edges", test_deque_coverage_edges},
 };
 
 static const TestSuite deque_suite = {

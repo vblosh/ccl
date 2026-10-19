@@ -406,6 +406,96 @@ cleanup:
     return -1;
 }
 
+static int test_edge_cases_and_alloc_failures(void)
+{
+    AllocationState state = { 0, 0, 0, 0, 0, 0, 0 };
+    ContainerAllocator allocator = { pq_malloc, pq_free, pq_realloc, pq_calloc };
+    PQueue *q1 = NULL;
+    PQueue *q2 = NULL;
+    PQueue *q_default = NULL;
+    int val = 42;
+    int out = -1;
+
+    /* Create with SIZE_MAX triggers element_storage_size overflow check */
+    TEST_REQUIRE(iPQueue.Create(SIZE_MAX) == NULL);
+
+    /* CreateWithAllocator with NULL allocator uses CurrentAllocator */
+    q_default = iPQueue.CreateWithAllocator(sizeof(int), NULL);
+    TEST_REQUIRE(q_default != NULL);
+    /* Add NULL data when ElementSize > 0 (clears with memset 0) */
+    TEST_REQUIRE(iPQueue.Add(q_default, 10, NULL) == 1);
+    TEST_REQUIRE(iPQueue.Pop(q_default, &out) == 10 && out == 0);
+    TEST_REQUIRE(iPQueue.Finalize(q_default) == 1);
+    q_default = NULL;
+
+    /* Copy NULL */
+    TEST_REQUIRE(iPQueue.Copy(NULL) == NULL);
+
+    /* Equal on two empty queues */
+    q1 = iPQueue.Create(sizeof(int));
+    q2 = iPQueue.Create(sizeof(int));
+    TEST_REQUIRE(q1 != NULL && q2 != NULL);
+    TEST_REQUIRE(iPQueue.Equal(q1, q2) == 1);
+
+    /* Union edge cases: NULL inputs, self union, empty right union */
+    val = 100;
+    TEST_REQUIRE(iPQueue.Add(q1, 5, &val) == 1);
+    TEST_REQUIRE(iPQueue.Union(NULL, q1) == NULL);
+    TEST_REQUIRE(iPQueue.Union(q1, NULL) == NULL);
+    TEST_REQUIRE(iPQueue.Union(q1, q1) == q1);
+    /* q2 is empty; Union(q1, q2) should finalize q2 and return q1 */
+    TEST_REQUIRE(iPQueue.Union(q1, q2) == q1);
+    q2 = NULL; /* freed by Union */
+    TEST_REQUIRE(iPQueue.Finalize(q1) == 1);
+    q1 = NULL;
+
+    /* Allocator failures in Equal and Union */
+    active_state = &state;
+    q1 = iPQueue.CreateWithAllocator(sizeof(int), &allocator);
+    q2 = iPQueue.CreateWithAllocator(sizeof(int), &allocator);
+    TEST_REQUIRE(q1 != NULL && q2 != NULL);
+    val = 10;
+    TEST_REQUIRE(iPQueue.Add(q1, 1, &val) == 1);
+    TEST_REQUIRE(iPQueue.Add(q2, 1, &val) == 1);
+
+    /* Equal: fail right_nodes malloc */
+    state.fail_malloc_at = state.malloc_calls + 2;
+    TEST_REQUIRE(iPQueue.Equal(q1, q2) == 0);
+    state.fail_malloc_at = 0;
+
+    /* Equal: fail used calloc */
+    state.fail_calloc_at = state.calloc_calls + 1;
+    TEST_REQUIRE(iPQueue.Equal(q1, q2) == 0);
+    state.fail_calloc_at = 0;
+
+    /* Copy: fail inside copy_ring (second calloc fails) */
+    state.fail_calloc_at = state.calloc_calls + 2;
+    TEST_REQUIRE(iPQueue.Copy(q1) == NULL);
+    state.fail_calloc_at = 0;
+
+    /* Union: fail allocation during merge */
+    state.fail_calloc_at = state.calloc_calls + 1;
+    TEST_REQUIRE(iPQueue.Union(q1, q2) == NULL);
+    state.fail_calloc_at = 0;
+
+    TEST_REQUIRE(iPQueue.Finalize(q1) == 1);
+    TEST_REQUIRE(iPQueue.Finalize(q2) == 1);
+    q1 = NULL;
+    q2 = NULL;
+    active_state = NULL;
+    return 0;
+
+cleanup:
+    if (q1 != NULL)
+        iPQueue.Finalize(q1);
+    if (q2 != NULL)
+        iPQueue.Finalize(q2);
+    if (q_default != NULL)
+        iPQueue.Finalize(q_default);
+    active_state = NULL;
+    return -1;
+}
+
 static const TestCase tests[] = {
     { "lifecycle and empty operations", test_lifecycle_and_empty_operations },
     { "priority order and value association", test_priority_order_and_value_association },
@@ -414,6 +504,7 @@ static const TestCase tests[] = {
     { "randomized reference sequence", test_randomized_reference_sequence },
     { "union and incompatible inputs", test_union_and_incompatible_inputs },
     { "allocator failures preserve state", test_allocator_failures_preserve_state },
+    { "edge cases and alloc failures", test_edge_cases_and_alloc_failures },
 };
 
 const TestSuite *ccl_get_test_suite(void)
@@ -425,3 +516,4 @@ const TestSuite *ccl_get_test_suite(void)
     };
     return &suite;
 }
+

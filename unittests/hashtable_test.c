@@ -627,6 +627,268 @@ cleanup:
     return result;
 }
 
+static void *failing_merger(Pool *p, const void *key, size_t klen,
+                            const void *h1_val, const void *h2_val, const void *data)
+{
+    (void)p; (void)key; (void)klen; (void)h1_val; (void)h2_val; (void)data;
+    return NULL;
+}
+
+static int test_hashtable_coverage_boost(void)
+{
+    HashTable *ht = NULL;
+    HashTable *base = NULL;
+    HashTable *overlay = NULL;
+    HashTable *merged = NULL;
+    HashTable *set = NULL;
+    HashTable *loaded_set = NULL;
+    HashTable *empty_ht = NULL;
+    Iterator *it = NULL;
+    Iterator *empty_it = NULL;
+    Iterator *it2 = NULL;
+    FILE *stream = NULL;
+    int val = 10, val2 = 20, new_val = 555;
+    int result = -1;
+
+    /* 1. Resize, GetElement, Contains, GetElementSize with NULL or bad args */
+    TEST_REQUIRE(iHashTable.Resize(NULL, 10) < 0);
+    TEST_REQUIRE(iHashTable.GetElement(NULL, "k", 1) == NULL);
+    TEST_REQUIRE(iHashTable.Contains(NULL, "k", 1) < 0);
+    TEST_REQUIRE(iHashTable.GetElementSize(NULL) == 0);
+
+    ht = iHashTable.Create(sizeof(int));
+    TEST_REQUIRE(ht != NULL);
+    TEST_REQUIRE(iHashTable.GetElementSize(ht) == sizeof(int));
+    TEST_REQUIRE(iHashTable.Add(ht, "k1", 2, &val) == 1);
+    TEST_REQUIRE(iHashTable.Add(ht, "k2", 2, &val2) == 1);
+
+    /* Sizeof on populated table */
+    TEST_REQUIRE(iHashTable.Sizeof(ht) > sizeof(HashTable));
+    /* GetFlags */
+    TEST_REQUIRE(iHashTable.GetFlags(ht) == 0);
+
+    /* Copy with NULL pool (uses orig->pool) */
+    {
+        HashTable *to_copy = iHashTable.Create(sizeof(int));
+        HashTable *copy;
+        TEST_REQUIRE(to_copy != NULL);
+        iHashTable.Add(to_copy, "k1", 2, &val);
+        copy = iHashTable.Copy(to_copy, NULL);
+        TEST_REQUIRE(copy != NULL);
+        TEST_REQUIRE(iHashTable.Size(copy) == 1);
+        /* Finalizing copy frees the shared to_copy->pool */
+        iHashTable.Finalize(copy);
+    }
+
+    /* Hash == NULL in GetElement and Replace */
+    {
+        GeneralHashFunction old_h = ht->Hash;
+        ht->Hash = NULL;
+        TEST_REQUIRE(iHashTable.GetElement(ht, "k1", 2) == NULL);
+        TEST_REQUIRE(iHashTable.Replace(ht, "k1", 2, &val) < 0);
+        ht->Hash = old_h;
+    }
+
+    /* Add failure when ht->pool == NULL */
+    {
+        Pool *saved_pool = ht->pool;
+        ht->pool = NULL;
+        TEST_REQUIRE(iHashTable.Add(ht, "k_null_pool", 11, &val) < 0);
+        ht->pool = saved_pool;
+    }
+
+    /* Save next() with ht->array == NULL */
+    {
+        HashEntry **orig_arr = ht->array;
+        FILE *tmp_s = ccl_test_tmpfile();
+        TEST_REQUIRE(tmp_s != NULL);
+        ht->array = NULL;
+        TEST_REQUIRE(iHashTable.Save(ht, tmp_s, NULL, NULL) == 1);
+        ht->array = orig_arr;
+        fclose(tmp_s);
+    }
+
+    /* Save failure on read-only stream */
+    {
+        FILE *ro_stream = fopen("/dev/null", "r");
+        if (ro_stream != NULL) {
+            TEST_REQUIRE(iHashTable.Save(ht, ro_stream, NULL, NULL) < 0);
+            fclose(ro_stream);
+        }
+    }
+
+    /* 2. Merge with capacity > res->max to trigger growth loop */
+    base = iHashTable.Create(sizeof(int));
+    overlay = iHashTable.Create(sizeof(int));
+    TEST_REQUIRE(base != NULL && overlay != NULL);
+    {
+        char bk[10][16], ok[10][16];
+        for (int k = 0; k < 10; ++k) {
+            snprintf(bk[k], sizeof(bk[k]), "b%d", k);
+            snprintf(ok[k], sizeof(ok[k]), "o%d", k);
+            TEST_REQUIRE(iHashTable.Add(base, bk[k], strlen(bk[k]), &val) == 1);
+            TEST_REQUIRE(iHashTable.Add(overlay, ok[k], strlen(ok[k]), &val2) == 1);
+        }
+        {
+            Pool *mpool = iPool.Create(NULL);
+            TEST_REQUIRE(mpool != NULL);
+            merged = iHashTable.Merge(mpool, overlay, base, NULL, NULL);
+            TEST_REQUIRE(merged != NULL);
+            TEST_REQUIRE(iHashTable.Size(merged) == 20);
+            iHashTable.Finalize(merged);
+            merged = NULL;
+        }
+        /* Merge collision with failing merger */
+        {
+            Pool *mpool = iPool.Create(NULL);
+            TEST_REQUIRE(mpool != NULL);
+            TEST_REQUIRE(iHashTable.Add(overlay, "b0", 2, &val2) == 1);
+            TEST_REQUIRE(iHashTable.Merge(mpool, overlay, base, failing_merger, NULL) == NULL);
+            iPool.Finalize(mpool);
+        }
+    }
+    iHashTable.Finalize(overlay);
+    overlay = NULL;
+    iHashTable.Finalize(base);
+    base = NULL;
+
+    /* 3. Set table (ElementSize == 0) Save and Load */
+    set = iHashTable.Create(0);
+    TEST_REQUIRE(set != NULL);
+    TEST_REQUIRE(iHashTable.Add(set, "s1", 2, &val) == 1);
+    TEST_REQUIRE(iHashTable.Add(set, "s2", 2, &val) == 1);
+
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL);
+    TEST_REQUIRE(iHashTable.Save(set, stream, NULL, NULL) == 1);
+    rewind(stream);
+    loaded_set = iHashTable.Load(stream, NULL, NULL);
+    TEST_REQUIRE(loaded_set != NULL);
+    TEST_REQUIRE(iHashTable.Size(loaded_set) == 2);
+    fclose(stream);
+    stream = NULL;
+    iHashTable.Finalize(loaded_set);
+    loaded_set = NULL;
+    iHashTable.Finalize(set);
+    set = NULL;
+
+    /* 4. Load failure branches using saved stream from ht */
+    {
+        char header_buf[sizeof(guid) + sizeof(HashTable)];
+        FILE *save_stream = ccl_test_tmpfile();
+        TEST_REQUIRE(save_stream != NULL);
+        TEST_REQUIRE(iHashTable.Save(ht, save_stream, NULL, NULL) == 1);
+        rewind(save_stream);
+        TEST_REQUIRE(fread(header_buf, 1, sizeof(header_buf), save_stream) == sizeof(header_buf));
+        fclose(save_stream);
+
+        /* Truncated header (only guid + 2 bytes) */
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        TEST_REQUIRE(fwrite(header_buf, 1, sizeof(guid) + 2, stream) == sizeof(guid) + 2);
+        rewind(stream);
+        TEST_REQUIRE(iHashTable.Load(stream, NULL, NULL) == NULL);
+        fclose(stream);
+
+        /* Corrupted ElementSize */
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        {
+            char bad_hdr[sizeof(guid) + sizeof(HashTable)];
+            memcpy(bad_hdr, header_buf, sizeof(bad_hdr));
+            HashTable *tbl = (HashTable *)(bad_hdr + sizeof(guid));
+            tbl->ElementSize = SIZE_MAX;
+            TEST_REQUIRE(fwrite(bad_hdr, 1, sizeof(bad_hdr), stream) == sizeof(bad_hdr));
+        }
+        rewind(stream);
+        TEST_REQUIRE(iHashTable.Load(stream, NULL, NULL) == NULL);
+        fclose(stream);
+
+        /* Truncated key payload: valid header, ule128 length 20, but EOF */
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        TEST_REQUIRE(fwrite(header_buf, 1, sizeof(header_buf), stream) == sizeof(header_buf));
+        fputc(20, stream);
+        rewind(stream);
+        TEST_REQUIRE(iHashTable.Load(stream, NULL, NULL) == NULL);
+        fclose(stream);
+        stream = NULL;
+    }
+
+    /* 5. Iterator NULL checks and edge cases */
+    it = iHashTable.NewIterator(ht);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+
+    TEST_REQUIRE(it->GetNext(NULL) == NULL);
+    TEST_REQUIRE(it->GetFirst(NULL) == NULL);
+    TEST_REQUIRE(it->GetCurrent(NULL) == NULL);
+    TEST_REQUIRE(it->Replace(NULL, &val, 0) < 0);
+
+    /* Bad iterator with NULL ht */
+    {
+        struct HashTableIterator bad_it;
+        memset(&bad_it, 0, sizeof(bad_it));
+        bad_it.it.GetNext = it->GetNext;
+        bad_it.it.GetFirst = it->GetFirst;
+        bad_it.it.Replace = it->Replace;
+        TEST_REQUIRE(bad_it.it.GetNext((Iterator *)&bad_it) == NULL);
+        TEST_REQUIRE(bad_it.it.GetFirst((Iterator *)&bad_it) == NULL);
+        TEST_REQUIRE(bad_it.it.Replace((Iterator *)&bad_it, &val, 0) == 0);
+    }
+
+    /* Replace on readonly */
+    iHashTable.SetFlags(ht, CONTAINER_READONLY);
+    TEST_REQUIRE(it->Replace(it, &val, 0) < 0);
+    iHashTable.SetFlags(ht, 0);
+
+    /* Replace on empty table */
+    empty_ht = iHashTable.Create(sizeof(int));
+    TEST_REQUIRE(empty_ht != NULL);
+    empty_it = iHashTable.NewIterator(empty_ht);
+    TEST_REQUIRE(empty_it != NULL);
+    TEST_REQUIRE(empty_it->Replace(empty_it, &val, 0) == 0);
+    iHashTable.DeleteIterator(empty_it);
+    empty_it = NULL;
+    iHashTable.Finalize(empty_ht);
+    empty_ht = NULL;
+
+    /* Replace with NULL data (removes element) */
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    TEST_REQUIRE(it->Replace(it, NULL, 0) == 1);
+    TEST_REQUIRE(iHashTable.Size(ht) == 1);
+    iHashTable.DeleteIterator(it);
+    it = NULL;
+
+    /* Replace with destructor function */
+    iHashTable.SetDestructor(ht, count_destructor);
+    it = iHashTable.NewIterator(ht);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    destructor_calls = 0;
+    TEST_REQUIRE(it->Replace(it, &new_val, 0) == 1);
+    TEST_REQUIRE(destructor_calls == 1);
+    iHashTable.DeleteIterator(it);
+    it = NULL;
+    iHashTable.SetDestructor(ht, NULL);
+
+    result = 0;
+
+cleanup:
+    if (stream != NULL) fclose(stream);
+    if (it != NULL) iHashTable.DeleteIterator(it);
+    if (it2 != NULL) iHashTable.DeleteIterator(it2);
+    if (empty_it != NULL) iHashTable.DeleteIterator(empty_it);
+    if (empty_ht != NULL) iHashTable.Finalize(empty_ht);
+    if (loaded_set != NULL) iHashTable.Finalize(loaded_set);
+    if (set != NULL) iHashTable.Finalize(set);
+    if (merged != NULL) iHashTable.Finalize(merged);
+    if (overlay != NULL) iHashTable.Finalize(overlay);
+    if (base != NULL) iHashTable.Finalize(base);
+    if (ht != NULL) iHashTable.Finalize(ht);
+    return result;
+}
+
 static const TestCase hashtable_tests[] = {
     {"basic binary keys and large values", test_basic_binary_and_large_values},
     {"resize and iterators", test_resize_and_iterators},
@@ -634,6 +896,7 @@ static const TestCase hashtable_tests[] = {
     {"save and load", test_save_and_load},
     {"argument validation and readonly", test_argument_validation_and_readonly},
     {"review findings hashtable fixes", test_review_findings_hashtable},
+    {"hashtable coverage boost", test_hashtable_coverage_boost},
 };
 
 static const TestSuite hashtable_suite = {

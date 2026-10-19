@@ -94,6 +94,22 @@ static int append_mark_w(wchar_t *s,void *arg)
     return 1;
 }
 
+static int failing_save_fn(const void *element, void *arg, FILE *stream)
+{
+    (void)element;
+    (void)arg;
+    (void)stream;
+    return 0;
+}
+
+static int failing_load_fn(void *element, void *arg, FILE *stream)
+{
+    (void)element;
+    (void)arg;
+    (void)stream;
+    return 0;
+}
+
 static int test_api_surface_and_errors(void)
 {
     StringList *list = NULL;
@@ -1062,6 +1078,445 @@ cleanup:
     return -1;
 }
 
+static int test_stringlist_coverage_boost(void)
+{
+    FILE *stream = NULL;
+    StringList *list = NULL;
+    StringList *other = NULL;
+    StringList *empty = NULL;
+    Iterator *it = NULL;
+    Mask *mask = NULL;
+    int result = -1;
+
+    /* 1. Empty and single-element basic operations */
+    empty = iStringInterface.Create();
+    TEST_REQUIRE(empty != NULL);
+    TEST_REQUIRE(iStringInterface.FirstElement(empty) == NULL);
+    TEST_REQUIRE(iStringInterface.LastElement(empty) == NULL);
+    TEST_REQUIRE(iStringInterface.Front(empty) == NULL);
+    TEST_REQUIRE(iStringInterface.Back(empty) == NULL);
+    TEST_REQUIRE(iStringInterface.Reverse(empty) == 1);
+    char buf[64];
+    TEST_REQUIRE(iStringInterface.PopFront(empty, buf) == 0);
+    TEST_REQUIRE(iStringInterface.GetAllocator(empty) != NULL);
+    TEST_REQUIRE(iStringInterface.GetElementSize(empty) == sizeof(char));
+
+    /* PushFront into empty (sets Last = rvp) */
+    TEST_REQUIRE(iStringInterface.PushFront(empty, "only") == 1);
+    TEST_REQUIRE(iStringInterface.Front(empty) != NULL);
+    TEST_REQUIRE(iStringInterface.Back(empty) != NULL);
+    /* Reverse with count 1 (< 2) */
+    TEST_REQUIRE(iStringInterface.Reverse(empty) == 1);
+    /* ReplaceAt single element (sets First = newnode, Last = newnode) */
+    TEST_REQUIRE(iStringInterface.ReplaceAt(empty, 0, "replaced_only") == 1);
+    TEST_REQUIRE(strcmp(iStringInterface.GetElement(empty, 0), "replaced_only") == 0);
+    /* PopFront from 1-element list (sets First = Last = NULL) */
+    TEST_REQUIRE(iStringInterface.PopFront(empty, buf) == 1);
+    TEST_REQUIRE(strcmp(buf, "replaced_only") == 0);
+    TEST_REQUIRE(iStringInterface.Size(empty) == 0);
+    TEST_REQUIRE(iStringInterface.FirstElement(empty) == NULL);
+
+    /* GetRange on empty list */
+    StringList *gr = iStringInterface.GetRange(empty, 0, 1);
+    TEST_REQUIRE(gr != NULL && iStringInterface.Size(gr) == 0);
+    iStringInterface.Finalize(gr);
+
+    /* InsertIn into empty list (sets First = newData->First, Last = newData->Last) */
+    other = iStringInterface.Create();
+    TEST_REQUIRE(iStringInterface.Add(other, "item1") == 1);
+    TEST_REQUIRE(iStringInterface.Add(other, "item2") == 1);
+    TEST_REQUIRE(iStringInterface.InsertIn(empty, 0, other) == 1);
+    TEST_REQUIRE(iStringInterface.Size(empty) == 2);
+    iStringInterface.Finalize(other);
+    other = NULL;
+
+    /* GetRange where start == count - 1 */
+    gr = iStringInterface.GetRange(empty, 1, 2);
+    TEST_REQUIRE(gr != NULL && iStringInterface.Size(gr) == 1);
+    iStringInterface.Finalize(gr);
+    gr = NULL;
+
+    iStringInterface.Finalize(empty);
+    empty = NULL;
+
+    /* 2. Bad argument branches */
+    list = iStringInterface.Create();
+    TEST_REQUIRE(list != NULL);
+    TEST_REQUIRE(iStringInterface.Add(list, "base") == 1);
+    size_t idx_res = 0;
+    TEST_REQUIRE(iStringInterface.CopyElement(list, 0, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iStringInterface.ReplaceAt(list, 0, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iStringInterface.PushFront(list, NULL) == CONTAINER_ERROR_BADARG);
+    other = iStringInterface.Create();
+    TEST_REQUIRE(iStringInterface.InsertIn(list, 0, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iStringInterface.InsertIn(list, 0, list) == CONTAINER_ERROR_INCOMPATIBLE);
+    TEST_REQUIRE(iStringInterface.InsertIn(list, 9999, other) == CONTAINER_ERROR_INDEX);
+    iStringInterface.Finalize(other);
+    other = NULL;
+    TEST_REQUIRE(iStringInterface.InsertAt(list, 0, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iStringInterface.Erase(NULL, "a") == (size_t)CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iStringInterface.Erase(list, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iStringInterface.IndexOf(list, NULL, NULL, &idx_res) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iStringInterface.Apply(list, NULL, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iStringInterface.Save(list, NULL, NULL, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iStringInterface.InitializeWith(2, NULL) == NULL);
+
+    /* AddRange with NULL in array triggering rollback (EraseRange) */
+    char *bad_arr[] = {"valid", NULL, "also_valid"};
+    TEST_REQUIRE(iStringInterface.AddRange(list, 3, bad_arr) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iStringInterface.Size(list) == 1);
+
+    /* InitializeWith valid data */
+    char *good_arr[] = {"alpha", "beta"};
+    StringList *init_list = iStringInterface.InitializeWith(2, good_arr);
+    TEST_REQUIRE(init_list != NULL && iStringInterface.Size(init_list) == 2);
+    iStringInterface.Finalize(init_list);
+
+    /* 3. Multi-element mutations: Erase head, middle, not found, EraseAt middle */
+    iStringInterface.Clear(list);
+    iStringInterface.Add(list, "e0");
+    iStringInterface.Add(list, "e1");
+    iStringInterface.Add(list, "e2");
+    iStringInterface.Add(list, "e3");
+    /* Erase not found */
+    TEST_REQUIRE(iStringInterface.Erase(list, "nonexistent") == CONTAINER_ERROR_NOTFOUND);
+    /* Erase head */
+    TEST_REQUIRE(iStringInterface.Erase(list, "e0") == 1);
+    /* Erase middle */
+    TEST_REQUIRE(iStringInterface.Erase(list, "e2") == 1);
+    /* EraseAt middle */
+    TEST_REQUIRE(iStringInterface.EraseAt(list, 1) == 1);
+    TEST_REQUIRE(iStringInterface.Size(list) == 1);
+
+    /* SetElementData: last element and wrong element */
+    iStringInterface.Add(list, "e_last");
+    StringListElement *last_elem = iStringInterface.LastElement(list);
+    TEST_REQUIRE(iStringInterface.SetElementData(list, &last_elem, "new_last") == 1);
+
+    other = iStringInterface.Create();
+    iStringInterface.Add(other, "foreign");
+    StringListElement *foreign_elem = iStringInterface.FirstElement(other);
+    TEST_REQUIRE(iStringInterface.SetElementData(list, &foreign_elem, "dummy") == CONTAINER_ERROR_WRONGELEMENT);
+    /* SplitAfter with foreign element */
+    TEST_REQUIRE(iStringInterface.SplitAfter(list, foreign_elem) == NULL);
+    iStringInterface.Finalize(other);
+    other = NULL;
+
+    /* 4. Readonly checks */
+    other = iStringInterface.Create();
+    iStringInterface.SetFlags(list, CONTAINER_READONLY);
+    TEST_REQUIRE(iStringInterface.InsertIn(list, 0, other) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iStringInterface.Erase(list, "e1") == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iStringInterface.Sort(list) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iStringInterface.Reverse(list) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iStringInterface.SplitAfter(list, iStringInterface.FirstElement(list)) == NULL);
+    TEST_REQUIRE(iStringInterface.SetAllocator(list, (ContainerAllocator *)CurrentAllocator) == NULL);
+    mask = iMask.Create(iStringInterface.Size(list));
+    TEST_REQUIRE(iStringInterface.Select(list, mask) == CONTAINER_ERROR_READONLY);
+    iMask.Finalize(mask);
+    mask = NULL;
+    iStringInterface.SetFlags(list, 0);
+    iStringInterface.Finalize(other);
+    other = NULL;
+
+    /* 5. Readonly Apply with large string (slen >= 512 bufsiz reallocation) */
+    {
+        char big[600];
+        memset(big, 'a', 599);
+        big[599] = '\0';
+        StringList *big_list = iStringInterface.Create();
+        TEST_REQUIRE(big_list != NULL);
+        TEST_REQUIRE(iStringInterface.Add(big_list, big) == 1);
+        iStringInterface.SetFlags(big_list, CONTAINER_READONLY);
+        TEST_REQUIRE(iStringInterface.Apply(big_list, append_mark, NULL) == 1);
+        iStringInterface.SetFlags(big_list, 0);
+        iStringInterface.Finalize(big_list);
+    }
+
+    /* 6. Equal edge cases */
+    {
+        StringList *eq1 = iStringInterface.Create();
+        StringList *eq2 = iStringInterface.Create();
+        TEST_REQUIRE(iStringInterface.Equal(eq1, eq2) == 1);
+        TEST_REQUIRE(iStringInterface.Equal(NULL, eq1) == 0);
+        TEST_REQUIRE(iStringInterface.Equal(eq1, NULL) == 0);
+        iStringInterface.Add(eq1, "apple");
+        TEST_REQUIRE(iStringInterface.Equal(eq1, eq2) == 0);
+        iStringInterface.Add(eq2, "banana");
+        TEST_REQUIRE(iStringInterface.Equal(eq1, eq2) == 0);
+        iStringInterface.SetCompareFunction(eq1, compare_reverse);
+        TEST_REQUIRE(iStringInterface.Equal(eq1, eq2) == 0);
+        iStringInterface.Finalize(eq2);
+        iStringInterface.Finalize(eq1);
+    }
+
+    /* 7. Iterators comprehensive edge cases */
+    {
+        StringList *it_list = iStringInterface.Create();
+        iStringInterface.Add(it_list, "it0");
+        iStringInterface.Add(it_list, "it1");
+        iStringInterface.Add(it_list, "it2");
+        it = iStringInterface.NewIterator(it_list);
+        TEST_REQUIRE(it != NULL);
+
+        TEST_REQUIRE(it->GetPosition(NULL) == (size_t)CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(it->GetCurrent(it) == NULL);
+        TEST_REQUIRE(it->Seek(NULL, 0) == NULL);
+        TEST_REQUIRE(it->GetPrevious(NULL) == NULL);
+        TEST_REQUIRE(it->GetFirst(NULL) == NULL);
+        TEST_REQUIRE(it->GetCurrent(NULL) == NULL);
+        TEST_REQUIRE(it->Replace(NULL, "x", 1) < 0);
+
+        /* Seek 0 */
+        TEST_REQUIRE(it->Seek(it, 0) != NULL);
+        TEST_REQUIRE(it->GetPosition(it) == 0);
+
+        /* Seek 2 and GetPrevious */
+        TEST_REQUIRE(it->Seek(it, 2) != NULL);
+        TEST_REQUIRE(it->GetPrevious(it) != NULL);
+        TEST_REQUIRE(it->GetPosition(it) == 1);
+
+        /* Replace with direction 0 and direction 1 */
+        TEST_REQUIRE(it->Replace(it, "replaced_prev", 0) == 1);
+        TEST_REQUIRE(it->Replace(it, "replaced_fwd", 1) == 1);
+
+        /* Stale iterator checks */
+        iStringInterface.Add(it_list, "stale_mod");
+        TEST_REQUIRE(it->GetNext(it) == NULL);
+        TEST_REQUIRE(it->GetPrevious(it) == NULL);
+        TEST_REQUIRE(it->GetCurrent(it) == NULL);
+        TEST_REQUIRE(it->GetFirst(it) == NULL);
+        TEST_REQUIRE(it->Replace(it, "x", 1) < 0);
+        iStringInterface.DeleteIterator(it);
+        it = NULL;
+
+        /* Readonly iterator navigation (CopyToIteratorBuffer) */
+        iStringInterface.SetFlags(it_list, CONTAINER_READONLY);
+        it = iStringInterface.NewIterator(it_list);
+        TEST_REQUIRE(it->GetFirst(it) != NULL);
+        TEST_REQUIRE(it->GetNext(it) != NULL);
+        TEST_REQUIRE(it->GetPrevious(it) != NULL);
+        iStringInterface.DeleteIterator(it);
+        it = NULL;
+        iStringInterface.SetFlags(it_list, 0);
+
+        /* Iterator on empty list */
+        empty = iStringInterface.Create();
+        it = iStringInterface.NewIterator(empty);
+        TEST_REQUIRE(it->Seek(it, 0) == NULL);
+        TEST_REQUIRE(it->GetNext(it) == NULL);
+        TEST_REQUIRE(it->GetPrevious(it) == NULL);
+        TEST_REQUIRE(it->GetCurrent(it) == NULL);
+        TEST_REQUIRE(it->Replace(it, "x", 1) == 0);
+        TEST_REQUIRE(it->GetFirst(it) == NULL);
+        iStringInterface.DeleteIterator(it);
+        it = NULL;
+        iStringInterface.Finalize(empty);
+        empty = NULL;
+
+        iStringInterface.Finalize(it_list);
+    }
+
+    /* 8. Observer notifications */
+    {
+        StringList *obs_list = iStringInterface.Create();
+        iStringInterface.SetFlags(obs_list, CONTAINER_HAS_OBSERVER);
+        iStringInterface.Add(obs_list, "item1");
+        iStringInterface.PushFront(obs_list, "item0");
+        iStringInterface.InsertAt(obs_list, 1, "item0.5");
+        char pop_buf[32];
+        iStringInterface.PopFront(obs_list, pop_buf);
+        iStringInterface.EraseAt(obs_list, 0);
+        char *arr[] = {"a1", "a2"};
+        iStringInterface.AddRange(obs_list, 2, arr);
+        StringList *obs_copy = iStringInterface.Copy(obs_list);
+        iStringInterface.Finalize(obs_copy);
+        iStringInterface.Finalize(obs_list);
+    }
+
+    /* 9. SetAllocator on list owning storage, custom heap VTable, SetErrorFunction */
+    {
+        StringList *non_empty = iStringInterface.Create();
+        TEST_REQUIRE(non_empty != NULL);
+        iStringInterface.Add(non_empty, "val");
+        TEST_REQUIRE(iStringInterface.SetAllocator(non_empty, (ContainerAllocator *)CurrentAllocator) == NULL);
+        iStringInterface.Finalize(non_empty);
+
+        StringList *owned_list = iStringInterface.Create();
+        TEST_REQUIRE(owned_list != NULL);
+        TEST_REQUIRE(iStringInterface.SetAllocator(owned_list, NULL) == NULL);
+        StringList *reloc = iStringInterface.SetAllocator(owned_list, (ContainerAllocator *)CurrentAllocator);
+        TEST_REQUIRE(reloc != NULL);
+        iStringInterface.Finalize(reloc);
+
+        StringList *v_list = iStringInterface.Create();
+        v_list->VTable = malloc(sizeof(StringListInterface));
+        TEST_REQUIRE(v_list->VTable != NULL);
+        memcpy(v_list->VTable, &iStringInterface, sizeof(StringListInterface));
+        iStringInterface.Finalize(v_list);
+
+        StringList *err_list = iStringInterface.Create();
+        TEST_REQUIRE(iStringInterface.SetErrorFunction(err_list, iError.RaiseError) != NULL);
+        iStringInterface.Finalize(err_list);
+    }
+
+    /* 10. Select and Mask */
+    {
+        StringList *sel_list = iStringInterface.Create();
+        iStringInterface.Add(sel_list, "s0");
+        iStringInterface.Add(sel_list, "s1");
+
+        /* Bad mask length */
+        mask = iMask.Create(10);
+        TEST_REQUIRE(iStringInterface.Select(sel_list, mask) == CONTAINER_ERROR_BADMASK);
+        TEST_REQUIRE(iStringInterface.SelectCopy(sel_list, mask) == NULL);
+        iMask.Finalize(mask);
+
+        /* All-zeros mask (First = NULL) */
+        mask = iMask.Create(2);
+        iMask.Clear(mask);
+        TEST_REQUIRE(iStringInterface.Select(sel_list, mask) == 1);
+        TEST_REQUIRE(iStringInterface.Size(sel_list) == 0);
+        TEST_REQUIRE(iStringInterface.FirstElement(sel_list) == NULL);
+        iMask.Finalize(mask);
+        mask = NULL;
+
+        iStringInterface.Finalize(sel_list);
+    }
+
+    /* 11. Persistence: failing save, failing load, tampered header */
+    {
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        TEST_REQUIRE(iStringInterface.Save(list, stream, failing_save_fn, NULL) < 0);
+        fclose(stream);
+
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        TEST_REQUIRE(iStringInterface.Save(list, stream, NULL, NULL) == 1);
+        rewind(stream);
+        TEST_REQUIRE(iStringInterface.Load(stream, failing_load_fn, NULL) == NULL);
+        fclose(stream);
+
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        TEST_REQUIRE(iStringInterface.Save(list, stream, NULL, NULL) == 1);
+        rewind(stream);
+        char hdr[128];
+        size_t nr = fread(hdr, 1, sizeof(hdr), stream);
+        fclose(stream);
+
+        /* Tamper unit size at offset 28 */
+        hdr[28] = 99;
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        TEST_REQUIRE(fwrite(hdr, 1, nr, stream) == nr);
+        rewind(stream);
+        TEST_REQUIRE(iStringInterface.Load(stream, NULL, NULL) == NULL);
+        fclose(stream);
+        stream = NULL;
+    }
+
+    /* 12. Wide stringlist comprehensive boost */
+    {
+        wStringList *wempty = iwStringInterface.Create();
+        TEST_REQUIRE(wempty != NULL);
+        TEST_REQUIRE(iwStringInterface.FirstElement(wempty) == NULL);
+        TEST_REQUIRE(iwStringInterface.LastElement(wempty) == NULL);
+        TEST_REQUIRE(iwStringInterface.Front(wempty) == NULL);
+        TEST_REQUIRE(iwStringInterface.Back(wempty) == NULL);
+        TEST_REQUIRE(iwStringInterface.Reverse(wempty) == 1);
+        wchar_t wbuf[64];
+        TEST_REQUIRE(iwStringInterface.PopFront(wempty, wbuf) == 0);
+        TEST_REQUIRE(iwStringInterface.UseHeap(wempty, NULL) == CONTAINER_ERROR_NOTIMPLEMENTED);
+        TEST_REQUIRE(iwStringInterface.InitIterator(NULL, NULL) == sizeof(struct StringListIterator));
+        TEST_REQUIRE(iwStringInterface.InitIterator(wempty, NULL) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iwStringInterface.GetAllocator(wempty) != NULL);
+        TEST_REQUIRE(iwStringInterface.GetElementSize(wempty) == sizeof(wchar_t));
+
+        /* Bad args & error returns */
+        size_t widx_res = 0;
+        TEST_REQUIRE(iwStringInterface.CopyElement(wempty, 0, NULL) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iwStringInterface.ReplaceAt(wempty, 0, NULL) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iwStringInterface.PushFront(wempty, NULL) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iwStringInterface.InsertIn(wempty, 0, NULL) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iwStringInterface.InsertAt(wempty, 0, NULL) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iwStringInterface.Erase(NULL, L"a") == (size_t)CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iwStringInterface.Erase(wempty, NULL) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iwStringInterface.IndexOf(wempty, NULL, NULL, &widx_res) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iwStringInterface.Apply(wempty, NULL, NULL) == CONTAINER_ERROR_BADARG);
+        TEST_REQUIRE(iwStringInterface.Save(wempty, NULL, NULL, NULL) == CONTAINER_ERROR_BADARG);
+
+        /* Single element replace & pop */
+        iwStringInterface.Add(wempty, L"single");
+        TEST_REQUIRE(iwStringInterface.Reverse(wempty) == 1);
+        TEST_REQUIRE(iwStringInterface.ReplaceAt(wempty, 0, L"single_rep") == 1);
+        TEST_REQUIRE(iwStringInterface.PopFront(wempty, wbuf) == 1);
+        TEST_REQUIRE(wcscmp(wbuf, L"single_rep") == 0);
+
+        /* Multi-element mutations */
+        iwStringInterface.Add(wempty, L"w0");
+        iwStringInterface.Add(wempty, L"w1");
+        iwStringInterface.Add(wempty, L"w2");
+        TEST_REQUIRE(iwStringInterface.Erase(wempty, L"nonexistent") == CONTAINER_ERROR_NOTFOUND);
+        TEST_REQUIRE(iwStringInterface.Erase(wempty, L"w0") == 1);
+        TEST_REQUIRE(iwStringInterface.EraseAt(wempty, 1) == 1);
+
+        /* Readonly errors */
+        iwStringInterface.Add(wempty, L"w_extra");
+        wStringList *wother = iwStringInterface.Create();
+        iwStringInterface.SetFlags(wempty, CONTAINER_READONLY);
+        TEST_REQUIRE(iwStringInterface.InsertIn(wempty, 0, wother) == CONTAINER_ERROR_READONLY);
+        TEST_REQUIRE(iwStringInterface.Erase(wempty, L"w1") == CONTAINER_ERROR_READONLY);
+        TEST_REQUIRE(iwStringInterface.Sort(wempty) == CONTAINER_ERROR_READONLY);
+        TEST_REQUIRE(iwStringInterface.Reverse(wempty) == CONTAINER_ERROR_READONLY);
+        TEST_REQUIRE(iwStringInterface.SplitAfter(wempty, iwStringInterface.FirstElement(wempty)) == NULL);
+        iwStringInterface.SetFlags(wempty, 0);
+        iwStringInterface.Finalize(wother);
+
+        /* InitializeWith */
+        wchar_t *w_arr[] = {L"alpha", L"beta"};
+        wStringList *w_init = iwStringInterface.InitializeWith(2, w_arr);
+        TEST_REQUIRE(w_init != NULL && iwStringInterface.Size(w_init) == 2);
+        iwStringInterface.Finalize(w_init);
+        TEST_REQUIRE(iwStringInterface.InitializeWith(2, NULL) == NULL);
+
+        /* Equal */
+        wStringList *weq1 = iwStringInterface.Create();
+        wStringList *weq2 = iwStringInterface.Create();
+        TEST_REQUIRE(iwStringInterface.Equal(weq1, weq2) == 1);
+        TEST_REQUIRE(iwStringInterface.Equal(NULL, weq1) == 0);
+        iwStringInterface.Add(weq1, L"one");
+        TEST_REQUIRE(iwStringInterface.Equal(weq1, weq2) == 0);
+        iwStringInterface.Add(weq2, L"two");
+        TEST_REQUIRE(iwStringInterface.Equal(weq1, weq2) == 0);
+        iwStringInterface.Finalize(weq2);
+        iwStringInterface.Finalize(weq1);
+
+        /* Custom heap VTable */
+        wStringList *wv_list = iwStringInterface.Create();
+        wv_list->VTable = malloc(sizeof(wStringListInterface));
+        TEST_REQUIRE(wv_list->VTable != NULL);
+        memcpy(wv_list->VTable, &iwStringInterface, sizeof(wStringListInterface));
+        iwStringInterface.Finalize(wv_list);
+
+        iwStringInterface.Finalize(wempty);
+    }
+
+    result = 0;
+cleanup:
+    if (stream != NULL) fclose(stream);
+    if (it != NULL) iStringInterface.DeleteIterator(it);
+    if (mask != NULL) iMask.Finalize(mask);
+    if (empty != NULL) iStringInterface.Finalize(empty);
+    if (other != NULL) iStringInterface.Finalize(other);
+    if (list != NULL) {
+        iStringInterface.SetFlags(list, 0);
+        iStringInterface.Finalize(list);
+    }
+    return result;
+}
+
 static const TestCase tests[] = {
     {"API surface and errors", test_api_surface_and_errors},
     {"narrow success surface", test_narrow_success_surface},
@@ -1073,6 +1528,7 @@ static const TestCase tests[] = {
     {"erase destructor once", test_erase_destructor_once},
     {"persistence and truncation", test_persistence_and_truncation},
     {"allocator failure paths", test_allocator_failure_paths},
+    {"stringlist coverage boost", test_stringlist_coverage_boost},
 };
 
 const TestSuite *ccl_get_test_suite(void)

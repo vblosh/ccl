@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include "containers.h"
+#include "ccl_internal.h"
 #include "test_suite.h"
 
 
@@ -2503,6 +2504,333 @@ static int test_contains_with_slice(void)
     return 0;
 }
 
+struct DummyValArrayIterator {
+    Iterator it;
+    long long Magic;
+    ValArrayInt *AL;
+    size_t index;
+    unsigned timestamp;
+    int *Current;
+    int ElementBuffer;
+};
+
+static void *valarray_error_capture(const char *fn, int code, ...)
+{
+    (void)fn;
+    (void)code;
+    return NULL;
+}
+
+static int test_valarray_additional_coverage(void)
+{
+    ValArrayInt *v1 = iValArrayInt.Create(5);
+    ValArrayInt *v2 = iValArrayInt.Create(5);
+    ValArrayInt *v_diff = iValArrayInt.Create(3);
+    ValArrayInt *empty = iValArrayInt.Create(0);
+    ValArrayInt *empty2 = iValArrayInt.Create(0);
+    ValArrayDouble *vd1 = iValArrayDouble.Create(4);
+    ValArrayDouble *vd2 = iValArrayDouble.Create(4);
+    ValArrayDouble *vd_diff = iValArrayDouble.Create(2);
+    ValArrayDouble *vd_empty = iValArrayDouble.Create(0);
+    ValArrayUInt *vu = iValArrayUInt.Create(5);
+    ValArrayUInt *vu_diff = iValArrayUInt.Create(3);
+    Iterator *it = NULL;
+    Iterator *empty_it = NULL;
+    struct DummyValArrayIterator dummy;
+    size_t mismatch = 0;
+    int val = 99;
+    FILE *stream = NULL;
+
+    TEST_ASSERT(v1 != NULL && v2 != NULL && v_diff != NULL && empty != NULL && empty2 != NULL, "Allocated valarrays");
+    TEST_ASSERT(vd1 != NULL && vd2 != NULL && vd_diff != NULL && vd_empty != NULL, "Allocated double valarrays");
+    TEST_ASSERT(vu != NULL && vu_diff != NULL, "Allocated uint valarrays");
+
+    for (int i = 0; i < 5; i++) {
+        iValArrayInt.Add(v1, (i + 1) * 10);
+        iValArrayInt.Add(v2, (i + 1) * 10);
+        iValArrayUInt.Add(vu, (unsigned int)(i + 1) * 10);
+    }
+    for (int i = 0; i < 3; i++) {
+        iValArrayInt.Add(v_diff, (i + 1) * 10);
+        iValArrayUInt.Add(vu_diff, (unsigned int)(i + 1) * 10);
+    }
+    for (int i = 0; i < 4; i++) {
+        iValArrayDouble.Add(vd1, (double)(i + 1));
+        iValArrayDouble.Add(vd2, (double)(i + 1));
+    }
+    for (int i = 0; i < 2; i++) {
+        iValArrayDouble.Add(vd_diff, (double)(i + 1));
+    }
+
+    /* Equal coverage */
+    TEST_ASSERT(iValArrayInt.Equal(v1, NULL) == 0, "Equal with NULL");
+    TEST_ASSERT(iValArrayInt.Equal(v1, v_diff) == 0, "Equal with diff length");
+    iValArrayInt.SetFlags(v2, CONTAINER_READONLY);
+    TEST_ASSERT(iValArrayInt.Equal(v1, v2) == 0, "Equal with diff flags");
+    iValArrayInt.SetFlags(v2, 0);
+    TEST_ASSERT(iValArrayInt.Equal(empty, empty2) == 1, "Equal on empty arrays");
+
+    iValArrayInt.SetSlice(v2, 0, 3, 1);
+    TEST_ASSERT(iValArrayInt.Equal(v1, v2) == 0, "Equal with no-slice vs slice");
+    TEST_ASSERT(iValArrayInt.Equal(v2, v1) == 0, "Equal with slice vs no-slice");
+    iValArrayInt.SetSlice(v1, 0, 3, 2);
+    TEST_ASSERT(iValArrayInt.Equal(v1, v2) == 0, "Equal with different slice increment");
+    iValArrayInt.SetSlice(v1, 0, 3, 1);
+    TEST_ASSERT(iValArrayInt.Equal(v1, v2) == 1, "Equal with matching slice elements");
+    iValArrayInt.ReplaceAt(v2, 0, 999);
+    TEST_ASSERT(iValArrayInt.Equal(v1, v2) == 0, "Equal with different slice element");
+    iValArrayInt.ResetSlice(v1);
+    iValArrayInt.ResetSlice(v2);
+    TEST_ASSERT(iValArrayInt.Equal(v1, v2) == 0, "Equal with different non-slice element");
+
+    /* Mismatch coverage */
+    TEST_ASSERT(iValArrayInt.Mismatch(v1, v1, &mismatch) == 0, "Mismatch self");
+    TEST_ASSERT(iValArrayInt.Mismatch(empty, empty2, &mismatch) == 1, "Mismatch empty");
+    iValArrayInt.SetSlice(v1, 0, 3, 1);
+    TEST_ASSERT(iValArrayInt.Mismatch(v1, v2, &mismatch) == 1, "Mismatch a1 slice");
+    iValArrayInt.ResetSlice(v1);
+    iValArrayInt.SetSlice(v2, 0, 3, 1);
+    TEST_ASSERT(iValArrayInt.Mismatch(v1, v2, &mismatch) == 1, "Mismatch a2 slice");
+    iValArrayInt.SetSlice(v1, 0, 4, 1);
+    iValArrayInt.SetSlice(v2, 0, 2, 1);
+    TEST_ASSERT(iValArrayInt.Mismatch(v1, v2, &mismatch) == 1, "Mismatch siz1 > siz2");
+    iValArrayInt.ResetSlice(v1);
+    iValArrayInt.ResetSlice(v2);
+    TEST_ASSERT(iValArrayInt.Mismatch(v1, v_diff, &mismatch) == 1, "Mismatch different count");
+
+    /* RotateLeft & RotateRight */
+    TEST_ASSERT(iValArrayInt.RotateLeft(v1, 5) == 1, "RotateLeft multiple of count");
+    TEST_ASSERT(iValArrayInt.RotateLeft(v1, 2) == 1, "RotateLeft n > 1");
+    TEST_ASSERT(iValArrayInt.RotateRight(v1, 5) == 1, "RotateRight multiple of count");
+
+    /* Slices in math operations */
+    iValArrayInt.SetSlice(v1, 0, 3, 1);
+    TEST_ASSERT(iValArrayUInt.Not(vu) == 1, "Not with slice");
+    TEST_ASSERT(iValArrayUInt.BitLeftShift(vu, 0) == 1, "BitLeftShift 0");
+    iValArrayUInt.SetSlice(vu, 0, 3, 1);
+    TEST_ASSERT(iValArrayUInt.BitLeftShift(vu, 1) == 1, "BitLeftShift with slice");
+    TEST_ASSERT(iValArrayUInt.BitRightShift(vu, 0) == 1, "BitRightShift 0");
+    TEST_ASSERT(iValArrayUInt.BitRightShift(vu, 1) == 1, "BitRightShift with slice");
+    iValArrayUInt.ResetSlice(vu);
+    TEST_ASSERT(iValArrayInt.Max(v1) != 0, "Max with slice");
+    TEST_ASSERT(iValArrayInt.Abs(v1) == 1, "Abs with slice");
+    TEST_ASSERT(iValArrayInt.Accumulate(v1) != 0, "Accumulate with slice");
+    TEST_ASSERT(iValArrayInt.Product(v1) != 0, "Product with slice");
+    TEST_ASSERT(iValArrayInt.Min(v1) != 0, "Min with slice");
+    TEST_ASSERT(iValArrayInt.Max(empty) != 0, "Max on empty");
+    TEST_ASSERT(iValArrayInt.Abs(empty) == 0, "Abs on empty");
+    TEST_ASSERT(iValArrayInt.Accumulate(empty) == 0, "Accumulate on empty");
+    TEST_ASSERT(iValArrayInt.Product(empty) == 0, "Product on empty");
+    TEST_ASSERT(iValArrayInt.Min(empty) != 0, "Min on empty");
+
+    /* FCompare and Double functions */
+    TEST_ASSERT(iValArrayDouble.Inverse(vd_empty) == 0, "Inverse on empty");
+    iValArrayDouble.SetSlice(vd1, 0, 2, 1);
+    TEST_ASSERT(iValArrayDouble.Inverse(vd1) == 1, "Inverse with slice");
+    iValArrayDouble.ResetSlice(vd1);
+    iValArrayDouble.Add(vd1, 0.0);
+    TEST_ASSERT(iValArrayDouble.Inverse(vd1) == CONTAINER_ERROR_DIVISION_BY_ZERO, "Inverse division by zero");
+    iValArrayDouble.SetSlice(vd1, 0, 2, 1);
+    iValArrayDouble.SetSlice(vd2, 0, 2, 1);
+    {
+        Mask *fcm = iValArrayDouble.FCompare(vd1, vd2, NULL, 0.01);
+        TEST_ASSERT(fcm != NULL, "FCompare with slice");
+        iMask.Finalize(fcm);
+    }
+    iValArrayDouble.SetSlice(vd2, 0, 1, 1);
+    TEST_ASSERT(iValArrayDouble.FCompare(vd1, vd2, NULL, 0.01) == NULL, "FCompare incompatible slice length");
+
+    /* Compare and CompareEqual incompatible sizes */
+    iValArrayInt.ResetSlice(v1);
+    TEST_ASSERT(iValArrayInt.Compare(v1, v_diff, NULL) == NULL, "Compare incompatible");
+    TEST_ASSERT(iValArrayInt.CompareEqual(v1, v_diff, NULL) == NULL, "CompareEqual incompatible");
+    {
+        char *cmp = iValArrayInt.Compare(v1, v2, NULL);
+        TEST_ASSERT(cmp != NULL, "Compare valid");
+        free(cmp);
+        Mask *ce = iValArrayInt.CompareEqual(v1, v2, NULL);
+        TEST_ASSERT(ce != NULL, "CompareEqual valid");
+        iMask.Finalize(ce);
+    }
+
+    /* EraseAt and RemoveRange with slice */
+    iValArrayInt.SetSlice(v1, 0, 3, 1);
+    TEST_ASSERT(iValArrayInt.EraseAt(v1, 0) == 1, "EraseAt with slice");
+    TEST_ASSERT(iValArrayInt.EraseAt(v1, 100) < 0, "EraseAt out of bounds");
+    TEST_ASSERT(iValArrayInt.RemoveRange(v1, 10, 20) == 0, "RemoveRange start >= sliceEnd");
+    TEST_ASSERT(iValArrayInt.RemoveRange(v1, 0, 10) == 1, "RemoveRange end > sliceEnd");
+    TEST_ASSERT(iValArrayInt.RemoveRange(v1, 100, 200) == 0, "RemoveRange start >= count");
+
+    /* PopBack with slice until length == 0 */
+    iValArrayInt.ResetSlice(v1);
+    iValArrayInt.Add(v1, 10);
+    iValArrayInt.SetSlice(v1, 0, 1, 1);
+    {
+        int popped = 0;
+        TEST_ASSERT(iValArrayInt.PopBack(v1, &popped) == 1, "PopBack slice length 1");
+    }
+
+    /* DivideScalarBy with non-zero left */
+    TEST_ASSERT(iValArrayInt.DivideScalarBy(v2, 100) == 1, "DivideScalarBy 100");
+
+    /* Incompatible sizes in arithmetic */
+    TEST_ASSERT(iValArrayInt.SubtractFrom(v1, v_diff) == CONTAINER_ERROR_INCOMPATIBLE, "SubtractFrom incompatible");
+    TEST_ASSERT(iValArrayInt.MultiplyWith(v1, v_diff) == CONTAINER_ERROR_INCOMPATIBLE, "MultiplyWith incompatible");
+    TEST_ASSERT(iValArrayInt.DivideBy(v1, v_diff) == CONTAINER_ERROR_INCOMPATIBLE, "DivideBy incompatible");
+    TEST_ASSERT(iValArrayUInt.Or(vu, vu_diff) == CONTAINER_ERROR_INCOMPATIBLE, "Or incompatible");
+    TEST_ASSERT(iValArrayUInt.And(vu, vu_diff) == CONTAINER_ERROR_INCOMPATIBLE, "And incompatible");
+    TEST_ASSERT(iValArrayUInt.Xor(vu, vu_diff) == CONTAINER_ERROR_INCOMPATIBLE, "Xor incompatible");
+    TEST_ASSERT(iValArrayUInt.OrScalar(vu, 1) == 1, "OrScalar 1");
+    TEST_ASSERT(iValArrayUInt.AndScalar(vu, 1) == 1, "AndScalar 1");
+    TEST_ASSERT(iValArrayUInt.XorScalar(vu, 1) == 1, "XorScalar 1");
+
+    /* SetSlice clamping */
+    TEST_ASSERT(iValArrayInt.SetSlice(v2, 0, 100, 1) >= 0, "SetSlice length clamp");
+
+    /* SelectCopy bad mask */
+    {
+        Mask *bad_mask = iMask.Create(100);
+        TEST_ASSERT(iValArrayInt.SelectCopy(v2, bad_mask) == NULL, "SelectCopy bad mask");
+        iMask.Finalize(bad_mask);
+    }
+
+    /* IndexOf, GetRange, CopyTo with slice */
+    iValArrayInt.SetSlice(v2, 0, 2, 1);
+    {
+        size_t found_idx = 0;
+        iValArrayInt.IndexOf(v2, 10, &found_idx);
+        ValArrayInt *sub = iValArrayInt.GetRange(v2, 0, 10);
+        if (sub) iValArrayInt.Finalize(sub);
+        int *copied_arr = iValArrayInt.CopyTo(v2);
+        if (copied_arr) free(copied_arr);
+    }
+
+    /* Copy on empty */
+    {
+        ValArrayInt *cp = iValArrayInt.Copy(empty);
+        TEST_ASSERT(cp != NULL, "Copy on empty");
+        iValArrayInt.Finalize(cp);
+    }
+
+    /* AddRange with slice increment > 1 and NULL data */
+    iValArrayInt.SetSlice(v2, 0, 2, 2);
+    TEST_ASSERT(iValArrayInt.AddRange(v2, 2, NULL) == 1, "AddRange increment 2 NULL data");
+
+    /* SetErrorFunction */
+    {
+        ErrorFunction old = iValArrayInt.SetErrorFunction(v2, valarray_error_capture);
+        iValArrayInt.SetErrorFunction(v2, old);
+    }
+
+    /* FillSequential with top > capacity */
+    TEST_ASSERT(iValArrayInt.FillSequential(v2, 50, 1, 1) == 1, "FillSequential expand");
+
+    /* Save and Load truncation */
+    stream = ccl_test_tmpfile();
+    TEST_ASSERT(stream != NULL, "tmpfile opened");
+    TEST_ASSERT(iValArrayInt.Save(v2, stream) == 1, "Save v2");
+    rewind(stream);
+    guid valid_guid;
+    TEST_ASSERT(fread(&valid_guid, sizeof(guid), 1, stream) == 1, "read valid guid");
+    fclose(stream);
+
+    stream = ccl_test_tmpfile();
+    fwrite(&valid_guid, sizeof(guid), 1, stream);
+    rewind(stream);
+    TEST_ASSERT(iValArrayInt.Load(stream) == NULL, "Load truncated header");
+    fclose(stream);
+
+    stream = ccl_test_tmpfile();
+    TEST_ASSERT(iValArrayInt.Save(v2, stream) == 1, "Save v2 for hdr read");
+    rewind(stream);
+    size_t hdr_size = sizeof(guid) + iValArrayInt.Sizeof(NULL);
+    void *hdr_buf = malloc(hdr_size);
+    TEST_ASSERT(hdr_buf != NULL, "malloc hdr_buf");
+    TEST_ASSERT(fread(hdr_buf, 1, hdr_size, stream) == hdr_size, "read hdr");
+    fclose(stream);
+
+    stream = ccl_test_tmpfile();
+    fwrite(hdr_buf, 1, hdr_size, stream);
+    rewind(stream);
+    TEST_ASSERT(iValArrayInt.Load(stream) == NULL, "Load missing elements");
+    fclose(stream);
+    free(hdr_buf);
+
+    /* Fprintf with slice */
+    stream = ccl_test_tmpfile();
+    TEST_ASSERT(stream != NULL, "tmpfile for Fprintf");
+    iValArrayInt.SetSlice(v2, 0, 2, 1);
+    TEST_ASSERT(iValArrayInt.Fprintf(v2, stream, "%d ") > 0, "Fprintf slice");
+    iValArrayInt.ResetSlice(v2);
+    fclose(stream);
+
+    /* Exhaustive iterator tests */
+    empty_it = iValArrayInt.NewIterator(empty);
+    TEST_ASSERT(empty_it != NULL, "empty_it created");
+    TEST_ASSERT(empty_it->GetFirst(empty_it) == NULL, "empty GetFirst");
+    TEST_ASSERT(empty_it->GetLast(empty_it) == NULL, "empty GetLast");
+    TEST_ASSERT(empty_it->GetNext(empty_it) == NULL, "empty GetNext");
+    TEST_ASSERT(empty_it->Replace(empty_it, &val, 1) == 0, "empty Replace");
+    iValArrayInt.DeleteIterator(empty_it);
+    empty_it = NULL;
+
+    it = iValArrayInt.NewIterator(v2);
+    TEST_ASSERT(it != NULL, "Iterator created");
+
+    /* Wrong magic checks */
+    memset(&dummy, 0, sizeof(dummy));
+    dummy.Magic = 0;
+    dummy.AL = v2;
+    TEST_ASSERT(it->GetNext(&dummy.it) == NULL, "GetNext wrong magic");
+    TEST_ASSERT(it->GetPrevious(&dummy.it) == NULL, "GetPrevious wrong magic");
+    TEST_ASSERT(it->Seek(&dummy.it, 0) == NULL, "Seek wrong magic");
+    TEST_ASSERT(it->GetLast(&dummy.it) == NULL, "GetLast wrong magic");
+    TEST_ASSERT(it->GetCurrent(&dummy.it) == NULL, "GetCurrent wrong magic");
+    TEST_ASSERT(it->GetPosition(&dummy.it) == (size_t)-1, "GetPosition wrong magic");
+    TEST_ASSERT(it->GetFirst(&dummy.it) == NULL, "GetFirst wrong magic");
+    TEST_ASSERT(it->Replace(&dummy.it, &val, 1) == CONTAINER_ERROR_WRONG_ITERATOR, "Replace wrong magic");
+
+    /* Bounds and direction checks */
+    TEST_ASSERT(it->Seek(it, 9999) == NULL, "Seek out of bounds");
+    TEST_ASSERT(it->GetFirst(it) != NULL, "GetFirst valid");
+    TEST_ASSERT(it->Replace(it, &val, 0) == 1, "Replace direction 0");
+    TEST_ASSERT(it->Replace(it, NULL, 1) == 1, "Replace NULL data (EraseAt)");
+
+    /* Timestamp mismatch */
+    iValArrayInt.Add(v2, 999);
+    TEST_ASSERT(it->GetNext(it) == NULL, "GetNext timestamp changed");
+    TEST_ASSERT(it->GetPrevious(it) == NULL, "GetPrevious timestamp changed");
+    TEST_ASSERT(it->Seek(it, 0) == NULL, "Seek timestamp changed");
+    TEST_ASSERT(it->GetLast(it) == NULL, "GetLast timestamp changed");
+    TEST_ASSERT(it->Replace(it, &val, 1) == CONTAINER_ERROR_OBJECT_CHANGED, "Replace timestamp changed");
+    iValArrayInt.DeleteIterator(it);
+    it = NULL;
+
+    /* Read-only Replace */
+    iValArrayInt.SetFlags(v2, CONTAINER_READONLY);
+    it = iValArrayInt.NewIterator(v2);
+    TEST_ASSERT(it != NULL, "Iterator created on readonly");
+    TEST_ASSERT(it->GetFirst(it) != NULL, "GetFirst on readonly");
+    TEST_ASSERT(it->Replace(it, &val, 1) == CONTAINER_ERROR_READONLY, "Replace on readonly");
+    iValArrayInt.DeleteIterator(it);
+    it = NULL;
+    iValArrayInt.SetFlags(v2, 0);
+
+    /* Cleanup */
+    iValArrayInt.Finalize(v1);
+    iValArrayInt.Finalize(v2);
+    iValArrayInt.Finalize(v_diff);
+    iValArrayInt.Finalize(empty);
+    iValArrayInt.Finalize(empty2);
+    iValArrayDouble.Finalize(vd1);
+    iValArrayDouble.Finalize(vd2);
+    iValArrayDouble.Finalize(vd_diff);
+    iValArrayDouble.Finalize(vd_empty);
+    iValArrayUInt.Finalize(vu);
+    iValArrayUInt.Finalize(vu_diff);
+    return 0;
+}
+
 /* Test Suite Definition */
 static const TestCase valarray_int_tests[] = {
     {"test_create_finalize", test_create_finalize},
@@ -2589,6 +2917,7 @@ static const TestCase valarray_int_tests[] = {
     {"test_select_copy", test_select_copy},
     {"test_fprintf", test_fprintf},
     {"test_contains_with_slice", test_contains_with_slice},
+    {"test_valarray_additional_coverage", test_valarray_additional_coverage},
 };
 
 /* Export test suite */

@@ -1069,7 +1069,7 @@ typedef struct tagBitString {
     int        (*Apply)(BitString *BitStr,int (*Applyfn)(int ,void * arg),void *arg);
     int       (*Equal)(BitString *bsl,BitString *bsr);
     BitString *(*Copy)(BitString *);
-    ErrorFunction *(*SetErrorFunction)(BitString *,ErrorFunction fn);
+    ErrorFunction (*SetErrorFunction)(BitString *,ErrorFunction fn);
     size_t     (*Sizeof)(BitString *b);
     Iterator  *(*NewIterator)(BitString *);
     int (*InitIterator)(BitString *,void *);

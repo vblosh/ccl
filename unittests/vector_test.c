@@ -50,6 +50,73 @@ static int value_at(Vector *v,size_t index)
 	return *(int *)iVector.GetElement(v,index);
 }
 
+static int fail_malloc;
+static int fail_realloc;
+static int fail_calloc;
+static int malloc_countdown = -1;
+
+static void *vector_test_malloc(size_t size)
+{
+	if (malloc_countdown == 0) return NULL;
+	if (malloc_countdown > 0) malloc_countdown--;
+	return fail_malloc ? NULL : malloc(size);
+}
+
+static void vector_test_free(void *memory)
+{
+	free(memory);
+}
+
+static void *vector_test_realloc(void *memory, size_t size)
+{
+	return fail_realloc ? NULL : realloc(memory, size);
+}
+
+static void *vector_test_calloc(size_t count, size_t size)
+{
+	return fail_calloc ? NULL : calloc(count, size);
+}
+
+static ContainerAllocator vector_test_allocator = {
+	vector_test_malloc,
+	vector_test_free,
+	vector_test_realloc,
+	vector_test_calloc,
+};
+
+static int observer_notification_count;
+static void vector_observer_callback(const void *object, unsigned event, const void *ExtraInfo[])
+{
+	(void)object;
+	(void)event;
+	(void)ExtraInfo;
+	++observer_notification_count;
+}
+
+static int fallback_value = 999;
+static void *vector_copy_element_error_handler(const char *fn, int code, ...)
+{
+	(void)fn;
+	(void)code;
+	return &fallback_value;
+}
+
+static int failing_save(const void *value, void *arg, FILE *stream)
+{
+	(void)value;
+	(void)arg;
+	(void)stream;
+	return 0;
+}
+
+static int failing_load(void *value, void *arg, FILE *stream)
+{
+	(void)value;
+	(void)arg;
+	(void)stream;
+	return 0;
+}
+
 static int test_range_capacity_and_append(void)
 {
 	Vector *v = NULL, *other = NULL, *range = NULL, *copy = NULL;
@@ -516,13 +583,598 @@ cleanup:
 	return result;
 }
 
+static int test_vector_comparisons_and_rotations(void)
+{
+	Vector *v1 = NULL, *v2 = NULL, *v3 = NULL;
+	Vector *indices = NULL, *selected = NULL;
+	Mask *m = NULL;
+	int vals1[] = { 1, 2, 3, 4, 5 };
+	int vals2[] = { 1, 2, 3, 4, 6 };
+	int vals3[] = { 1, 2, 3 };
+	size_t mismatch = 0;
+	int scalar = 3;
+	int result = 1;
+
+	v1 = iVector.InitializeWith(sizeof(int), 5, vals1);
+	v2 = iVector.InitializeWith(sizeof(int), 5, vals2);
+	v3 = iVector.InitializeWith(sizeof(int), 3, vals3);
+	TEST_REQUIRE(v1 != NULL && v2 != NULL && v3 != NULL);
+
+	/* Equal branches */
+	TEST_REQUIRE(iVector.Equal(v1, v1) == 1);
+	TEST_REQUIRE(iVector.Equal(NULL, v1) == 0);
+	TEST_REQUIRE(iVector.Equal(v1, NULL) == 0);
+	TEST_REQUIRE(iVector.Equal(v1, v3) == 0); /* different count */
+	iVector.SetFlags(v2, CONTAINER_READONLY);
+	TEST_REQUIRE(iVector.Equal(v1, v2) == 0); /* different Flags */
+	iVector.SetFlags(v2, 0);
+	{
+		Vector *short_vec = iVector.Create(sizeof(short), 5);
+		TEST_REQUIRE(iVector.Equal(v1, short_vec) == 0); /* different ElementSize */
+		iVector.Finalize(short_vec);
+	}
+	{
+		Vector *empty1 = iVector.Create(sizeof(int), 0);
+		Vector *empty2 = iVector.Create(sizeof(int), 0);
+		TEST_REQUIRE(iVector.Equal(empty1, empty2) == 1); /* count == 0 */
+		iVector.Finalize(empty1);
+		iVector.Finalize(empty2);
+	}
+	CompareFunction default_cmp = iVector.SetCompareFunction(v1, NULL);
+	iVector.SetCompareFunction(v2, compare_int);
+	TEST_REQUIRE(iVector.Equal(v1, v2) == 0); /* different CompareFn */
+	iVector.SetCompareFunction(v1, compare_int);
+	TEST_REQUIRE(iVector.Equal(v1, v2) == 0); /* custom CompareFn mismatch */
+	*(int *)iVector.GetElement(v2, 4) = 5;
+	TEST_REQUIRE(iVector.Equal(v1, v2) == 1); /* custom CompareFn match */
+	iVector.SetCompareFunction(v1, default_cmp);
+	iVector.SetCompareFunction(v2, default_cmp);
+	*(int *)iVector.GetElement(v2, 4) = 6;
+	TEST_REQUIRE(iVector.Equal(v1, v2) == 0); /* memcmp mismatch */
+
+	/* Mismatch branches */
+	TEST_REQUIRE(iVector.Mismatch(v1, v1, &mismatch) == 0);
+	{
+		Vector *short_vec = iVector.Create(sizeof(short), 5);
+		TEST_REQUIRE(iVector.Mismatch(v1, short_vec, &mismatch) == CONTAINER_ERROR_INCOMPATIBLE);
+		iVector.Finalize(short_vec);
+	}
+	{
+		Vector *empty1 = iVector.Create(sizeof(int), 0);
+		Vector *empty2 = iVector.Create(sizeof(int), 0);
+		TEST_REQUIRE(iVector.Mismatch(empty1, empty2, &mismatch) == 1); /* siz == 0 */
+		iVector.Finalize(empty1);
+		iVector.Finalize(empty2);
+	}
+	TEST_REQUIRE(iVector.Mismatch(v1, v2, &mismatch) == 1 && mismatch == 4); /* elements differ */
+	TEST_REQUIRE(iVector.Mismatch(v1, v3, &mismatch) == 1 && mismatch == 3); /* prefix matches, lengths differ */
+	TEST_REQUIRE(iVector.Mismatch(v3, v1, &mismatch) == 1 && mismatch == 3);
+
+	/* RotateLeft & RotateRight */
+	{
+		Vector *empty = iVector.Create(sizeof(int), 0);
+		TEST_REQUIRE(iVector.RotateLeft(empty, 1) == 0);
+		TEST_REQUIRE(iVector.RotateRight(empty, 1) == 0);
+		iVector.Finalize(empty);
+	}
+	TEST_REQUIRE(iVector.RotateLeft(v1, 0) == 0);
+	TEST_REQUIRE(iVector.RotateRight(v1, 0) == 0);
+	TEST_REQUIRE(iVector.RotateLeft(v1, 5) == 1); /* multiple of count */
+	TEST_REQUIRE(iVector.RotateRight(v1, 5) == 1);
+	TEST_REQUIRE(iVector.RotateLeft(v1, 2) == 1); /* n = 2 exercises first partition loop */
+	TEST_REQUIRE(iVector.RotateRight(v1, 2) == 1);
+	for (size_t i = 0; i < 5; ++i) {
+		TEST_REQUIRE(value_at(v1, i) == vals1[i]);
+	}
+
+	/* CompareEqual & CompareEqualScalar */
+	TEST_REQUIRE(iVector.CompareEqual(v1, v3, NULL) == NULL); /* length mismatch */
+	{
+		Vector *short_vec = iVector.Create(sizeof(short), 5);
+		TEST_REQUIRE(iVector.CompareEqual(v1, short_vec, NULL) == NULL);
+		iVector.Finalize(short_vec);
+	}
+	m = iMask.Create(1); /* smaller than v1 length */
+	m = iVector.CompareEqual(v1, v2, m); /* exercises bytearray resize in CompareEqual */
+	TEST_REQUIRE(m != NULL && iMask.Size(m) == 5);
+	iMask.Finalize(m);
+	m = iMask.Create(1);
+	m = iVector.CompareEqualScalar(v1, &scalar, m); /* exercises bytearray resize in CompareEqualScalar */
+	TEST_REQUIRE(m != NULL && iMask.Size(m) == 5);
+	iMask.Finalize(m);
+	m = NULL;
+	iVector.SetCompareFunction(v1, compare_int);
+	m = iVector.CompareEqualScalar(v1, &scalar, NULL); /* custom CompareFn in CompareEqualScalar */
+	TEST_REQUIRE(m != NULL);
+	iMask.Finalize(m);
+	m = NULL;
+	iVector.SetCompareFunction(v1, default_cmp);
+
+	/* IndexIn */
+	TEST_REQUIRE(iVector.IndexIn(NULL, NULL) == NULL);
+	TEST_REQUIRE(iVector.IndexIn(v1, v2) == NULL); /* v2 element size is int, not size_t */
+	indices = iVector.Create(sizeof(size_t), 4);
+	{
+		size_t bad_idx = 999;
+		iVector.Add(indices, &bad_idx);
+		TEST_REQUIRE(iVector.IndexIn(v1, indices) == NULL); /* index out of range */
+	}
+	iVector.Clear(indices);
+	{
+		size_t idx0 = 0, idx2 = 2;
+		iVector.Add(indices, &idx0);
+		iVector.Add(indices, &idx2);
+		selected = iVector.IndexIn(v1, indices);
+		TEST_REQUIRE(selected != NULL && iVector.Size(selected) == 2);
+		TEST_REQUIRE(value_at(selected, 0) == 1 && value_at(selected, 1) == 3);
+		iVector.Finalize(selected);
+		selected = NULL;
+	}
+	iVector.Finalize(indices);
+	indices = NULL;
+
+	result = 0;
+
+cleanup:
+	if (m) iMask.Finalize(m);
+	if (indices) iVector.Finalize(indices);
+	if (selected) iVector.Finalize(selected);
+	if (v3) iVector.Finalize(v3);
+	if (v2) iVector.Finalize(v2);
+	if (v1) iVector.Finalize(v1);
+	return result;
+}
+
+static int test_vector_iterators_exhaustive(void)
+{
+	Vector *v = NULL;
+	Vector *empty = NULL;
+	Iterator *it = NULL;
+	Iterator *empty_it = NULL;
+	struct VectorIterator dummy;
+	int values[] = { 10, 20, 30 };
+	int rep = 40;
+	int result = 1;
+
+	empty = iVector.Create(sizeof(int), 0);
+	v = iVector.InitializeWith(sizeof(int), 3, values);
+	TEST_REQUIRE(empty != NULL && v != NULL);
+
+	/* Iterators on empty vector */
+	empty_it = iVector.NewIterator(empty);
+	TEST_REQUIRE(empty_it != NULL);
+	TEST_REQUIRE(empty_it->GetFirst(empty_it) == NULL);
+	TEST_REQUIRE(empty_it->GetLast(empty_it) == NULL);
+	TEST_REQUIRE(empty_it->GetNext(empty_it) == NULL);
+	TEST_REQUIRE(empty_it->Replace(empty_it, &rep, 1) == 0);
+	iVector.DeleteIterator(empty_it);
+	empty_it = NULL;
+
+	it = iVector.NewIterator(v);
+	TEST_REQUIRE(it != NULL);
+
+	/* NULL iterator checks */
+	TEST_REQUIRE(it->GetFirst(NULL) == NULL);
+	TEST_REQUIRE(it->GetNext(NULL) == NULL);
+	TEST_REQUIRE(it->GetLast(NULL) == NULL);
+	TEST_REQUIRE(it->GetPrevious(NULL) == NULL);
+	TEST_REQUIRE(it->GetCurrent(NULL) == NULL);
+	TEST_REQUIRE(it->GetPosition(NULL) == (size_t)-1);
+	TEST_REQUIRE(it->Seek(NULL, 0) == NULL);
+	TEST_REQUIRE(iVector.DeleteIterator(NULL) < 0);
+
+	/* Wrong magic number checks */
+	memset(&dummy, 0, sizeof(dummy));
+	dummy.Magic = 12345;
+	dummy.AL = v;
+	TEST_REQUIRE(it->GetFirst(&dummy.it) == NULL);
+	TEST_REQUIRE(it->GetNext(&dummy.it) == NULL);
+	TEST_REQUIRE(it->GetLast(&dummy.it) == NULL);
+	TEST_REQUIRE(it->GetPrevious(&dummy.it) == NULL);
+	TEST_REQUIRE(it->GetCurrent(&dummy.it) == NULL);
+	TEST_REQUIRE(it->GetPosition(&dummy.it) == (size_t)-1);
+	TEST_REQUIRE(it->Seek(&dummy.it, 0) == NULL);
+	TEST_REQUIRE(it->Replace(&dummy.it, &rep, 1) == CONTAINER_ERROR_WRONG_ITERATOR);
+	TEST_REQUIRE(iVector.DeleteIterator(&dummy.it) == CONTAINER_ERROR_WRONG_ITERATOR);
+
+	/* Normal iterator operations and timestamp mismatch */
+	TEST_REQUIRE(it->Seek(it, 100) == NULL); /* Seek out of bounds */
+	TEST_REQUIRE(*(int *)it->GetFirst(it) == 10);
+	TEST_REQUIRE(*(int *)it->GetLast(it) == 30);
+	TEST_REQUIRE(*(int *)it->GetPrevious(it) == 20);
+	TEST_REQUIRE(*(int *)it->GetPrevious(it) == 10);
+	TEST_REQUIRE(it->GetPrevious(it) == NULL); /* at beginning */
+	TEST_REQUIRE(it->Replace(it, NULL, 1) == 1); /* EraseAt via Replace(NULL) */
+	TEST_REQUIRE(iVector.Size(v) == 2);
+	TEST_REQUIRE(it->Replace(it, &rep, 0) == 1); /* ReplaceAt with direction 0 */
+
+	/* Invalidate timestamp */
+	TEST_REQUIRE(iVector.Add(v, &rep) == 1);
+	TEST_REQUIRE(it->GetFirst(it) == NULL);
+	TEST_REQUIRE(it->GetNext(it) == NULL);
+	TEST_REQUIRE(it->GetPrevious(it) == NULL);
+	TEST_REQUIRE(it->GetLast(it) == NULL);
+	TEST_REQUIRE(it->GetCurrent(it) == NULL);
+	TEST_REQUIRE(it->GetPosition(it) == (size_t)-1);
+	TEST_REQUIRE(it->Seek(it, 0) == NULL);
+	TEST_REQUIRE(it->Replace(it, &rep, 1) == CONTAINER_ERROR_OBJECT_CHANGED);
+	iVector.DeleteIterator(it);
+	it = NULL;
+
+	/* Replace on read-only vector */
+	iVector.SetFlags(v, CONTAINER_READONLY);
+	it = iVector.NewIterator(v);
+	TEST_REQUIRE(it != NULL);
+	TEST_REQUIRE(it->GetFirst(it) != NULL);
+	TEST_REQUIRE(it->Replace(it, &rep, 1) == CONTAINER_ERROR_READONLY);
+	iVector.DeleteIterator(it);
+	it = NULL;
+	iVector.SetFlags(v, 0);
+
+	result = 0;
+
+cleanup:
+	if (empty_it) iVector.DeleteIterator(empty_it);
+	if (it) iVector.DeleteIterator(it);
+	if (empty) iVector.Finalize(empty);
+	if (v) iVector.Finalize(v);
+	return result;
+}
+
+static int test_vector_observers_and_destructors(void)
+{
+	Vector *v = NULL, *other = NULL, *copy = NULL;
+	int values[] = { 1, 2, 3, 4, 5 };
+	int scalar = 99;
+	int result = 1;
+
+	v = iVector.InitializeWith(sizeof(int), 5, values);
+	other = iVector.InitializeWith(sizeof(int), 3, values);
+	TEST_REQUIRE(v != NULL && other != NULL);
+
+	observer_notification_count = 0;
+	TEST_REQUIRE(iObserver.Subscribe(v, vector_observer_callback, ~0U) == 1);
+
+	TEST_REQUIRE(iVector.Add(v, &scalar) == 1);
+	TEST_REQUIRE(iVector.AddRange(v, 2, values) == 1);
+	TEST_REQUIRE(iVector.InsertAt(v, 1, &scalar) == 1);
+	TEST_REQUIRE(iVector.InsertIn(v, 2, other) == 1);
+	TEST_REQUIRE(iVector.ReplaceAt(v, 0, &scalar) == 1);
+	TEST_REQUIRE(iVector.EraseAt(v, 0) == 1);
+	copy = iVector.Copy(v);
+	TEST_REQUIRE(copy != NULL);
+	iVector.Finalize(copy);
+	copy = NULL;
+	TEST_REQUIRE(iVector.Append(v, other) == 1);
+	TEST_REQUIRE(iVector.Clear(v) == 1);
+	TEST_REQUIRE(observer_notification_count >= 8);
+
+	iVector.Finalize(v);
+	v = NULL;
+	iVector.Finalize(other);
+	other = NULL;
+
+	/* Custom DestructorFn */
+	{
+		struct owned { int *value; };
+		Vector *ov = iVector.Create(sizeof(struct owned), 4);
+		struct owned o1 = { malloc(sizeof(int)) };
+		struct owned o2 = { malloc(sizeof(int)) };
+		struct owned o3 = { malloc(sizeof(int)) };
+		struct owned o4 = { malloc(sizeof(int)) };
+		destructor_calls = 0;
+		iVector.SetDestructor(ov, destroy_owned);
+		iVector.Add(ov, &o1);
+		iVector.Add(ov, &o2);
+		iVector.Add(ov, &o3);
+		iVector.Add(ov, &o4);
+
+		/* RemoveRange with destructor */
+		iVector.RemoveRange(ov, 1, 3);
+		TEST_REQUIRE(destructor_calls == 2);
+
+		/* ReplaceAt with destructor */
+		{
+			struct owned rep = { malloc(sizeof(int)) };
+			iVector.ReplaceAt(ov, 0, &rep);
+			TEST_REQUIRE(destructor_calls == 3);
+		}
+
+		/* Clear with destructor */
+		iVector.Clear(ov);
+		TEST_REQUIRE(destructor_calls == 5);
+		iVector.Finalize(ov);
+	}
+
+	/* Custom dynamically-allocated VTable in Finalize */
+	{
+		Vector *dyn = iVector.Create(sizeof(int), 2);
+		VectorInterface *custom_vtable = malloc(sizeof(VectorInterface));
+		memcpy(custom_vtable, &iVector, sizeof(VectorInterface));
+		dyn->VTable = custom_vtable;
+		iVector.Finalize(dyn);
+	}
+
+	result = 0;
+
+cleanup:
+	if (copy) iVector.Finalize(copy);
+	if (other) iVector.Finalize(other);
+	if (v) iVector.Finalize(v);
+	return result;
+}
+
+static int test_vector_allocator_and_error_paths(void)
+{
+	Vector *v = NULL, *v2 = NULL;
+	int values[] = { 1, 2, 3, 4, 5 };
+	int out = 0;
+	size_t key_res = 0;
+	FILE *stream = NULL;
+	int result = 1;
+
+	/* CreateWithAllocator error branches */
+	fail_malloc = 1;
+	TEST_REQUIRE(iVector.CreateWithAllocator(sizeof(int), 5, &vector_test_allocator) == NULL);
+	fail_malloc = 0;
+
+	/* malloc_countdown: 1st malloc (header) succeeds, 2nd malloc (contents) fails */
+	malloc_countdown = 1;
+	TEST_REQUIRE(iVector.CreateWithAllocator(sizeof(int), 5, &vector_test_allocator) == NULL);
+	malloc_countdown = -1;
+
+	/* elementsize * DEFAULT_START_SIZE overflow */
+	TEST_REQUIRE(iVector.Create(SIZE_MAX / 2, 0) == NULL);
+
+	/* Init error branches */
+	{
+		Vector uninit;
+		TEST_REQUIRE(iVector.Init(NULL, sizeof(int), 2) == NULL);
+		TEST_REQUIRE(iVector.Init(&uninit, SIZE_MAX / 2, 0) == NULL);
+	}
+
+	/* Reverse branches */
+	{
+		Vector *empty = iVector.Create(sizeof(int), 0);
+		TEST_REQUIRE(iVector.Reverse(empty) == 1);
+		iVector.Finalize(empty);
+	}
+	v = iVector.CreateWithAllocator(sizeof(int), 3, &vector_test_allocator);
+	iVector.AddRange(v, 3, values);
+	fail_malloc = 1;
+	TEST_REQUIRE(iVector.Reverse(v) == CONTAINER_ERROR_NOMEMORY);
+	fail_malloc = 0;
+	iVector.Finalize(v);
+	v = NULL;
+
+	/* GetRange branches */
+	{
+		Vector *empty = iVector.Create(sizeof(int), 0);
+		TEST_REQUIRE(iVector.GetRange(empty, 0, 1) == NULL);
+		iVector.Finalize(empty);
+	}
+	v = iVector.CreateWithAllocator(sizeof(int), 3, &vector_test_allocator);
+	iVector.AddRange(v, 3, values);
+	fail_malloc = 1;
+	TEST_REQUIRE(iVector.GetRange(v, 0, 2) == NULL);
+	fail_malloc = 0;
+	iVector.Finalize(v);
+	v = NULL;
+
+	/* Copy branches */
+	{
+		Vector *empty = iVector.Create(sizeof(int), 0);
+		Vector *empty_copy = iVector.Copy(empty);
+		TEST_REQUIRE(empty_copy != NULL && iVector.Size(empty_copy) == 0);
+		iVector.Finalize(empty_copy);
+		iVector.Finalize(empty);
+	}
+	v = iVector.CreateWithAllocator(sizeof(int), 3, &vector_test_allocator);
+	iVector.AddRange(v, 3, values);
+	fail_malloc = 1;
+	TEST_REQUIRE(iVector.Copy(v) == NULL);
+	fail_malloc = 0;
+	malloc_countdown = 1; /* header succeeds, contents fail */
+	TEST_REQUIRE(iVector.Copy(v) == NULL);
+	malloc_countdown = -1;
+	iVector.Finalize(v);
+	v = NULL;
+
+	/* CopyTo malloc failure during elements */
+	v = iVector.CreateWithAllocator(sizeof(int), 3, &vector_test_allocator);
+	iVector.AddRange(v, 3, values);
+	malloc_countdown = 2; /* header array + 1st element succeed, 2nd fails */
+	TEST_REQUIRE(iVector.CopyTo(v) == NULL);
+	malloc_countdown = -1;
+	iVector.Finalize(v);
+	v = NULL;
+
+	/* SelectCopy malloc failure */
+	v = iVector.CreateWithAllocator(sizeof(int), 3, &vector_test_allocator);
+	iVector.AddRange(v, 3, values);
+	{
+		Mask *m = iMask.Create(3);
+		TEST_REQUIRE(m != NULL);
+		m->data[0] = 1;
+		m->data[1] = 1;
+		m->data[2] = 1;
+		fail_malloc = 1;
+		TEST_REQUIRE(iVector.SelectCopy(v, m) == NULL);
+		fail_malloc = 0;
+		iMask.Finalize(m);
+	}
+	iVector.Finalize(v);
+	v = NULL;
+
+	/* Apply with read-only vector malloc failure */
+	v = iVector.CreateWithAllocator(sizeof(int), 3, &vector_test_allocator);
+	iVector.AddRange(v, 3, values);
+	iVector.SetFlags(v, CONTAINER_READONLY);
+	fail_malloc = 1;
+	TEST_REQUIRE(iVector.Apply(v, increment_int, NULL) == CONTAINER_ERROR_NOMEMORY);
+	fail_malloc = 0;
+	iVector.Finalize(v);
+	v = NULL;
+
+	/* SearchWithKey branches */
+	v = iVector.InitializeWith(sizeof(int), 3, values);
+	TEST_REQUIRE(iVector.SearchWithKey(v, 0, sizeof(int), 10, &values[0], &key_res) == 0); /* startidx >= count */
+	TEST_REQUIRE(iVector.SearchWithKey(v, 0, sizeof(int), 0, NULL, &key_res) == CONTAINER_ERROR_BADARG);
+	{
+		int not_found = 999;
+		TEST_REQUIRE(iVector.SearchWithKey(v, 0, sizeof(int), 0, &not_found, &key_res) == 0);
+	}
+
+	/* Contains & IndexOf branches */
+	TEST_REQUIRE(iVector.Contains(v, NULL, NULL) == CONTAINER_ERROR_BADARG);
+	{
+		int extra = 42;
+		TEST_REQUIRE(iVector.Contains(v, &values[0], &extra) == 1);
+	}
+	TEST_REQUIRE(iVector.IndexOf(v, NULL, NULL, &key_res) == CONTAINER_ERROR_BADARG);
+	{
+		int not_found = 999;
+		TEST_REQUIRE(iVector.IndexOf(v, &not_found, NULL, &key_res) == CONTAINER_ERROR_NOTFOUND);
+	}
+
+	/* Add / AddRange / Append / InsertAt / InsertIn / Erase bad args */
+	TEST_REQUIRE(iVector.Add(v, NULL) == CONTAINER_ERROR_BADARG);
+	TEST_REQUIRE(iVector.AddRange(v, 1, NULL) == CONTAINER_ERROR_BADARG);
+	TEST_REQUIRE(iVector.AddRange(v, SIZE_MAX, values) == CONTAINER_ERROR_NOMEMORY);
+	TEST_REQUIRE(iVector.Append(v, NULL) == CONTAINER_ERROR_BADARG);
+	TEST_REQUIRE(iVector.InsertAt(v, 0, NULL) == CONTAINER_ERROR_BADARG);
+	TEST_REQUIRE(iVector.InsertAt(v, 100, &values[0]) == CONTAINER_ERROR_INDEX);
+	TEST_REQUIRE(iVector.InsertIn(v, 0, NULL) == CONTAINER_ERROR_BADARG);
+	{
+		Vector *short_vec = iVector.Create(sizeof(short), 2);
+		TEST_REQUIRE(iVector.InsertIn(v, 0, short_vec) == CONTAINER_ERROR_INCOMPATIBLE);
+		iVector.Finalize(short_vec);
+	}
+	TEST_REQUIRE(iVector.Erase(v, NULL) == CONTAINER_ERROR_BADARG);
+	{
+		int first_val = values[0];
+		TEST_REQUIRE(iVector.EraseAll(v, &first_val) == 1); /* EraseAll matching at index 0 */
+	}
+
+	/* PopBack on readonly */
+	iVector.SetFlags(v, CONTAINER_READONLY);
+	TEST_REQUIRE(iVector.PopBack(v, NULL) == CONTAINER_ERROR_READONLY);
+	iVector.SetFlags(v, 0);
+
+	/* Front and Back on empty */
+	{
+		Vector *empty = iVector.Create(sizeof(int), 0);
+		TEST_REQUIRE(iVector.Front(empty) == NULL);
+		TEST_REQUIRE(iVector.Back(empty) == NULL);
+		iVector.Finalize(empty);
+	}
+
+	/* GetFlags and GetElement */
+	TEST_REQUIRE(iVector.GetFlags(v) == 0);
+	TEST_REQUIRE(iVector.GetElement(v, 999) == NULL);
+
+	/* SetCapacity errors */
+	TEST_REQUIRE(iVector.SetCapacity(v, SIZE_MAX) == CONTAINER_ERROR_NOMEMORY);
+	iVector.Finalize(v);
+	v = NULL;
+
+	v = iVector.CreateWithAllocator(sizeof(int), 2, &vector_test_allocator);
+	fail_malloc = 1;
+	TEST_REQUIRE(iVector.SetCapacity(v, 10) == CONTAINER_ERROR_NOMEMORY);
+	fail_malloc = 0;
+	iVector.Finalize(v);
+	v = NULL;
+
+	/* ResizeTo errors */
+	v = iVector.CreateWithAllocator(sizeof(int), 2, &vector_test_allocator);
+	TEST_REQUIRE(iVector.Resize(v, 0) == 0); /* newSize == count (0) */
+	TEST_REQUIRE(iVector.Resize(v, 2) == 1);
+	TEST_REQUIRE(iVector.Resize(v, 2) == 0); /* newSize == count (2) */
+	fail_realloc = 1;
+	TEST_REQUIRE(iVector.Resize(v, 10) == CONTAINER_ERROR_NOMEMORY);
+	fail_realloc = 0;
+	iVector.Finalize(v);
+	v = NULL;
+
+	/* CopyElement custom error handler fallback */
+	v = iVector.InitializeWith(sizeof(int), 2, values);
+	iVector.SetErrorFunction(v, vector_copy_element_error_handler);
+	TEST_REQUIRE(iVector.CopyElement(v, 100, &out) == 1 && out == 999);
+	iVector.Finalize(v);
+	v = NULL;
+
+	/* Save & Load error handling */
+	v = iVector.InitializeWith(sizeof(int), 3, values);
+	TEST_REQUIRE(iVector.Save(v, NULL, NULL, NULL) == CONTAINER_ERROR_BADARG);
+
+	stream = ccl_test_tmpfile();
+	TEST_REQUIRE(stream != NULL);
+	TEST_REQUIRE(iVector.Save(v, stream, failing_save, NULL) == CONTAINER_ERROR_FILE_WRITE);
+	fclose(stream);
+
+	/* Load with failing loadFn */
+	stream = ccl_test_tmpfile();
+	TEST_REQUIRE(stream != NULL);
+	TEST_REQUIRE(iVector.Save(v, stream, NULL, NULL) == 1);
+	rewind(stream);
+	TEST_REQUIRE(iVector.Load(stream, failing_load, NULL) == NULL);
+	fclose(stream);
+
+	/* Load with bad version */
+	stream = ccl_test_tmpfile();
+	TEST_REQUIRE(stream != NULL);
+	TEST_REQUIRE(iVector.Save(v, stream, NULL, NULL) == 1);
+	rewind(stream);
+	fseek(stream, sizeof(guid), SEEK_SET);
+	{
+		uint32_t bad_version = 0xdeadbeef;
+		fwrite(&bad_version, sizeof(bad_version), 1, stream);
+	}
+	rewind(stream);
+	TEST_REQUIRE(iVector.Load(stream, NULL, NULL) == NULL);
+	fclose(stream);
+
+	/* NewIterator NOMEMORY */
+	v2 = iVector.CreateWithAllocator(sizeof(int), 2, &vector_test_allocator);
+	fail_calloc = 1;
+	TEST_REQUIRE(iVector.NewIterator(v2) == NULL);
+	fail_calloc = 0;
+	iVector.Finalize(v2);
+	v2 = NULL;
+
+	/* RemoveRange edge cases */
+	TEST_REQUIRE(iVector.RemoveRange(v, 0, 0) == 0); /* count unchanged */
+	TEST_REQUIRE(iVector.RemoveRange(v, 10, 20) == 0); /* start >= count */
+	TEST_REQUIRE(iVector.RemoveRange(v, 0, 100) == 1); /* end > count */
+	TEST_REQUIRE(iVector.Size(v) == 0);
+	TEST_REQUIRE(iVector.RemoveRange(v, 0, 1) == 0); /* empty */
+
+	iVector.Finalize(v);
+	v = NULL;
+
+	result = 0;
+
+cleanup:
+	fail_malloc = 0;
+	fail_realloc = 0;
+	fail_calloc = 0;
+	malloc_countdown = -1;
+	if (v2) iVector.Finalize(v2);
+	if (v) iVector.Finalize(v);
+	return result;
+}
+
 static const TestCase tests[] = {
 	{ "range, capacity, append, and selection", test_range_capacity_and_append },
 	{ "owned selection and removal", test_owned_selection_and_removal },
 	{ "iterators and persistence", test_iterators_and_persistence },
 	{ "read-only and edge paths", test_readonly_and_edges },
 	{ "remaining public surface", test_remaining_surface },
-	{ "invalid and read-only branches", test_invalid_and_readonly_branches }
+	{ "invalid and read-only branches", test_invalid_and_readonly_branches },
+	{ "comparisons and rotations", test_vector_comparisons_and_rotations },
+	{ "iterators exhaustive", test_vector_iterators_exhaustive },
+	{ "observers and destructors", test_vector_observers_and_destructors },
+	{ "allocator and error paths", test_vector_allocator_and_error_paths },
 };
 
 static const TestSuite suite = {

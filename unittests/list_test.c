@@ -737,6 +737,448 @@ cleanup:
     return result;
 }
 
+static int bad_list_save_fn(const void *element, void *arg, FILE *stream)
+{
+    (void)element;
+    (void)arg;
+    (void)stream;
+    return 0;
+}
+
+static int test_list_coverage_edges(void)
+{
+    List *list = NULL;
+    List *l1 = NULL;
+    List *l2 = NULL;
+    List *empty = NULL;
+    List *char_l = NULL;
+    List *l_e1 = NULL;
+    List *l_e2 = NULL;
+    Iterator *it = NULL;
+    Mask *m = NULL;
+    FILE *stream = NULL;
+    FILE *ro = NULL;
+    int val = 42;
+    int one = 1;
+    int two = 2;
+    int vals[5] = {10, 20, 30, 40, 50};
+    int out = 0;
+    int rep = 99;
+    size_t idx = 0;
+    int i;
+    List stack_l;
+
+    /* 1. Init and Create */
+    TEST_REQUIRE(iList.Init(NULL, sizeof(int)) == NULL);
+    TEST_REQUIRE(iList.Init(&stack_l, 0) == NULL);
+    TEST_REQUIRE(iList.Init(&stack_l, (size_t)-1) == NULL);
+    TEST_REQUIRE(iList.Init(&stack_l, sizeof(int)) == &stack_l);
+    TEST_REQUIRE(iList.Add(&stack_l, &val) == 1);
+    /* Re-init existing header cleans up nodes */
+    TEST_REQUIRE(iList.Init(&stack_l, sizeof(int)) == &stack_l);
+    TEST_REQUIRE(iList.Size(&stack_l) == 0);
+    TEST_REQUIRE(iList.Finalize(&stack_l) == 1);
+    TEST_REQUIRE(iList.InitializeWith(0, 1, &val) == NULL);
+
+    /* 2. Select and SelectCopy */
+    list = iList.InitializeWith(sizeof(int), 4, vals);
+    TEST_REQUIRE(list != NULL);
+    m = iMask.Create(10);
+    TEST_REQUIRE(m != NULL);
+    TEST_REQUIRE(iList.Select(list, m) == CONTAINER_ERROR_BADMASK);
+    TEST_REQUIRE(iList.SelectCopy(list, m) == NULL);
+    iMask.Finalize(m);
+    m = NULL;
+
+    iList.SetFlags(list, CONTAINER_READONLY);
+    m = iMask.Create(4);
+    TEST_REQUIRE(m != NULL);
+    TEST_REQUIRE(iList.Select(list, m) == CONTAINER_ERROR_READONLY);
+    iList.SetFlags(list, 0);
+
+    /* Normal select: keep 2nd and 4th */
+    (void)iMask.SetElement(m, 0, 0);
+    (void)iMask.SetElement(m, 1, 1);
+    (void)iMask.SetElement(m, 2, 0);
+    (void)iMask.SetElement(m, 3, 1);
+    TEST_REQUIRE(iList.Select(list, m) == 1);
+    TEST_REQUIRE(iList.Size(list) == 2);
+    iMask.Finalize(m);
+    m = NULL;
+
+    empty = iList.Create(sizeof(int));
+    TEST_REQUIRE(empty != NULL);
+    m = iMask.Create(0);
+    TEST_REQUIRE(m != NULL);
+    TEST_REQUIRE(iList.Select(empty, m) == 0);
+    iMask.Finalize(m);
+    m = NULL;
+    iList.Finalize(empty);
+    empty = NULL;
+    iList.Finalize(list);
+    list = NULL;
+
+    /* 3. Load corruption */
+    list = iList.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL && iList.Add(list, &val) == 1);
+    TEST_REQUIRE(iList.Save(NULL, stdout, NULL, NULL) < 0);
+    TEST_REQUIRE(iList.Save(list, NULL, NULL, NULL) < 0);
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL);
+    TEST_REQUIRE(iList.Save(list, stream, bad_list_save_fn, NULL) == EOF);
+    ro = fopen("/dev/null", "r");
+    if (ro != NULL) {
+        TEST_REQUIRE(iList.Save(list, ro, NULL, NULL) == EOF);
+        fclose(ro);
+        ro = NULL;
+    }
+    rewind(stream);
+    TEST_REQUIRE(iList.Load(stream, NULL, NULL) == NULL);
+    rewind(stream);
+    TEST_REQUIRE(fwrite("bad_guid_bytes_!", 1, 16, stream) == 16);
+    rewind(stream);
+    TEST_REQUIRE(iList.Load(stream, NULL, NULL) == NULL);
+
+    rewind(stream);
+    TEST_REQUIRE(iList.Save(list, stream, NULL, NULL) == 1);
+    rewind(stream);
+    char guid_buf[16];
+    TEST_REQUIRE(fread(guid_buf, 1, 16, stream) == 16);
+    fclose(stream);
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL && fwrite(guid_buf, 1, 16, stream) == 16);
+    rewind(stream);
+    TEST_REQUIRE(iList.Load(stream, NULL, NULL) == NULL);
+
+    uint32_t bad_version = 999;
+    uint32_t flags = 0;
+    uint64_t bad_elem_size = 0;
+    uint64_t count = 1;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&bad_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&bad_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&count, 1, 8, stream) == 8);
+    rewind(stream);
+    TEST_REQUIRE(iList.Load(stream, NULL, NULL) == NULL);
+
+    uint32_t good_version = 1;
+    uint64_t huge_elem_size = (uint64_t)-1;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&good_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&huge_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&count, 1, 8, stream) == 8);
+    rewind(stream);
+    TEST_REQUIRE(iList.Load(stream, NULL, NULL) == NULL);
+
+    uint64_t norm_elem_size = 64;
+    uint64_t huge_count = (uint64_t)-1;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&good_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&norm_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&huge_count, 1, 8, stream) == 8);
+    rewind(stream);
+    TEST_REQUIRE(iList.Load(stream, NULL, NULL) == NULL);
+
+    uint64_t valid_elem_size = sizeof(int);
+    uint64_t expected_count = 5;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&good_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&valid_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&expected_count, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&val, 1, sizeof(int), stream) == sizeof(int));
+    rewind(stream);
+    TEST_REQUIRE(iList.Load(stream, NULL, NULL) == NULL);
+    fclose(stream);
+    stream = NULL;
+    iList.Finalize(list);
+    list = NULL;
+
+    /* 4. InsertIn */
+    l1 = iList.Create(sizeof(int));
+    l2 = iList.Create(sizeof(int));
+    TEST_REQUIRE(l1 != NULL && l2 != NULL && iList.Add(l1, &val) == 1);
+    TEST_REQUIRE(iList.InsertIn(l1, 0, NULL) < 0);
+    char_l = iList.Create(sizeof(char));
+    TEST_REQUIRE(char_l != NULL);
+    TEST_REQUIRE(iList.InsertIn(l1, 0, char_l) < 0);
+    iList.Finalize(char_l);
+    List *l_dtor = iList.Create(sizeof(int));
+    TEST_REQUIRE(l_dtor != NULL);
+    (void)iList.SetDestructor(l_dtor, count_destructor);
+    TEST_REQUIRE(iList.InsertIn(l_dtor, 0, l2) < 0);
+    iList.Finalize(l_dtor);
+    TEST_REQUIRE(iList.InsertIn(l1, 0, l2) == 1);
+    iList.Finalize(l1);
+    l1 = NULL;
+    iList.Finalize(l2);
+    l2 = NULL;
+
+    /* 5. Iterators: Replace, Seek, GetPosition, GetPrevious */
+    list = iList.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL);
+    for (i = 0; i < 5; ++i)
+        TEST_REQUIRE(iList.Add(list, &vals[i]) == 1);
+    it = iList.NewIterator(list);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->Replace(NULL, &val, 0) < 0);
+    TEST_REQUIRE(it->GetPosition(NULL) == (size_t)-1);
+    TEST_REQUIRE(it->GetPrevious(NULL) == NULL);
+    TEST_REQUIRE(it->Seek(NULL, 0) == NULL);
+    TEST_REQUIRE(it->Seek(it, 0) != NULL);
+    TEST_REQUIRE(it->Seek(it, 4) != NULL);
+    TEST_REQUIRE(it->Seek(it, 2) != NULL);
+    TEST_REQUIRE(it->Replace(it, &rep, 0) == 1);
+    TEST_REQUIRE(it->Replace(it, NULL, 1) == 1);
+    TEST_REQUIRE(it->Replace(it, NULL, 0) == 1);
+
+    /* Timestamp changed */
+    TEST_REQUIRE(iList.Add(list, &val) == 1);
+    TEST_REQUIRE(it->Replace(it, &rep, 0) == CONTAINER_ERROR_OBJECT_CHANGED);
+    TEST_REQUIRE(it->Seek(it, 0) == NULL);
+    iList.DeleteIterator(it);
+    it = NULL;
+
+    /* Readonly iterator returns ElementBuffer */
+    iList.SetFlags(list, CONTAINER_READONLY);
+    it = iList.NewIterator(list);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    TEST_REQUIRE(it->Replace(it, &rep, 0) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(it->GetNext(it) != NULL);
+    TEST_REQUIRE(it->GetPrevious(it) != NULL);
+    TEST_REQUIRE(it->Seek(it, 0) != NULL);
+    iList.DeleteIterator(it);
+    it = NULL;
+    iList.SetFlags(list, 0);
+
+    /* Replace emptying list */
+    empty = iList.Create(sizeof(int));
+    TEST_REQUIRE(empty != NULL && iList.Add(empty, &val) == 1);
+    it = iList.NewIterator(empty);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->Replace(it, &val, 0) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    TEST_REQUIRE(it->Replace(it, NULL, 0) == 1);
+    TEST_REQUIRE(iList.Size(empty) == 0);
+    TEST_REQUIRE(it->Replace(it, &val, 0) == 0);
+    TEST_REQUIRE(it->Seek(it, 0) == NULL);
+    iList.DeleteIterator(it);
+    it = NULL;
+    iList.Finalize(empty);
+    empty = NULL;
+    iList.Finalize(list);
+    list = NULL;
+
+    /* 6. Append */
+    l1 = iList.Create(sizeof(int));
+    l2 = iList.Create(sizeof(int));
+    TEST_REQUIRE(l1 != NULL && l2 != NULL && iList.Add(l1, &val) == 1);
+    TEST_REQUIRE(iList.Append(l1, NULL) < 0);
+    iList.SetFlags(l1, CONTAINER_READONLY);
+    TEST_REQUIRE(iList.Append(l1, l2) < 0);
+    iList.SetFlags(l1, 0);
+    iList.SetFlags(l2, CONTAINER_READONLY);
+    TEST_REQUIRE(iList.Append(l1, l2) < 0);
+    iList.SetFlags(l2, 0);
+    char_l = iList.Create(sizeof(char));
+    TEST_REQUIRE(char_l != NULL);
+    TEST_REQUIRE(iList.Append(l1, char_l) < 0);
+    iList.Finalize(char_l);
+    char_l = NULL;
+    (void)iList.SetDestructor(l1, count_destructor);
+    TEST_REQUIRE(iList.Append(l1, l2) < 0);
+    (void)iList.SetDestructor(l1, NULL);
+    (void)iList.SetDestructor(l2, count_destructor);
+    TEST_REQUIRE(iList.Append(l1, l2) < 0);
+    (void)iList.SetDestructor(l2, NULL);
+    iList.Finalize(l1);
+    l1 = NULL;
+    iList.Finalize(l2);
+    l2 = NULL;
+
+    /* 7. RemoveAt and ReplaceAt */
+    list = iList.InitializeWith(sizeof(int), 5, vals);
+    TEST_REQUIRE(list != NULL);
+    TEST_REQUIRE(iList.EraseAt(list, 999) < 0);
+    /* Remove last: position == count - 1 loops rvp->Next != Last */
+    TEST_REQUIRE(iList.EraseAt(list, 4) == 1);
+    /* Remove first: count > 1 branch */
+    TEST_REQUIRE(iList.EraseAt(list, 0) == 1);
+    /* ReplaceAt NULL and last */
+    TEST_REQUIRE(iList.ReplaceAt(list, 0, NULL) < 0);
+    TEST_REQUIRE(iList.ReplaceAt(list, iList.Size(list) - 1, &rep) == 1);
+    /* ReplaceAt with same data pointer */
+    TEST_REQUIRE(iList.ReplaceAt(list, 0, iList.Front(list)) == 1);
+    /* ReplaceAt destructor call */
+    (void)iList.SetDestructor(list, count_destructor);
+    destructor_calls = 0;
+    TEST_REQUIRE(iList.ReplaceAt(list, 0, &rep) == 1 && destructor_calls == 1);
+    (void)iList.SetDestructor(list, NULL);
+    iList.Finalize(list);
+    list = NULL;
+
+    /* Single element RemoveAt (count == 1 branch) */
+    empty = iList.Create(sizeof(int));
+    TEST_REQUIRE(empty != NULL && iList.Add(empty, &val) == 1);
+    TEST_REQUIRE(iList.EraseAt(empty, 0) == 1 && iList.Size(empty) == 0);
+    iList.Finalize(empty);
+    empty = NULL;
+
+    /* 8. SetElementData and SplitAfter */
+    list = iList.InitializeWith(sizeof(int), 3, vals);
+    TEST_REQUIRE(list != NULL);
+    ListElement *elem = iList.FirstElement(list);
+    ListElement fake_node;
+    memset(&fake_node, 0, sizeof(fake_node));
+    TEST_REQUIRE(elem != NULL);
+    iList.SetFlags(list, CONTAINER_READONLY);
+    TEST_REQUIRE(iList.SetElementData(list, elem, &rep) < 0);
+    TEST_REQUIRE(iList.SplitAfter(list, elem) == NULL);
+    iList.SetFlags(list, 0);
+    TEST_REQUIRE(iList.SetElementData(list, &fake_node, &rep) < 0);
+    TEST_REQUIRE(iList.SetElementData(list, elem, elem->Data) == 1);
+    (void)iList.SetDestructor(list, count_destructor);
+    destructor_calls = 0;
+    TEST_REQUIRE(iList.SetElementData(list, elem, &rep) == 1 && destructor_calls == 1);
+    (void)iList.SetDestructor(list, NULL);
+    iList.Finalize(list);
+    list = NULL;
+
+    /* 9. RotateLeft, RotateRight, RemoveRange */
+    empty = iList.Create(sizeof(int));
+    TEST_REQUIRE(empty != NULL);
+    TEST_REQUIRE(iList.RotateLeft(empty, 0) == 0);
+    TEST_REQUIRE(iList.RotateRight(empty, 0) == 0);
+    list = iList.InitializeWith(sizeof(int), 3, vals);
+    TEST_REQUIRE(list != NULL);
+    TEST_REQUIRE(iList.RotateLeft(list, 0) == 0);
+    TEST_REQUIRE(iList.RotateLeft(list, 3) == 0);
+    TEST_REQUIRE(iList.RotateRight(list, 0) == 0);
+    TEST_REQUIRE(iList.RotateRight(list, 3) == 0);
+    TEST_REQUIRE(iList.RemoveRange(list, 2, 2) == 0);
+    iList.Finalize(list);
+    list = NULL;
+    iList.Finalize(empty);
+    empty = NULL;
+
+    /* 10. Equal, PushFront, PopFront, Contains, Erase */
+    l_e1 = iList.Create(sizeof(int));
+    l_e2 = iList.Create(sizeof(int));
+    TEST_REQUIRE(l_e1 != NULL && l_e2 != NULL);
+    TEST_REQUIRE(iList.Equal(NULL, l_e1) == 0);
+    TEST_REQUIRE(iList.Equal(l_e1, NULL) == 0);
+    TEST_REQUIRE(iList.Equal(l_e1, l_e2) == 1);
+    char_l = iList.Create(sizeof(char));
+    TEST_REQUIRE(char_l != NULL);
+    TEST_REQUIRE(iList.Equal(l_e1, char_l) == 0);
+    iList.Finalize(char_l);
+    char_l = NULL;
+    TEST_REQUIRE(iList.Add(l_e1, &one) == 1);
+    TEST_REQUIRE(iList.Add(l_e2, &one) == 1);
+    iList.SetCompareFunction(l_e1, reverse_compare);
+    TEST_REQUIRE(iList.Equal(l_e1, l_e2) == 0);
+    iList.SetCompareFunction(l_e1, NULL);
+    TEST_REQUIRE(iList.Add(l_e2, &two) == 1);
+    TEST_REQUIRE(iList.Equal(l_e1, l_e2) == 0);
+    iList.Finalize(l_e1);
+    l_e1 = NULL;
+    iList.Finalize(l_e2);
+    l_e2 = NULL;
+
+    /* PushFront into empty list */
+    empty = iList.Create(sizeof(int));
+    TEST_REQUIRE(empty != NULL);
+    TEST_REQUIRE(iList.PushFront(empty, &one) == 1);
+    TEST_REQUIRE(empty->First == empty->Last);
+    TEST_REQUIRE(iList.PopFront(empty, &out) == 1 && out == 1);
+    TEST_REQUIRE(iList.PopFront(empty, &out) == 0);
+    TEST_REQUIRE(iList.Front(empty) == NULL);
+    TEST_REQUIRE(iList.Back(empty) == NULL);
+    TEST_REQUIRE(iList.Sort(empty) == 1);
+    TEST_REQUIRE(iList.Reverse(empty) == 1);
+    TEST_REQUIRE(iList.Erase(empty, &val) < 0);
+    iList.Finalize(empty);
+    empty = NULL;
+
+    /* PopFront with NULL result and Destructor */
+    list = iList.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL && iList.Add(list, &one) == 1);
+    (void)iList.SetDestructor(list, count_destructor);
+    destructor_calls = 0;
+    TEST_REQUIRE(iList.PopFront(list, NULL) == 1 && destructor_calls == 1);
+    (void)iList.SetDestructor(list, NULL);
+    iList.Finalize(list);
+    list = NULL;
+
+    /* Contains & IndexOf */
+    list = iList.InitializeWith(sizeof(int), 3, vals);
+    TEST_REQUIRE(list != NULL);
+    int missing = 999;
+    TEST_REQUIRE(iList.Contains(list, NULL) < 0);
+    TEST_REQUIRE(iList.Contains(list, &missing) == 0);
+    TEST_REQUIRE(iList.IndexOf(list, NULL, NULL, &idx) < 0);
+    TEST_REQUIRE(iList.IndexOf(list, &vals[1], NULL, &idx) == 1 && idx == 1);
+
+    /* Erase last and all */
+    TEST_REQUIRE(iList.Erase(list, NULL) < 0);
+    TEST_REQUIRE(iList.Erase(list, &vals[2]) == 1);
+    TEST_REQUIRE(iList.EraseAll(list, &missing) == CONTAINER_ERROR_NOTFOUND);
+    /* Clear and Readonly */
+    iList.SetFlags(list, CONTAINER_READONLY);
+    TEST_REQUIRE(iList.Clear(list) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iList.PopFront(list, &out) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iList.SetCompareFunction(list, reverse_compare) != NULL);
+    TEST_REQUIRE(iList.AddRange(list, 1, &val) == CONTAINER_ERROR_READONLY);
+    iList.SetFlags(list, 0);
+    TEST_REQUIRE(iList.AddRange(list, 1, NULL) == CONTAINER_ERROR_BADARG);
+
+    /* Apply NULL and Readonly */
+    TEST_REQUIRE(iList.Apply(list, NULL, NULL) < 0);
+    iList.SetFlags(list, CONTAINER_READONLY);
+    int delta = 1;
+    TEST_REQUIRE(iList.Apply(list, increment_apply, &delta) == 1);
+    iList.SetFlags(list, 0);
+
+    /* SetErrorFunction, Sizeof, SizeofIterator, UseHeap, InitIterator, NewIterator */
+    TEST_REQUIRE(iList.SetErrorFunction(list, NULL) != NULL);
+    TEST_REQUIRE(iList.Sizeof(NULL) > 0);
+    TEST_REQUIRE(iList.InitIterator(list, NULL) < 0);
+    TEST_REQUIRE(iList.NewIterator(NULL) == NULL);
+    TEST_REQUIRE(iList.UseHeap(list, NULL) == CONTAINER_ERROR_NOT_EMPTY);
+    List fake_huge;
+    memset(&fake_huge, 0, sizeof(fake_huge));
+    fake_huge.ElementSize = (size_t)-1;
+    TEST_REQUIRE(iList.SizeofIterator(&fake_huge) == 0);
+
+    /* Observer on Finalize */
+    TEST_REQUIRE(iObserver.Subscribe(list, list_observer, CCL_FINALIZE) == 1);
+    iList.Finalize(list);
+    list = NULL;
+    return 0;
+
+cleanup:
+    if (m) iMask.Finalize(m);
+    if (stream) fclose(stream);
+    if (ro) fclose(ro);
+    if (it) iList.DeleteIterator(it);
+    if (empty) iList.Finalize(empty);
+    if (char_l) iList.Finalize(char_l);
+    if (l1) iList.Finalize(l1);
+    if (l2) iList.Finalize(l2);
+    if (l_e1) iList.Finalize(l_e1);
+    if (l_e2) iList.Finalize(l_e2);
+    if (list) iList.Finalize(list);
+    return -1;
+}
+
 static const TestCase tests[] = {
     {"lifecycle, ownership and ranges", test_lifecycle_and_ranges},
     {"atomic AddRange rollback", test_atomic_add_range},
@@ -744,7 +1186,8 @@ static const TestCase tests[] = {
     {"persistence validation", test_persistence_validation},
     {"API edges and navigation", test_api_edges_and_navigation},
     {"allocation failure paths", test_allocation_failure_paths},
-    {"review findings list fixes", test_review_findings_list}
+    {"review findings list fixes", test_review_findings_list},
+    {"coverage edges", test_list_coverage_edges},
 };
 
 static const TestSuite suite = {

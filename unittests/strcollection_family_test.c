@@ -816,6 +816,765 @@ cleanup:
     return -1;
 }
 
+static int custom_str_cmp(const void **s1, const void **s2, CompareInfo *info)
+{
+    (void)info;
+    return strcmp(*(const char **)s1, *(const char **)s2);
+}
+
+static int apply_modifies_sc(char *str, void *arg)
+{
+    strCollection *coll = (strCollection *)arg;
+    (void)str;
+    istrCollection.Add(coll, "mutated_in_apply");
+    return 1;
+}
+
+static int apply_returns_negative(char *str, void *arg)
+{
+    (void)str;
+    (void)arg;
+    return -1;
+}
+
+static int failing_save_str(const void *element, void *arg, FILE *stream)
+{
+    (void)element;
+    (void)arg;
+    (void)stream;
+    return 0;
+}
+
+static int failing_read_str(void *element, void *arg, FILE *stream)
+{
+    (void)element;
+    (void)arg;
+    (void)stream;
+    return 0;
+}
+
+static int test_strcollection_coverage_boost(void)
+{
+    strCollection *sc = NULL;
+    strCollection *sc2 = NULL;
+    strCollection *sc_file = NULL;
+    strCollection *range = NULL;
+    strCollection *found = NULL;
+    WstrCollection *wsc = NULL;
+    WstrCollection *wsc_file = NULL;
+    Vector *vec = NULL;
+    Vector *indices = NULL;
+    Vector *positions = NULL;
+    Mask *eq_mask = NULL;
+    Iterator *it = NULL;
+    FILE *stream = NULL;
+    char pop_buf[32];
+    const char *init_data[] = {"banana", "apple", "cherry", "applepie", "date"};
+    const wchar_t *w_init_data[] = {L"banana", L"apple", L"cherry"};
+    int result = -1;
+
+    /* 1. InitializeWith, Sort, Reverse */
+    sc = istrCollection.InitializeWith(5, (char **)init_data);
+    TEST_REQUIRE(sc != NULL);
+    TEST_REQUIRE(istrCollection.Size(sc) == 5);
+    TEST_REQUIRE(istrCollection.Sort(sc) == 1);
+    TEST_REQUIRE(istrCollection.Reverse(sc) == 1);
+
+    /* FindText, FindTextIndex, FindTextPositions on pristine sc */
+    found = istrCollection.FindText(sc, "apple");
+    TEST_REQUIRE(found != NULL);
+    TEST_REQUIRE(istrCollection.Size(found) == 2);
+    istrCollection.Finalize(found);
+    found = NULL;
+    TEST_REQUIRE(istrCollection.FindText(sc, "nonexistent") == NULL);
+    TEST_REQUIRE(istrCollection.FindText(NULL, "apple") == NULL);
+    TEST_REQUIRE(istrCollection.FindText(sc, NULL) == NULL);
+
+    indices = istrCollection.FindTextIndex(sc, "apple");
+    TEST_REQUIRE(indices != NULL);
+    TEST_REQUIRE(iVector.Size(indices) == 2);
+    iVector.Finalize(indices);
+    indices = NULL;
+    TEST_REQUIRE(istrCollection.FindTextIndex(NULL, "apple") == NULL);
+    TEST_REQUIRE(istrCollection.FindTextIndex(sc, NULL) == NULL);
+
+    positions = istrCollection.FindTextPositions(sc, "apple");
+    TEST_REQUIRE(positions != NULL);
+    TEST_REQUIRE(iVector.Size(positions) == 4); /* 2 pairs: (index, offset) */
+    iVector.Finalize(positions);
+    positions = NULL;
+    TEST_REQUIRE(istrCollection.FindTextPositions(NULL, "apple") == NULL);
+    TEST_REQUIRE(istrCollection.FindTextPositions(sc, NULL) == NULL);
+
+    /* CastToArray */
+    vec = istrCollection.CastToArray(sc);
+    TEST_REQUIRE(vec != NULL);
+    TEST_REQUIRE(iVector.Size(vec) == 5);
+    iVector.Finalize(vec);
+    vec = NULL;
+    TEST_REQUIRE(istrCollection.CastToArray(NULL) == NULL);
+
+    /* Front, Back, GetData */
+    TEST_REQUIRE(istrCollection.Front(sc) != NULL);
+    TEST_REQUIRE(istrCollection.Back(sc) != NULL);
+    TEST_REQUIRE(istrCollection.GetData(sc) != NULL);
+    /* Empty and readonly Front/Back/GetData */
+    {
+        strCollection *empty = istrCollection.Create(0);
+        TEST_REQUIRE(empty != NULL);
+        TEST_REQUIRE(istrCollection.Front(empty) == NULL);
+        TEST_REQUIRE(istrCollection.Back(empty) == NULL);
+        istrCollection.Finalize(empty);
+
+        istrCollection.SetFlags(sc, CONTAINER_READONLY);
+        TEST_REQUIRE(istrCollection.Front(sc) == NULL);
+        TEST_REQUIRE(istrCollection.Back(sc) == NULL);
+        TEST_REQUIRE(istrCollection.GetData(sc) == NULL);
+        istrCollection.SetFlags(sc, 0);
+
+        TEST_REQUIRE(istrCollection.Front(NULL) == NULL);
+        TEST_REQUIRE(istrCollection.Back(NULL) == NULL);
+        TEST_REQUIRE(istrCollection.GetData(NULL) == NULL);
+    }
+
+    /* Mismatch */
+    {
+        size_t mm_pos = 0;
+        TEST_REQUIRE(istrCollection.Mismatch(sc, sc, &mm_pos) == 0);
+        TEST_REQUIRE(istrCollection.Mismatch(sc, NULL, &mm_pos) == 1);
+        strCollection *e1 = istrCollection.Create(0);
+        strCollection *e2 = istrCollection.Create(0);
+        TEST_REQUIRE(istrCollection.Mismatch(e1, e2, &mm_pos) == 0);
+        istrCollection.Finalize(e2);
+        istrCollection.Finalize(e1);
+    }
+
+    /* CopyTo */
+    {
+        char **copied_arr = istrCollection.CopyTo(sc);
+        TEST_REQUIRE(copied_arr != NULL);
+        for (size_t k = 0; copied_arr[k] != NULL; ++k)
+            free(copied_arr[k]);
+        free(copied_arr);
+    }
+
+    /* Apply return 0 / modified */
+    {
+        TEST_REQUIRE(istrCollection.Apply(sc, apply_returns_negative, NULL) == 0);
+        TEST_REQUIRE(istrCollection.Apply(sc, apply_modifies_sc, sc) == CONTAINER_ERROR_OBJECT_CHANGED);
+    }
+
+    /* ReplaceAt, Erase, EraseAll, EraseAt, RemoveRange */
+    TEST_REQUIRE(istrCollection.ReplaceAt(sc, 0, "replaced_head") == 1);
+    TEST_REQUIRE(istrCollection.Add(sc, "to_erase") == 1);
+    TEST_REQUIRE(istrCollection.Add(sc, "to_erase") == 1);
+    TEST_REQUIRE(istrCollection.Erase(sc, "to_erase") == 1);
+    TEST_REQUIRE(istrCollection.EraseAll(sc, "to_erase") == 1);
+    TEST_REQUIRE(istrCollection.EraseAt(sc, 0) == 1);
+    TEST_REQUIRE(istrCollection.RemoveRange(sc, 0, 1) == 1);
+
+    /* PushFront & PushBack with resize, PopFront with buffer */
+    {
+        strCollection *small_sc = istrCollection.Create(1);
+        TEST_REQUIRE(small_sc != NULL);
+        TEST_REQUIRE(istrCollection.PushBack(small_sc, "one") == 1);
+        TEST_REQUIRE(istrCollection.PushBack(small_sc, "two") == 1);
+        TEST_REQUIRE(istrCollection.PushFront(small_sc, "zero") == 1);
+        TEST_REQUIRE(istrCollection.PopFront(small_sc, pop_buf, sizeof(pop_buf)) > 0);
+        TEST_REQUIRE(strcmp(pop_buf, "zero") == 0);
+        istrCollection.Finalize(small_sc);
+    }
+
+    /* 6. IndexIn */
+    {
+        Vector *idx_vec = iVector.Create(sizeof(size_t), 3);
+        size_t idx0 = 0, idx2 = 2;
+        iVector.Add(idx_vec, &idx0);
+        iVector.Add(idx_vec, &idx2);
+        strCollection *indexed = istrCollection.IndexIn(sc, idx_vec);
+        TEST_REQUIRE(indexed != NULL);
+        TEST_REQUIRE(istrCollection.Size(indexed) == 2);
+        istrCollection.Finalize(indexed);
+
+        /* Incompatible vector element size */
+        Vector *bad_vec = iVector.Create(sizeof(int), 2);
+        TEST_REQUIRE(istrCollection.IndexIn(sc, bad_vec) == NULL);
+        iVector.Finalize(bad_vec);
+
+        /* Index out of bounds */
+        size_t bad_idx = 999;
+        iVector.Add(idx_vec, &bad_idx);
+        TEST_REQUIRE(istrCollection.IndexIn(sc, idx_vec) == NULL);
+        iVector.Finalize(idx_vec);
+
+        TEST_REQUIRE(istrCollection.IndexIn(NULL, NULL) == NULL);
+    }
+
+    /* 7. InsertIn with growth and edge cases */
+    sc2 = istrCollection.Create(2);
+    TEST_REQUIRE(sc2 != NULL);
+    TEST_REQUIRE(istrCollection.Add(sc2, "extra1") == 1);
+    TEST_REQUIRE(istrCollection.Add(sc2, "extra2") == 1);
+    /* Insert into sc causing capacity expansion */
+    TEST_REQUIRE(istrCollection.SetCapacity(sc, istrCollection.Size(sc)) == 1);
+    size_t before_sz = istrCollection.Size(sc);
+    TEST_REQUIRE(istrCollection.InsertIn(sc, 1, sc2) == 1);
+    TEST_REQUIRE(istrCollection.Size(sc) == before_sz + 2);
+    /* InsertIn empty collection */
+    {
+        strCollection *empty = istrCollection.Create(0);
+        TEST_REQUIRE(istrCollection.InsertIn(sc, 0, empty) == 1);
+        TEST_REQUIRE(istrCollection.InsertIn(empty, 0, empty) == 1);
+        istrCollection.Finalize(empty);
+    }
+    /* Readonly InsertIn */
+    istrCollection.SetFlags(sc, CONTAINER_READONLY);
+    TEST_REQUIRE(istrCollection.InsertIn(sc, 0, sc2) < 0);
+    istrCollection.SetFlags(sc, 0);
+
+    /* 8. CompareEqual, CompareEqualScalar, SelectCopy */
+    eq_mask = istrCollection.CompareEqual(sc, sc, NULL);
+    TEST_REQUIRE(eq_mask != NULL);
+    /* Reusing smaller mask to trigger reallocation */
+    {
+        Mask *small_m = iMask.Create(1);
+        Mask *re_m = istrCollection.CompareEqual(sc, sc, small_m);
+        TEST_REQUIRE(re_m != NULL);
+        iMask.Finalize(re_m);
+    }
+    TEST_REQUIRE(istrCollection.CompareEqual(NULL, sc, NULL) == NULL);
+
+    /* CompareEqualScalar */
+    {
+        Mask *scalar_m = istrCollection.CompareEqualScalar(sc, "apple", NULL);
+        TEST_REQUIRE(scalar_m != NULL);
+        iMask.Finalize(scalar_m);
+        TEST_REQUIRE(istrCollection.CompareEqualScalar(NULL, "apple", NULL) == NULL);
+    }
+
+    /* SelectCopy */
+    {
+        strCollection *copied = istrCollection.SelectCopy(sc, eq_mask);
+        TEST_REQUIRE(copied != NULL);
+        TEST_REQUIRE(istrCollection.Size(copied) == istrCollection.Size(sc));
+        istrCollection.Finalize(copied);
+
+        TEST_REQUIRE(istrCollection.SelectCopy(NULL, eq_mask) == NULL);
+        Mask *bad_len_m = iMask.Create(1);
+        TEST_REQUIRE(istrCollection.SelectCopy(sc, bad_len_m) == NULL);
+        TEST_REQUIRE(istrCollection.Select(sc, bad_len_m) < 0);
+        iMask.Finalize(bad_len_m);
+    }
+    iMask.Finalize(eq_mask);
+    eq_mask = NULL;
+
+    /* 9. SetCompareFunction and Equal branches */
+    {
+        StringCompareFn old_fn = istrCollection.SetCompareFunction(sc, custom_str_cmp);
+        TEST_REQUIRE(old_fn != NULL);
+        /* Setting same function */
+        TEST_REQUIRE(istrCollection.SetCompareFunction(sc, custom_str_cmp) == custom_str_cmp);
+        /* Setting NULL */
+        TEST_REQUIRE(istrCollection.SetCompareFunction(sc, NULL) == custom_str_cmp);
+        TEST_REQUIRE(istrCollection.SetCompareFunction(NULL, custom_str_cmp) == NULL);
+        /* Restore */
+        istrCollection.SetCompareFunction(sc, old_fn);
+
+        /* Equal edge cases */
+        TEST_REQUIRE(istrCollection.Equal(NULL, NULL) == 1);
+        TEST_REQUIRE(istrCollection.Equal(sc, NULL) == 0);
+        TEST_REQUIRE(istrCollection.Equal(NULL, sc) == 0);
+        TEST_REQUIRE(istrCollection.Equal(sc, sc2) == 0); /* different size */
+        strCollection *sc_clone = istrCollection.Copy(sc);
+        TEST_REQUIRE(sc_clone != NULL);
+        TEST_REQUIRE(istrCollection.Equal(sc, sc_clone) == 1);
+        istrCollection.SetCompareFunction(sc_clone, custom_str_cmp);
+        TEST_REQUIRE(istrCollection.Equal(sc, sc_clone) == 0); /* different compare fn */
+        istrCollection.Finalize(sc_clone);
+    }
+
+    /* 10. WriteToFile and CreateFromFile (narrow and wide) */
+    {
+        const char *tmp_name = "test_sc_tmp.txt";
+        TEST_REQUIRE(istrCollection.WriteToFile(NULL, tmp_name) < 0);
+        TEST_REQUIRE(istrCollection.WriteToFile(sc, tmp_name) == 1);
+        sc_file = istrCollection.CreateFromFile(tmp_name);
+        TEST_REQUIRE(sc_file != NULL);
+        TEST_REQUIRE(istrCollection.Size(sc_file) == istrCollection.Size(sc));
+        remove(tmp_name);
+
+        wsc = iWstrCollection.InitializeWith(3, (wchar_t **)w_init_data);
+        TEST_REQUIRE(wsc != NULL);
+        TEST_REQUIRE(iWstrCollection.WriteToFile(wsc, tmp_name) == 1);
+        wsc_file = iWstrCollection.CreateFromFile(tmp_name);
+        TEST_REQUIRE(wsc_file != NULL);
+        TEST_REQUIRE(iWstrCollection.Size(wsc_file) == 3);
+        remove(tmp_name);
+
+        TEST_REQUIRE(istrCollection.CreateFromFile(NULL) == NULL);
+        TEST_REQUIRE(iWstrCollection.CreateFromFile(NULL) == NULL);
+    }
+
+    /* 11. Iterator edge cases */
+    it = istrCollection.NewIterator(sc);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    /* Direct NULL it calls */
+    TEST_REQUIRE(it->GetLast(NULL) == NULL);
+    TEST_REQUIRE(it->GetNext(NULL) == NULL);
+    TEST_REQUIRE(it->GetPrevious(NULL) == NULL);
+    TEST_REQUIRE(it->GetFirst(NULL) == NULL);
+    TEST_REQUIRE(it->Seek(NULL, 0) == NULL);
+    TEST_REQUIRE(it->GetCurrent(NULL) == NULL);
+    TEST_REQUIRE(it->Replace(NULL, "x", 1) < 0);
+
+    /* GetPrevious to beginning */
+    while (it->GetPrevious(it) != NULL) {}
+    TEST_REQUIRE(it->GetPrevious(it) == NULL);
+
+    /* Seek out of bounds */
+    TEST_REQUIRE(it->Seek(it, 9999) == NULL);
+
+    /* Replace with direction == 0 */
+    TEST_REQUIRE(it->GetLast(it) != NULL);
+    TEST_REQUIRE(it->Replace(it, "replaced_prev", 0) == 1);
+
+    /* Stale iterator checks */
+    istrCollection.Add(sc, "change_stamp");
+    TEST_REQUIRE(it->GetLast(it) == NULL);
+    TEST_REQUIRE(it->GetNext(it) == NULL);
+    TEST_REQUIRE(it->GetPrevious(it) == NULL);
+    TEST_REQUIRE(it->GetFirst(it) == NULL);
+    TEST_REQUIRE(it->Seek(it, 0) == NULL);
+    TEST_REQUIRE(it->Replace(it, "x", 1) < 0);
+    istrCollection.DeleteIterator(it);
+    it = NULL;
+
+    /* Iterator on empty collection */
+    {
+        strCollection *empty = istrCollection.Create(0);
+        Iterator *empty_it = istrCollection.NewIterator(empty);
+        TEST_REQUIRE(empty_it != NULL);
+        TEST_REQUIRE(empty_it->GetLast(empty_it) == NULL);
+        TEST_REQUIRE(empty_it->GetFirst(empty_it) == NULL);
+        TEST_REQUIRE(empty_it->Replace(empty_it, "x", 1) == 0);
+        istrCollection.DeleteIterator(empty_it);
+        istrCollection.Finalize(empty);
+    }
+
+    /* Iterator Replace on readonly */
+    istrCollection.SetFlags(sc, CONTAINER_READONLY);
+    it = istrCollection.NewIterator(sc);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    TEST_REQUIRE(it->Replace(it, "x", 1) < 0);
+    istrCollection.DeleteIterator(it);
+    it = NULL;
+    istrCollection.SetFlags(sc, 0);
+
+    /* 12. Save and Load edge cases */
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL);
+    TEST_REQUIRE(istrCollection.Save(NULL, stream, NULL, NULL) < 0);
+    TEST_REQUIRE(istrCollection.Save(sc, NULL, NULL, NULL) < 0);
+    TEST_REQUIRE(istrCollection.Load(NULL, NULL, NULL) == NULL);
+    /* Load wrong GUID */
+    rewind(stream);
+    TEST_REQUIRE(fwrite("WRONG_GUID_SC_1234567890", 1, 24, stream) == 24);
+    rewind(stream);
+    TEST_REQUIRE(istrCollection.Load(stream, NULL, NULL) == NULL);
+    fclose(stream);
+    stream = NULL;
+
+    /* Failing save function */
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL);
+    TEST_REQUIRE(istrCollection.Save(sc, stream, failing_save_str, NULL) < 0);
+    fclose(stream);
+    stream = NULL;
+
+    /* Load with corruptions using saved header from sc */
+    {
+        char header_buf[sizeof(guid) + sizeof(strCollection)];
+        FILE *save_stream = ccl_test_tmpfile();
+        TEST_REQUIRE(save_stream != NULL);
+        TEST_REQUIRE(istrCollection.Save(sc, save_stream, NULL, NULL) == 1);
+        rewind(save_stream);
+        TEST_REQUIRE(fread(header_buf, 1, sizeof(header_buf), save_stream) == sizeof(header_buf));
+        fclose(save_stream);
+
+        /* Truncated header (guid + 2 bytes) */
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        TEST_REQUIRE(fwrite(header_buf, 1, sizeof(guid) + 2, stream) == sizeof(guid) + 2);
+        rewind(stream);
+        TEST_REQUIRE(istrCollection.Load(stream, NULL, NULL) == NULL);
+        fclose(stream);
+
+        /* Corrupted count (> SIZE_MAX / sizeof(char*)) */
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        {
+            char bad_hdr[sizeof(guid) + sizeof(strCollection)];
+            memcpy(bad_hdr, header_buf, sizeof(bad_hdr));
+            strCollection *col = (strCollection *)(bad_hdr + sizeof(guid));
+            col->count = SIZE_MAX;
+            TEST_REQUIRE(fwrite(bad_hdr, 1, sizeof(bad_hdr), stream) == sizeof(bad_hdr));
+        }
+        rewind(stream);
+        TEST_REQUIRE(istrCollection.Load(stream, NULL, NULL) == NULL);
+        fclose(stream);
+
+        /* Truncated string in stream (valid header, count = 1, but EOF in ule128) */
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        {
+            char one_hdr[sizeof(guid) + sizeof(strCollection)];
+            memcpy(one_hdr, header_buf, sizeof(one_hdr));
+            strCollection *col = (strCollection *)(one_hdr + sizeof(guid));
+            col->count = 1;
+            TEST_REQUIRE(fwrite(one_hdr, 1, sizeof(one_hdr), stream) == sizeof(one_hdr));
+        }
+        rewind(stream);
+        TEST_REQUIRE(istrCollection.Load(stream, NULL, NULL) == NULL);
+        fclose(stream);
+
+        /* Failing read function */
+        stream = ccl_test_tmpfile();
+        TEST_REQUIRE(stream != NULL);
+        {
+            char one_hdr[sizeof(guid) + sizeof(strCollection)];
+            memcpy(one_hdr, header_buf, sizeof(one_hdr));
+            strCollection *col = (strCollection *)(one_hdr + sizeof(guid));
+            col->count = 1;
+            TEST_REQUIRE(fwrite(one_hdr, 1, sizeof(one_hdr), stream) == sizeof(one_hdr));
+            fputc(5, stream);
+        }
+        rewind(stream);
+        TEST_REQUIRE(istrCollection.Load(stream, failing_read_str, NULL) == NULL);
+        fclose(stream);
+        stream = NULL;
+    }
+
+    /* ReplaceWithIterator with NULL data forward and backward */
+    {
+        strCollection *del_sc = istrCollection.Create(3);
+        TEST_REQUIRE(del_sc != NULL);
+        TEST_REQUIRE(istrCollection.Add(del_sc, "d1") == 1);
+        TEST_REQUIRE(istrCollection.Add(del_sc, "d2") == 1);
+        TEST_REQUIRE(istrCollection.Add(del_sc, "d3") == 1);
+        Iterator *del_it = istrCollection.NewIterator(del_sc);
+        TEST_REQUIRE(del_it != NULL);
+        TEST_REQUIRE(del_it->GetFirst(del_it) != NULL);
+        TEST_REQUIRE(del_it->GetNext(del_it) != NULL);
+        /* Delete at index 1 forward */
+        TEST_REQUIRE(del_it->Replace(del_it, NULL, 1) == 1);
+        /* Delete at index 1 backward */
+        TEST_REQUIRE(del_it->Replace(del_it, NULL, 0) == 1);
+        /* Delete last element -> empty */
+        TEST_REQUIRE(del_it->Replace(del_it, NULL, 1) == 1);
+        istrCollection.DeleteIterator(del_it);
+        istrCollection.Finalize(del_sc);
+    }
+
+    /* WriteToFile with bad path and InitIterator with NULL */
+    TEST_REQUIRE(istrCollection.WriteToFile(sc, "/nonexistent_dir/bad_file.txt") < 0);
+    {
+        char it_storage[512];
+        TEST_REQUIRE(istrCollection.InitIterator(NULL, it_storage) < 0);
+    }
+
+    /* Equal with differing contents */
+    {
+        strCollection *sc_diff = istrCollection.Create(1);
+        TEST_REQUIRE(sc_diff != NULL);
+        TEST_REQUIRE(istrCollection.Add(sc_diff, "different_string") == 1);
+        strCollection *sc_same = istrCollection.Create(1);
+        TEST_REQUIRE(sc_same != NULL);
+        TEST_REQUIRE(istrCollection.Add(sc_same, "banana") == 1);
+        TEST_REQUIRE(istrCollection.Equal(sc_same, sc_diff) == 0);
+        istrCollection.Finalize(sc_diff);
+        istrCollection.Finalize(sc_same);
+    }
+
+    /* InitializeWith with NULL element */
+    {
+        const char *data_with_null[] = {"a", NULL};
+        TEST_REQUIRE(istrCollection.InitializeWith(2, (char **)data_with_null) == NULL);
+    }
+
+    /* Reverse with count < 2 */
+    {
+        strCollection *sc_1 = istrCollection.Create(1);
+        TEST_REQUIRE(sc_1 != NULL);
+        TEST_REQUIRE(istrCollection.Add(sc_1, "single") == 1);
+        TEST_REQUIRE(istrCollection.Reverse(sc_1) == 1);
+        istrCollection.Finalize(sc_1);
+    }
+
+    /* CompareEqualScalar with existing mask */
+    {
+        Mask *ex_m = iMask.Create(istrCollection.Size(sc));
+        TEST_REQUIRE(ex_m != NULL);
+        Mask *res_m = istrCollection.CompareEqualScalar(sc, "banana", ex_m);
+        TEST_REQUIRE(res_m != NULL);
+        iMask.Finalize(res_m);
+    }
+
+    /* FindNext */
+    TEST_REQUIRE(istrCollection.FindNext(sc, "banana", 0) > 0);
+    TEST_REQUIRE(istrCollection.FindNext(sc, "nonexistent", 0) == 0);
+    TEST_REQUIRE(istrCollection.FindNext(NULL, "banana", 0) == 0);
+
+    /* GetElement and InsertAt with out-of-bounds index */
+    TEST_REQUIRE(istrCollection.GetElement(sc, 99999) == NULL);
+    TEST_REQUIRE(istrCollection.InsertAt(sc, 99999, "bad") < 0);
+
+    /* Contains with NULL and missing */
+    TEST_REQUIRE(istrCollection.Contains(sc, NULL) == 0);
+    TEST_REQUIRE(istrCollection.Contains(sc, "nonexistent") == 0);
+
+    /* SetCapacity reduction to 1 and 0 */
+    {
+        strCollection *cap_sc = istrCollection.Create(5);
+        TEST_REQUIRE(cap_sc != NULL);
+        TEST_REQUIRE(istrCollection.Add(cap_sc, "a") == 1);
+        TEST_REQUIRE(istrCollection.Add(cap_sc, "b") == 1);
+        TEST_REQUIRE(istrCollection.SetCapacity(cap_sc, 1) == 1);
+        TEST_REQUIRE(istrCollection.SetCapacity(cap_sc, 0) == 1);
+        istrCollection.Finalize(cap_sc);
+    }
+
+    /* Equal with different StringCompareContext */
+    {
+        sc2 = istrCollection.Copy(sc);
+        TEST_REQUIRE(sc2 != NULL);
+        sc->StringCompareContext = (void *)1;
+        sc2->StringCompareContext = (void *)2;
+        TEST_REQUIRE(istrCollection.Equal(sc, sc2) == 0);
+        sc->StringCompareContext = (void *)1;
+        sc2->StringCompareContext = NULL;
+        TEST_REQUIRE(istrCollection.Equal(sc, sc2) == 1);
+        sc->StringCompareContext = NULL;
+        sc2->StringCompareContext = (void *)1;
+        TEST_REQUIRE(istrCollection.Equal(sc, sc2) == 1);
+        sc->StringCompareContext = NULL;
+        sc2->StringCompareContext = NULL;
+        istrCollection.Finalize(sc2);
+        sc2 = NULL;
+    }
+
+    /* Iterator boundary checks: previous at start and next at end */
+    {
+        it = istrCollection.NewIterator(sc);
+        TEST_REQUIRE(it != NULL);
+        TEST_REQUIRE(it->GetFirst(it) != NULL);
+        TEST_REQUIRE(it->GetPrevious(it) == NULL);
+        while (it->GetNext(it) != NULL) {}
+        TEST_REQUIRE(it->GetNext(it) == NULL);
+        istrCollection.DeleteIterator(it);
+        it = NULL;
+    }
+
+    /* Heap Init */
+    {
+        strCollection *heap_sc = malloc(sizeof(strCollection));
+        TEST_REQUIRE(istrCollection.Init(heap_sc, 5) == heap_sc);
+        TEST_REQUIRE(istrCollection.Add(heap_sc, "item") == 1);
+        TEST_REQUIRE(istrCollection.Finalize(heap_sc) == 1);
+    }
+
+    /* Wide collection extra operations */
+    {
+        wsc = iWstrCollection.Create(2);
+        TEST_REQUIRE(wsc != NULL);
+        TEST_REQUIRE(iWstrCollection.Add(wsc, L"w1") == 1);
+        TEST_REQUIRE(iWstrCollection.Add(wsc, L"w2") == 1);
+        TEST_REQUIRE(iWstrCollection.Reverse(wsc) == 1);
+        TEST_REQUIRE(iWstrCollection.FindNext(wsc, L"w1", 0) > 0);
+        TEST_REQUIRE(iWstrCollection.Contains(wsc, L"w1") == 1);
+        TEST_REQUIRE(iWstrCollection.Contains(wsc, NULL) == 0);
+        TEST_REQUIRE(iWstrCollection.Contains(wsc, L"nonexistent") == 0);
+        TEST_REQUIRE(iWstrCollection.GetElement(wsc, 9999) == NULL);
+        iWstrCollection.Finalize(wsc);
+        wsc = NULL;
+    }
+
+    /* 13. GetRange with start > end */
+    range = istrCollection.GetRange(sc, 3, 1);
+    TEST_REQUIRE(range != NULL);
+    TEST_REQUIRE(istrCollection.Size(range) == 0);
+    istrCollection.Finalize(range);
+    range = NULL;
+
+    /* 14. Additional coverage cases */
+    /* Iterator GetPosition & fresh iterator next/previous */
+    {
+        Iterator *it_pos = istrCollection.NewIterator(sc);
+        TEST_REQUIRE(it_pos != NULL);
+        TEST_REQUIRE(it_pos->GetPosition(NULL) == SIZE_MAX);
+        /* fresh iterator has index SIZE_MAX: GetNext sets it to 0, GetPrevious sets it to count-1 */
+        TEST_REQUIRE(it_pos->GetNext(it_pos) != NULL);
+        TEST_REQUIRE(it_pos->GetPosition(it_pos) == 0);
+        istrCollection.DeleteIterator(it_pos);
+
+        it_pos = istrCollection.NewIterator(sc);
+        TEST_REQUIRE(it_pos != NULL);
+        TEST_REQUIRE(it_pos->GetPrevious(it_pos) != NULL);
+        TEST_REQUIRE(it_pos->GetPosition(it_pos) == istrCollection.Size(sc) - 1);
+        /* Stale iterator GetPosition */
+        istrCollection.Add(sc, "change_for_stale");
+        TEST_REQUIRE(it_pos->GetPosition(it_pos) == SIZE_MAX);
+        istrCollection.DeleteIterator(it_pos);
+    }
+
+    /* SizeofIterator */
+    TEST_REQUIRE(istrCollection.SizeofIterator(sc) > 0);
+    TEST_REQUIRE(iWstrCollection.SizeofIterator(NULL) > 0);
+
+    /* InitIterator bad args */
+    TEST_REQUIRE(istrCollection.InitIterator(sc, NULL) < 0);
+
+    /* PopBack and PopFront with small buffer (buflen < string len) */
+    {
+        strCollection *pop_sc = istrCollection.Create(2);
+        char sbuf[2];
+        TEST_REQUIRE(pop_sc != NULL);
+        TEST_REQUIRE(istrCollection.Add(pop_sc, "longstring1") == 1);
+        TEST_REQUIRE(istrCollection.Add(pop_sc, "longstring2") == 1);
+        TEST_REQUIRE(istrCollection.PopBack(pop_sc, sbuf, sizeof(sbuf)) > 0);
+        TEST_REQUIRE(sbuf[1] == '\0');
+        TEST_REQUIRE(istrCollection.PopFront(pop_sc, sbuf, sizeof(sbuf)) > 0);
+        TEST_REQUIRE(sbuf[1] == '\0');
+        istrCollection.Finalize(pop_sc);
+    }
+
+    /* Mismatch branches */
+    {
+        strCollection *m1 = istrCollection.Create(2);
+        strCollection *m2 = istrCollection.Create(2);
+        size_t mm_pos = 0;
+        TEST_REQUIRE(m1 != NULL && m2 != NULL);
+        TEST_REQUIRE(istrCollection.Add(m1, "same") == 1);
+        TEST_REQUIRE(istrCollection.Add(m1, "diff1") == 1);
+        TEST_REQUIRE(istrCollection.Add(m2, "same") == 1);
+        TEST_REQUIRE(istrCollection.Add(m2, "diff2") == 1);
+        TEST_REQUIRE(istrCollection.Mismatch(m1, m2, &mm_pos) == 1);
+        TEST_REQUIRE(mm_pos == 1);
+
+        /* m1 larger count than m2 */
+        TEST_REQUIRE(istrCollection.Add(m1, "extra") == 1);
+        TEST_REQUIRE(istrCollection.Mismatch(m1, m2, &mm_pos) == 1);
+
+        istrCollection.Finalize(m2);
+        istrCollection.Finalize(m1);
+    }
+
+    /* Append, Erase, Reverse on readonly collection and Reverse count < 2 */
+    {
+        strCollection *ro_sc = istrCollection.Create(2);
+        TEST_REQUIRE(ro_sc != NULL);
+        TEST_REQUIRE(istrCollection.Add(ro_sc, "item") == 1);
+        istrCollection.SetFlags(ro_sc, CONTAINER_READONLY);
+        TEST_REQUIRE(istrCollection.Append(ro_sc, ro_sc) < 0);
+        TEST_REQUIRE(istrCollection.Erase(ro_sc, "item") < 0);
+        TEST_REQUIRE(istrCollection.Reverse(ro_sc) < 0);
+        istrCollection.SetFlags(ro_sc, 0);
+        TEST_REQUIRE(istrCollection.Reverse(ro_sc) == 1);
+        istrCollection.Finalize(ro_sc);
+    }
+
+    /* IndexOf not found */
+    {
+        size_t not_found_idx = 0;
+        TEST_REQUIRE(istrCollection.IndexOf(sc, "nonexistent_element_xyz", &not_found_idx) == CONTAINER_ERROR_NOTFOUND);
+    }
+
+    /* WriteToFile with NULL element in collection and /dev/full */
+    {
+        strCollection *null_sc = istrCollection.Create(2);
+        TEST_REQUIRE(null_sc != NULL);
+        null_sc->count = 1;
+        null_sc->contents[0] = NULL;
+        TEST_REQUIRE(istrCollection.WriteToFile(null_sc, "test_null_elem.txt") < 0);
+        null_sc->count = 0;
+        istrCollection.Finalize(null_sc);
+
+        TEST_REQUIRE(istrCollection.WriteToFile(sc, "/dev/full") < 0);
+    }
+
+    /* Save with NULL element in collection */
+    {
+        FILE *null_f = ccl_test_tmpfile();
+        strCollection *null_sc = istrCollection.Create(2);
+        TEST_REQUIRE(null_f != NULL);
+        TEST_REQUIRE(null_sc != NULL);
+        null_sc->count = 1;
+        null_sc->contents[0] = NULL;
+        TEST_REQUIRE(istrCollection.Save(null_sc, null_f, NULL, NULL) < 0);
+        null_sc->count = 0;
+        istrCollection.Finalize(null_sc);
+        fclose(null_f);
+    }
+
+    /* InsertIn with NULL element in newData */
+    {
+        strCollection *null_elem_sc = istrCollection.Create(2);
+        TEST_REQUIRE(null_elem_sc != NULL);
+        null_elem_sc->count = 2;
+        null_elem_sc->contents[0] = strdup("ok");
+        null_elem_sc->contents[1] = NULL;
+        TEST_REQUIRE(istrCollection.InsertIn(sc, 0, null_elem_sc) < 0);
+        free(null_elem_sc->contents[0]);
+        null_elem_sc->count = 0;
+        istrCollection.Finalize(null_elem_sc);
+    }
+
+    /* ReplaceWithIterator removing last element with direction != 0 and direction == 0 */
+    {
+        strCollection *last_sc = istrCollection.Create(3);
+        TEST_REQUIRE(last_sc != NULL);
+        TEST_REQUIRE(istrCollection.Add(last_sc, "a") == 1);
+        TEST_REQUIRE(istrCollection.Add(last_sc, "b") == 1);
+        Iterator *last_it = istrCollection.NewIterator(last_sc);
+        TEST_REQUIRE(last_it != NULL);
+        TEST_REQUIRE(last_it->GetLast(last_it) != NULL);
+        TEST_REQUIRE(last_it->Replace(last_it, NULL, 1) == 1);
+        TEST_REQUIRE(last_it->GetCurrent(last_it) != NULL);
+        TEST_REQUIRE(last_it->Replace(last_it, NULL, 0) == 1);
+        istrCollection.DeleteIterator(last_it);
+        istrCollection.Finalize(last_sc);
+    }
+
+    /* Custom heap VTable for Finalize */
+    {
+        strCollection *custom_sc = istrCollection.Create(1);
+        TEST_REQUIRE(custom_sc != NULL);
+        custom_sc->VTable = malloc(sizeof(strCollectionInterface));
+        TEST_REQUIRE(custom_sc->VTable != NULL);
+        memcpy(custom_sc->VTable, &istrCollection, sizeof(strCollectionInterface));
+        istrCollection.Finalize(custom_sc);
+    }
+
+    result = 0;
+
+cleanup:
+    if (stream != NULL) fclose(stream);
+    if (it != NULL) istrCollection.DeleteIterator(it);
+    if (eq_mask != NULL) iMask.Finalize(eq_mask);
+    if (range != NULL) istrCollection.Finalize(range);
+    if (vec != NULL) iVector.Finalize(vec);
+    if (indices != NULL) iVector.Finalize(indices);
+    if (positions != NULL) iVector.Finalize(positions);
+    if (found != NULL) istrCollection.Finalize(found);
+    if (wsc_file != NULL) iWstrCollection.Finalize(wsc_file);
+    if (wsc != NULL) iWstrCollection.Finalize(wsc);
+    if (sc_file != NULL) istrCollection.Finalize(sc_file);
+    if (sc2 != NULL) istrCollection.Finalize(sc2);
+    if (sc != NULL) istrCollection.Finalize(sc);
+    return result;
+}
+
 static const TestCase tests[] = {
     {"narrow sequence and ownership", test_narrow_sequence_and_ownership},
     {"narrow results and buffers", test_narrow_results_and_buffers},
@@ -824,6 +1583,7 @@ static const TestCase tests[] = {
     {"complete narrow API surface", test_api_surface},
     {"null and error surface", test_null_and_error_surface},
     {"error branches", test_error_branches},
+    {"strcollection coverage boost", test_strcollection_coverage_boost},
 };
 
 const TestSuite *ccl_get_test_suite(void)

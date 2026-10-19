@@ -533,6 +533,124 @@ cleanup:
     return result;
 }
 
+static int test_additional_listgen_coverage(void)
+{
+    intList *il = NULL;
+    intList *heap_l = NULL;
+    intList *empty_l = NULL;
+    intList *sub = NULL;
+    intList *custom_l = NULL;
+    intList *default_l = NULL;
+    intList stack_list;
+    FailureAllocatorState state = { 0, 0, 0 };
+    ContainerAllocator custom_alloc = { failure_malloc, free, realloc, failure_calloc };
+    int result = -1;
+    int pat, i;
+
+    /* PushFront, InsertAt, Erase matching to empty */
+    il = iintList.Create();
+    TEST_REQUIRE(il != NULL);
+    TEST_REQUIRE(iintList.PushFront(il, 10) == 1);
+    TEST_REQUIRE(iintList.InsertAt(il, 0, 5) == 1);
+    TEST_REQUIRE(iintList.Size(il) == 2);
+    TEST_REQUIRE(iintList.Erase(il, 5) == 1);
+    TEST_REQUIRE(iintList.Erase(il, 10) == 1);
+    TEST_REQUIRE(iintList.Size(il) == 0);
+    TEST_REQUIRE(il->First == NULL && il->Last == NULL);
+
+    /* UseHeap and erase object from heap-backed list */
+    heap_l = iintList.Create();
+    TEST_REQUIRE(heap_l != NULL);
+    TEST_REQUIRE(iintList.UseHeap(heap_l, NULL) == 1);
+    TEST_REQUIRE(iintList.Add(heap_l, 42) == 1);
+    TEST_REQUIRE(iintList.Erase(heap_l, 42) == 1);
+    iintList.Finalize(heap_l);
+    heap_l = NULL;
+
+    /* InitIterator on NULL list and NULL storage, NewIterator on NULL */
+    TEST_REQUIRE(iintList.NewIterator(NULL) == NULL);
+    TEST_REQUIRE(iintList.InitIterator(NULL, NULL) > 0);
+    TEST_REQUIRE(iintList.InitIterator(il, NULL) == CONTAINER_ERROR_BADARG);
+
+    /* EraseRange edge cases */
+    TEST_REQUIRE(iintList.EraseRange(NULL, 0, 1) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iintList.Add(il, 1) == 1);
+    TEST_REQUIRE(iintList.Add(il, 2) == 1);
+    TEST_REQUIRE(iintList.EraseRange(il, 0, 0) == 0); /* start == end */
+    TEST_REQUIRE(iintList.EraseRange(il, 0, 100) == 1); /* end > l->count */
+    TEST_REQUIRE(iintList.Size(il) == 0);
+
+    /* GetRange on empty list and with start > 0 and end > count */
+    empty_l = iintList.Create();
+    TEST_REQUIRE(empty_l != NULL);
+    sub = iintList.GetRange(empty_l, 0, 0);
+    TEST_REQUIRE(sub != NULL && iintList.Size(sub) == 0);
+    iintList.Finalize(sub); sub = NULL;
+    iintList.Finalize(empty_l); empty_l = NULL;
+
+    TEST_REQUIRE(iintList.Add(il, 10) == 1);
+    TEST_REQUIRE(iintList.Add(il, 20) == 1);
+    TEST_REQUIRE(iintList.Add(il, 30) == 1);
+    sub = iintList.GetRange(il, 1, 100); /* start > 0 and end > count */
+    TEST_REQUIRE(sub != NULL && iintList.Size(sub) == 2);
+    iintList.Finalize(sub); sub = NULL;
+
+    /* InsertIn with incompatible allocators */
+    failure_allocator_state = &state;
+    custom_l = iintList.CreateWithAllocator(&custom_alloc);
+    default_l = iintList.Create();
+    TEST_REQUIRE(custom_l != NULL && default_l != NULL);
+    TEST_REQUIRE(iintList.InsertIn(custom_l, 0, default_l) == CONTAINER_ERROR_INCOMPATIBLE);
+    iintList.Finalize(custom_l); custom_l = NULL;
+    iintList.Finalize(default_l); default_l = NULL;
+    failure_allocator_state = NULL;
+
+    /* InitWithAllocator, Init, GetAllocator, NextElement */
+    TEST_REQUIRE(iintList.InitWithAllocator(NULL, NULL) == NULL);
+    TEST_REQUIRE(iintList.InitWithAllocator(&stack_list, NULL) == &stack_list);
+    TEST_REQUIRE(iintList.GetAllocator(&stack_list) != NULL);
+    TEST_REQUIRE(iintList.GetAllocator(NULL) == NULL);
+    iintList.Finalize(&stack_list);
+
+    TEST_REQUIRE(iintList.Init(&stack_list) == &stack_list);
+    TEST_REQUIRE(iintList.Add(&stack_list, 99) == 1);
+    TEST_REQUIRE(iintList.Add(&stack_list, 100) == 1);
+    {
+        intListElement *elem = iintList.FirstElement(&stack_list);
+        TEST_REQUIRE(iintList.NextElement(NULL) == NULL);
+        TEST_REQUIRE(iintList.NextElement(elem) != NULL);
+    }
+    iintList.Finalize(&stack_list);
+
+    /* Sort patterns */
+    for (pat = 0; pat < 4; ++pat) {
+        intList *sl = iintList.Create();
+        for (i = 0; i < 80; ++i) {
+            int v = 0;
+            if (pat == 0) v = 80 - i;
+            else if (pat == 1) v = i;
+            else if (pat == 2) v = (i * 37) % 80;
+            else v = (i < 40) ? (40 - i) : (80 - i);
+            iintList.Add(sl, v);
+        }
+        iintList.Sort(sl);
+        iintList.Finalize(sl);
+    }
+
+    iintList.Finalize(il); il = NULL;
+    result = 0;
+
+cleanup:
+    if (sub != NULL) iintList.Finalize(sub);
+    if (empty_l != NULL) iintList.Finalize(empty_l);
+    if (heap_l != NULL) iintList.Finalize(heap_l);
+    if (custom_l != NULL) iintList.Finalize(custom_l);
+    if (default_l != NULL) iintList.Finalize(default_l);
+    if (il != NULL) iintList.Finalize(il);
+    failure_allocator_state = NULL;
+    return result;
+}
+
 static const TestCase tests[] = {
     {"int scalar lifecycle", test_int_scalar_lifecycle},
     {"int sort compare and iterator", test_int_sort_compare_and_iterator},
@@ -540,7 +658,8 @@ static const TestCase tests[] = {
     {"scalar specializations", test_scalar_specializations},
     {"typed load width boundary", test_typed_load_rejects_wrong_width},
     {"delegated surface and masks", test_delegated_surface_and_masks},
-    {"review findings listgen fixes", test_review_findings_listgen}
+    {"review findings listgen fixes", test_review_findings_listgen},
+    {"additional listgen coverage", test_additional_listgen_coverage}
 };
 
 static const TestSuite suite = {
@@ -553,3 +672,4 @@ const TestSuite *ccl_get_test_suite(void)
 {
     return &suite;
 }
+

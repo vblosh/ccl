@@ -849,6 +849,398 @@ cleanup:
     return -1;
 }
 
+static int bad_dlist_save_fn(const void *element, void *arg, FILE *stream)
+{
+    (void)element;
+    (void)arg;
+    (void)stream;
+    return 0;
+}
+
+static int test_dlist_coverage_edges(void)
+{
+    Dlist *list = NULL;
+    Dlist *l1 = NULL;
+    Dlist *l2 = NULL;
+    Dlist *char_l = NULL;
+    Dlist *empty = NULL;
+    Iterator *it = NULL;
+    FILE *stream = NULL;
+    FILE *ro = NULL;
+    Mask *msk = NULL;
+    int v = 42;
+    int one = 1;
+    int vals[5] = {1, 2, 3, 4, 5};
+    int rep = 99;
+    int out_val = 0;
+    unsigned apply_count = 0;
+    int i;
+    Dlist stack_l;
+
+    /* Init and Create */
+    TEST_REQUIRE(iDlist.Init(NULL, sizeof(int)) == NULL);
+    TEST_REQUIRE(iDlist.Init(&stack_l, 0) == NULL);
+    TEST_REQUIRE(iDlist.Init(&stack_l, (size_t)-1) == NULL);
+    TEST_REQUIRE(iDlist.Init(&stack_l, sizeof(int)) == &stack_l);
+    TEST_REQUIRE(iDlist.Finalize(&stack_l) == 1);
+    TEST_REQUIRE(iDlist.Create(0) == NULL);
+    TEST_REQUIRE(iDlist.Create((size_t)-1) == NULL);
+
+    /* UseHeap */
+    list = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL);
+    ContainerAllocator alloc = { count_malloc, count_free, count_realloc, count_calloc };
+    TEST_REQUIRE(iDlist.UseHeap(list, &alloc) == 1);
+    TEST_REQUIRE(iDlist.UseHeap(list, &alloc) == 0);
+    iDlist.Finalize(list);
+    list = NULL;
+
+    /* Splice error branches */
+    l1 = iDlist.Create(sizeof(int));
+    l2 = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(l1 != NULL && l2 != NULL);
+    TEST_REQUIRE(iDlist.Add(l2, &v) == 1);
+    DlistElement fake_elem;
+    memset(&fake_elem, 0, sizeof(fake_elem));
+    TEST_REQUIRE(iDlist.Splice(l1, &fake_elem, l2, 0) == NULL);
+    TEST_REQUIRE(iDlist.Add(l1, &v) == 1);
+    TEST_REQUIRE(iDlist.Splice(l1, NULL, l2, 0) == NULL);
+    TEST_REQUIRE(iDlist.Splice(l1, &fake_elem, l2, 0) == NULL);
+    DlistElement *pos = l1->First;
+    TEST_REQUIRE(iDlist.Splice(l1, pos, l2, 2) == NULL);
+    iDlist.SetFlags(l1, CONTAINER_READONLY);
+    TEST_REQUIRE(iDlist.Splice(l1, pos, l2, 0) == NULL);
+    iDlist.SetFlags(l1, 0);
+    iDlist.SetFlags(l2, CONTAINER_READONLY);
+    TEST_REQUIRE(iDlist.Splice(l1, pos, l2, 0) == NULL);
+    iDlist.SetFlags(l2, 0);
+    iDlist.Finalize(l1);
+    l1 = NULL;
+    iDlist.Finalize(l2);
+    l2 = NULL;
+
+    /* InsertIn branches */
+    l1 = iDlist.Create(sizeof(int));
+    l2 = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(l1 != NULL && l2 != NULL);
+    TEST_REQUIRE(iDlist.Add(l1, &v) == 1);
+    TEST_REQUIRE(iDlist.InsertIn(l1, 0, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iDlist.InsertIn(l1, 0, l1) == CONTAINER_ERROR_BADARG);
+    iDlist.SetFlags(l1, CONTAINER_READONLY);
+    TEST_REQUIRE(iDlist.InsertIn(l1, 0, l2) == CONTAINER_ERROR_READONLY);
+    iDlist.SetFlags(l1, 0);
+    TEST_REQUIRE(iDlist.InsertIn(l1, 999, l2) == CONTAINER_ERROR_INDEX);
+    char_l = iDlist.Create(sizeof(char));
+    TEST_REQUIRE(char_l != NULL);
+    TEST_REQUIRE(iDlist.InsertIn(l1, 0, char_l) == CONTAINER_ERROR_INCOMPATIBLE);
+    iDlist.Finalize(char_l);
+    char_l = NULL;
+    TEST_REQUIRE(iDlist.InsertIn(l1, 0, l2) == 1);
+    iDlist.Finalize(l1);
+    l1 = NULL;
+    iDlist.Finalize(l2);
+    l2 = NULL;
+
+    /* Iterators */
+    list = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL);
+    for (i = 0; i < 5; ++i)
+        TEST_REQUIRE(iDlist.Add(list, &vals[i]) == 1);
+    it = iDlist.NewIterator(list);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->Replace(NULL, &v, 0) == 0);
+    TEST_REQUIRE(it->GetCurrent(NULL) == NULL);
+    TEST_REQUIRE(it->GetNext(NULL) == NULL);
+    TEST_REQUIRE(it->GetPrevious(NULL) == NULL);
+    TEST_REQUIRE(it->GetFirst(NULL) == NULL);
+    TEST_REQUIRE(it->Seek(NULL, 0) == NULL);
+    TEST_REQUIRE(it->GetPosition(NULL) == (size_t)-1);
+    TEST_REQUIRE(it->Seek(it, 0) != NULL);
+    TEST_REQUIRE(it->Seek(it, 3) != NULL);
+    TEST_REQUIRE(it->Replace(it, &rep, 0) == 1);
+    TEST_REQUIRE(it->Replace(it, NULL, 1) == 1);
+    TEST_REQUIRE(it->Replace(it, NULL, 0) == 1);
+
+    /* Iterator timestamp changed */
+    TEST_REQUIRE(iDlist.Add(list, &v) == 1);
+    TEST_REQUIRE(it->Replace(it, &rep, 0) == CONTAINER_ERROR_OBJECT_CHANGED);
+    TEST_REQUIRE(it->GetFirst(it) == NULL);
+    TEST_REQUIRE(it->GetNext(it) == NULL);
+    TEST_REQUIRE(it->GetPrevious(it) == NULL);
+    TEST_REQUIRE(it->GetCurrent(it) == NULL);
+    TEST_REQUIRE(it->GetLast(it) == NULL);
+    TEST_REQUIRE(it->Seek(it, 0) == NULL);
+    iDlist.DeleteIterator(it);
+    it = NULL;
+
+    /* Now test iterator on readonly list */
+    iDlist.SetFlags(list, CONTAINER_READONLY);
+    it = iDlist.NewIterator(list);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->Replace(it, &rep, 0) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    TEST_REQUIRE(it->GetNext(it) != NULL);
+    TEST_REQUIRE(it->GetPrevious(it) != NULL);
+    TEST_REQUIRE(it->GetCurrent(it) != NULL);
+    TEST_REQUIRE(it->GetLast(it) != NULL);
+    TEST_REQUIRE(it->Seek(it, 0) != NULL);
+    iDlist.DeleteIterator(it);
+    it = NULL;
+    iDlist.SetFlags(list, 0);
+
+    empty = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(empty != NULL);
+    TEST_REQUIRE(iDlist.Add(empty, &v) == 1);
+    it = iDlist.NewIterator(empty);
+    TEST_REQUIRE(it != NULL && it->GetFirst(it) != NULL);
+    TEST_REQUIRE(it->Replace(it, NULL, 0) == 1);
+    TEST_REQUIRE(iDlist.Size(empty) == 0);
+    TEST_REQUIRE(it->GetLast(it) == NULL);
+    TEST_REQUIRE(it->Seek(it, 0) == NULL);
+    iDlist.DeleteIterator(it);
+    it = NULL;
+    iDlist.Finalize(empty);
+    empty = NULL;
+    iDlist.Finalize(list);
+    list = NULL;
+
+    /* Save and Load corruption */
+    list = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL && iDlist.Add(list, &v) == 1);
+    TEST_REQUIRE(iDlist.Save(NULL, stdout, NULL, NULL) < 0);
+    TEST_REQUIRE(iDlist.Save(list, NULL, NULL, NULL) < 0);
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL);
+    TEST_REQUIRE(iDlist.Save(list, stream, bad_dlist_save_fn, NULL) == EOF);
+    ro = fopen("/dev/null", "r");
+    if (ro != NULL) {
+        TEST_REQUIRE(iDlist.Save(list, ro, NULL, NULL) == EOF);
+        fclose(ro);
+        ro = NULL;
+    }
+    rewind(stream);
+    TEST_REQUIRE(iDlist.Load(stream, NULL, NULL) == NULL);
+    rewind(stream);
+    TEST_REQUIRE(fwrite("bad_guid_bytes_!", 1, 16, stream) == 16);
+    rewind(stream);
+    TEST_REQUIRE(iDlist.Load(stream, NULL, NULL) == NULL);
+    rewind(stream);
+    TEST_REQUIRE(iDlist.Save(list, stream, NULL, NULL) == 1);
+    rewind(stream);
+    char guid_buf[16];
+    TEST_REQUIRE(fread(guid_buf, 1, 16, stream) == 16);
+    fclose(stream);
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL && fwrite(guid_buf, 1, 16, stream) == 16);
+    rewind(stream);
+    TEST_REQUIRE(iDlist.Load(stream, NULL, NULL) == NULL);
+
+    uint32_t bad_version = 999;
+    uint32_t flags = 0;
+    uint64_t bad_elem_size = 0;
+    uint64_t count = 1;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&bad_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&bad_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&count, 1, 8, stream) == 8);
+    rewind(stream);
+    TEST_REQUIRE(iDlist.Load(stream, NULL, NULL) == NULL);
+
+    uint32_t good_version = 1;
+    uint64_t huge_elem_size = (uint64_t)-1;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&good_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&huge_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&count, 1, 8, stream) == 8);
+    rewind(stream);
+    TEST_REQUIRE(iDlist.Load(stream, NULL, NULL) == NULL);
+
+    uint64_t norm_elem_size = 64;
+    uint64_t huge_count = (uint64_t)-1;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&good_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&norm_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&huge_count, 1, 8, stream) == 8);
+    rewind(stream);
+    TEST_REQUIRE(iDlist.Load(stream, NULL, NULL) == NULL);
+
+    uint64_t valid_elem_size = sizeof(int);
+    uint64_t expected_count = 5;
+    rewind(stream);
+    TEST_REQUIRE(fwrite(guid_buf, 1, 16, stream) == 16);
+    TEST_REQUIRE(fwrite(&good_version, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&flags, 1, 4, stream) == 4);
+    TEST_REQUIRE(fwrite(&valid_elem_size, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&expected_count, 1, 8, stream) == 8);
+    TEST_REQUIRE(fwrite(&v, 1, sizeof(int), stream) == sizeof(int));
+    rewind(stream);
+    TEST_REQUIRE(iDlist.Load(stream, NULL, NULL) == NULL);
+    fclose(stream);
+    stream = NULL;
+    iDlist.Finalize(list);
+    list = NULL;
+
+    /* Observers */
+    list = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL);
+    observer_events = 0;
+    TEST_REQUIRE(iObserver.Subscribe(list, observe_all,
+                                     CCL_CLEAR | CCL_POP | CCL_APPEND |
+                                     CCL_ERASE_AT | CCL_COPY | CCL_PUSH | CCL_ADD) == 1);
+    TEST_REQUIRE(iDlist.Add(list, &one) == 1);
+    int two = 2;
+    TEST_REQUIRE(iDlist.PushFront(list, &two) == 1);
+    Dlist *c = iDlist.Copy(list);
+    TEST_REQUIRE(c != NULL);
+    iDlist.Finalize(c);
+    TEST_REQUIRE(iDlist.SetDestructor(list, count_destructor) == NULL);
+    destructor_calls = 0;
+    TEST_REQUIRE(iDlist.PopFront(list, NULL) == 1 && destructor_calls == 1);
+    TEST_REQUIRE(iDlist.PopBack(list, NULL) == 1 && destructor_calls == 2);
+    Dlist *app_src = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(app_src != NULL);
+    (void)iDlist.SetDestructor(app_src, count_destructor);
+    TEST_REQUIRE(iDlist.Add(app_src, &one) == 1);
+    TEST_REQUIRE(iDlist.Append(list, app_src) == 1);
+    TEST_REQUIRE(iDlist.RemoveRange(list, 0, 1) == 1);
+    TEST_REQUIRE(iDlist.Clear(list) == 1);
+    iObserver.Unsubscribe(list, observe_all);
+    iDlist.Finalize(list);
+    list = NULL;
+
+    /* Readonly operations */
+    list = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL && iDlist.Add(list, &one) == 1);
+    iDlist.SetFlags(list, CONTAINER_READONLY);
+    TEST_REQUIRE(iDlist.PopFront(list, &out_val) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iDlist.PopBack(list, &out_val) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iDlist.PushFront(list, &one) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iDlist.PushBack(list, &one) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iDlist.InsertAt(list, 0, &one) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iDlist.Add(list, &one) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iDlist.AddRange(list, 1, &one) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iDlist.ReplaceAt(list, 0, &one) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iDlist.Sort(list) == CONTAINER_ERROR_READONLY);
+    msk = iMask.Create(1);
+    TEST_REQUIRE(msk != NULL);
+    (void)iMask.SetElement(msk, 0, 1);
+    TEST_REQUIRE(iDlist.Select(list, msk) == CONTAINER_ERROR_READONLY);
+    iMask.Finalize(msk);
+    msk = NULL;
+    TEST_REQUIRE(iDlist.SplitAfter(list, list->First) == NULL);
+    TEST_REQUIRE(iDlist.SetElementData(list, list->First, &one) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iDlist.RotateRight(list, 1) == CONTAINER_ERROR_READONLY);
+    TEST_REQUIRE(iDlist.Front(list) == NULL);
+    TEST_REQUIRE(iDlist.Back(list) == NULL);
+    apply_count = 0;
+    TEST_REQUIRE(iDlist.Apply(list, stop_after_first, &apply_count) == 1);
+    TEST_REQUIRE(apply_count == 1);
+    iDlist.SetFlags(list, 0);
+    iDlist.Finalize(list);
+    list = NULL;
+
+    /* Edge cases */
+    empty = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(empty != NULL);
+    TEST_REQUIRE(iDlist.Front(empty) == NULL);
+    TEST_REQUIRE(iDlist.Back(empty) == NULL);
+    TEST_REQUIRE(iDlist.PushFront(empty, &one) == 1 && empty->First == empty->Last);
+    iDlist.Clear(empty);
+    TEST_REQUIRE(iDlist.PushBack(empty, &one) == 1 && empty->First == empty->Last);
+    TEST_REQUIRE(iDlist.PushFront(empty, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iDlist.PushBack(empty, NULL) == CONTAINER_ERROR_BADARG);
+    TEST_REQUIRE(iDlist.RotateRight(empty, 0) == 0);
+    TEST_REQUIRE(iDlist.RotateRight(empty, 1) == 0);
+    TEST_REQUIRE(iDlist.Sort(empty) == 1);
+    iDlist.Clear(empty);
+    TEST_REQUIRE(iDlist.Sort(empty) == 1);
+    iDlist.Finalize(empty);
+    empty = NULL;
+
+    Dlist *e1 = iDlist.Create(sizeof(int));
+    Dlist *e2 = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(e1 != NULL && e2 != NULL);
+    TEST_REQUIRE(iDlist.Equal(NULL, e1) == 0);
+    TEST_REQUIRE(iDlist.Equal(e1, NULL) == 0);
+    TEST_REQUIRE(iDlist.Equal(e1, e2) == 1);
+    char_l = iDlist.Create(sizeof(char));
+    TEST_REQUIRE(char_l != NULL);
+    TEST_REQUIRE(iDlist.Equal(e1, char_l) == 0);
+    iDlist.Finalize(char_l);
+    char_l = NULL;
+    TEST_REQUIRE(iDlist.Add(e1, &one) == 1);
+    TEST_REQUIRE(iDlist.Add(e2, &one) == 1);
+    iDlist.SetCompareFunction(e1, reverse_int_compare);
+    TEST_REQUIRE(iDlist.Equal(e1, e2) == 0);
+    iDlist.SetCompareFunction(e1, NULL);
+    int two_v = 2;
+    TEST_REQUIRE(iDlist.Add(e2, &two_v) == 1);
+    TEST_REQUIRE(iDlist.Equal(e1, e2) == 0);
+    iDlist.Finalize(e1);
+    e1 = NULL;
+    iDlist.Finalize(e2);
+    e2 = NULL;
+
+    list = iDlist.Create(sizeof(int));
+    TEST_REQUIRE(list != NULL);
+    for (i = 0; i < 5; ++i)
+        TEST_REQUIRE(iDlist.Add(list, &vals[i]) == 1);
+    TEST_REQUIRE(iDlist.EraseAt(list, 1) == 1);
+    TEST_REQUIRE(iDlist.EraseAt(list, 2) == 1);
+    TEST_REQUIRE(iDlist.EraseAt(list, 99) == CONTAINER_ERROR_INDEX);
+    TEST_REQUIRE(iDlist.RemoveRange(list, 2, 2) == 0);
+    msk = iMask.Create(5);
+    TEST_REQUIRE(msk != NULL);
+    TEST_REQUIRE(iDlist.Select(list, msk) == CONTAINER_ERROR_BADMASK);
+    TEST_REQUIRE(iDlist.SelectCopy(list, msk) == NULL);
+    iMask.Finalize(msk);
+    msk = NULL;
+    TEST_REQUIRE(iDlist.GetAllocator(list) != NULL);
+    TEST_REQUIRE(iDlist.GetAllocator(NULL) == NULL);
+    TEST_REQUIRE(iDlist.SetErrorFunction(list, NULL) != NULL);
+    TEST_REQUIRE(iDlist.Reverse(NULL) < 0);
+    size_t idx_out = 0;
+    TEST_REQUIRE(iDlist.IndexOf(NULL, &one, NULL, &idx_out) < 0);
+    TEST_REQUIRE(iDlist.Contains(NULL, &one) < 0);
+    TEST_REQUIRE(iDlist.Contains(list, NULL) < 0);
+    TEST_REQUIRE(iDlist.GetElementSize(NULL) == 0);
+    TEST_REQUIRE(iDlist.GetFlags(NULL) == 0);
+    Dlist fake_huge;
+    memset(&fake_huge, 0, sizeof(fake_huge));
+    fake_huge.ElementSize = (size_t)-1;
+    TEST_REQUIRE(iDlist.SizeofIterator(&fake_huge) == 0);
+    iDlist.Finalize(list);
+    list = NULL;
+    return 0;
+
+cleanup:
+    if (msk != NULL)
+        iMask.Finalize(msk);
+    if (ro != NULL)
+        fclose(ro);
+    if (stream != NULL)
+        fclose(stream);
+    if (it != NULL)
+        iDlist.DeleteIterator(it);
+    if (char_l != NULL)
+        iDlist.Finalize(char_l);
+    if (empty != NULL)
+        iDlist.Finalize(empty);
+    if (l1 != NULL)
+        iDlist.Finalize(l1);
+    if (l2 != NULL)
+        iDlist.Finalize(l2);
+    if (list != NULL)
+        iDlist.Finalize(list);
+    return -1;
+}
+
 static const TestCase dlist_tests[] = {
     {"lifecycle, ownership, and erase", test_lifecycle_and_erase},
     {"ranges and ownership transfers", test_ranges_and_transfers},
@@ -857,6 +1249,7 @@ static const TestCase dlist_tests[] = {
     {"API edges and error paths", test_api_edges_and_error_paths},
     {"persistence and atomic allocation failure", test_persistence_and_atomic_failure},
     {"full branch matrix", test_full_branch_matrix},
+    {"coverage edges", test_dlist_coverage_edges},
 };
 
 static const TestSuite dlist_suite = {

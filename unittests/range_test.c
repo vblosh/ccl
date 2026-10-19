@@ -160,6 +160,7 @@ struct ProtocolSource {
     int MissingFirst;
     int MissingNext;
     int DeleteResult;
+    int CorruptPosition;
 };
 
 static void *protocol_first(Iterator *iterator)
@@ -184,7 +185,10 @@ static void *protocol_next(Iterator *iterator)
 
 static size_t protocol_position(Iterator *iterator)
 {
-    return ((ProtocolIterator *)iterator)->Position;
+    ProtocolIterator *current = (ProtocolIterator *)iterator;
+    if (current->Source->CorruptPosition)
+        return (size_t)-1;
+    return current->Position;
 }
 
 static size_t protocol_size(const GenericContainer *container)
@@ -856,6 +860,368 @@ cleanup:
     return -1;
 }
 
+static int negative_transform(const void *input, void *output, void *arg)
+{
+    (void)input;
+    (void)output;
+    (void)arg;
+    return -42;
+}
+
+static int negative_fold(void *accumulator, const void *element, void *arg)
+{
+    (void)accumulator;
+    (void)element;
+    (void)arg;
+    return -42;
+}
+
+static int test_range_deep_pipeline_and_set_error(void)
+{
+    int leftValues[] = {1, 2, 3, 4, 5, 6};
+    int rightValues[] = {7, 8, 9};
+    Range *left = NULL;
+    Range *right = NULL;
+    int limit = 5;
+
+    TEST_REQUIRE(iRange.FromArray(leftValues, 6, sizeof(int), &left) == 1);
+    TEST_REQUIRE(iRange.Filter(&left, is_even, NULL) == 1);
+    TEST_REQUIRE(iRange.TakeWhile(&left, is_less_than, &limit) == 1);
+    TEST_REQUIRE(iRange.DropWhile(&left, is_less_than, &limit) == 1);
+    TEST_REQUIRE(iRange.Transform(&left, sizeof(int), square, NULL) == 1);
+    TEST_REQUIRE(iRange.Take(&left, 5) == 1);
+    TEST_REQUIRE(iRange.Drop(&left, 1) == 1);
+
+    TEST_REQUIRE(iRange.FromArray(rightValues, 3, sizeof(int), &right) == 1);
+    TEST_REQUIRE(iRange.Concat(&left, &right) == 1);
+
+    /* SetErrorFunction on the full tree exercises all cases of SetErrorRecursive */
+    custom_range_calls = 0;
+    TEST_REQUIRE(iRange.SetErrorFunction(left, custom_range_handler) != NULL);
+
+    /* AllOf returning 0 (found false) */
+    TEST_REQUIRE(iRange.AllOf(left, is_zero, NULL) == 0);
+
+    TEST_REQUIRE(iRange.Finalize(left) == 1);
+    return 0;
+
+cleanup:
+    if (right) iRange.Finalize(right);
+    if (left) iRange.Finalize(left);
+    return -1;
+}
+
+static int test_range_more_coverage(void)
+{
+    int values[] = {1, 2, 3};
+    Range *range = NULL;
+    Range *range2 = NULL;
+    RangeCursor *cursor = NULL;
+    ProtocolSource src;
+    ProtocolSource bad_src;
+    ContainerAllocator bad_alloc = range_test_allocator;
+    GenericContainer bad_seq = {NULL};
+    Vector *vec = NULL;
+    const void *elem = NULL;
+    int out = 0;
+    size_t count = 0;
+
+    /* FromGenericWithAllocator: allocator == NULL */
+    init_protocol_source(&src, 2, 2);
+    TEST_REQUIRE(iRange.FromGenericWithAllocator(&src.Container, sizeof(int), NULL, &range) == 1);
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* FromGenericWithAllocator: bad allocator */
+    bad_alloc.malloc = NULL;
+    TEST_REQUIRE(iRange.FromGenericWithAllocator(&src.Container, sizeof(int), &bad_alloc, &range) == CONTAINER_ERROR_BADARG);
+
+    /* FromGenericWithAllocator: AllocateRange NOMEMORY */
+    fail_calloc = 1;
+    TEST_REQUIRE(iRange.FromGenericWithAllocator(&src.Container, sizeof(int), &range_test_allocator, &range) == CONTAINER_ERROR_NOMEMORY);
+    fail_calloc = 0;
+
+    /* FromSequentialWithAllocator: vTable == NULL */
+    TEST_REQUIRE(iRange.FromSequentialWithAllocator((SequentialContainer *)&bad_seq, NULL, &range) == CONTAINER_ERROR_BADARG);
+
+    /* Transform NOMEMORY */
+    TEST_REQUIRE(iRange.FromArrayWithAllocator(values, 3, sizeof(int),
+                                               &range_test_allocator, &range) == 1);
+    fail_calloc = 1;
+    TEST_REQUIRE(iRange.Transform(&range, sizeof(int), square, NULL) == CONTAINER_ERROR_NOMEMORY);
+    fail_calloc = 0;
+
+    /* Take / Drop NOMEMORY */
+    fail_calloc = 1;
+    TEST_REQUIRE(iRange.Take(&range, 1) == CONTAINER_ERROR_NOMEMORY);
+    TEST_REQUIRE(iRange.Drop(&range, 1) == CONTAINER_ERROR_NOMEMORY);
+    fail_calloc = 0;
+
+    /* Concat NOMEMORY */
+    TEST_REQUIRE(iRange.FromArrayWithAllocator(values, 3, sizeof(int),
+                                               &range_test_allocator, &range2) == 1);
+    fail_calloc = 1;
+    TEST_REQUIRE(iRange.Concat(&range, &range2) == CONTAINER_ERROR_NOMEMORY);
+    fail_calloc = 0;
+    iRange.Finalize(range2);
+    range2 = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* OpenInternal NOMEMORY (cursor == NULL) */
+    TEST_REQUIRE(iRange.FromArrayWithAllocator(values, 3, sizeof(int),
+                                               &range_test_allocator, &range) == 1);
+    fail_calloc = 1;
+    TEST_REQUIRE(iRange.Open(range, &cursor) == CONTAINER_ERROR_NOMEMORY);
+    fail_calloc = 0;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* DeleteCursor childResult < 0 in Transform */
+    init_protocol_source(&src, 2, 2);
+    src.DeleteResult = CONTAINER_ERROR_WRONG_ITERATOR;
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Transform(&range, sizeof(int), square, NULL) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.DeleteCursor(cursor) == CONTAINER_ERROR_WRONG_ITERATOR);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* DeleteCursor childResult < 0 in Concat (right child error) */
+    init_protocol_source(&src, 2, 2);
+    init_protocol_source(&bad_src, 2, 2);
+    bad_src.DeleteResult = CONTAINER_ERROR_WRONG_ITERATOR;
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.FromGeneric(&bad_src.Container, sizeof(int), &range2) == 1);
+    TEST_REQUIRE(iRange.Concat(&range, &range2) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.DeleteCursor(cursor) == CONTAINER_ERROR_WRONG_ITERATOR);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* FinishCursor closeResult < 0 when result >= 0 */
+    init_protocol_source(&src, 2, 2);
+    src.DeleteResult = CONTAINER_ERROR_WRONG_ITERATOR;
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.AnyOf(range, is_even, NULL) == CONTAINER_ERROR_WRONG_ITERATOR);
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* OpenInternal error propagating through Filter, Transform, Take, ConcatLeft, ConcatRight */
+    init_protocol_source(&bad_src, 1, 1);
+    bad_src.ReturnNullIterator = 1;
+    TEST_REQUIRE(iRange.FromGeneric(&bad_src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Filter(&range, is_even, NULL) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == CONTAINER_ERROR_NOMEMORY);
+    iRange.Finalize(range);
+    range = NULL;
+
+    TEST_REQUIRE(iRange.FromGeneric(&bad_src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Transform(&range, sizeof(int), square, NULL) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == CONTAINER_ERROR_NOMEMORY);
+    iRange.Finalize(range);
+    range = NULL;
+
+    TEST_REQUIRE(iRange.FromGeneric(&bad_src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Take(&range, 2) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == CONTAINER_ERROR_NOMEMORY);
+    iRange.Finalize(range);
+    range = NULL;
+
+    TEST_REQUIRE(iRange.FromGeneric(&bad_src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.FromArray(values, 2, sizeof(int), &range2) == 1);
+    TEST_REQUIRE(iRange.Concat(&range, &range2) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == CONTAINER_ERROR_NOMEMORY);
+    iRange.Finalize(range);
+    range = NULL;
+
+    TEST_REQUIRE(iRange.FromArray(values, 2, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.FromGeneric(&bad_src.Container, sizeof(int), &range2) == 1);
+    TEST_REQUIRE(iRange.Concat(&range, &range2) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == CONTAINER_ERROR_NOMEMORY);
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* Terminals failing when Open fails */
+    TEST_REQUIRE(iRange.FromGeneric(&bad_src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.ForEach(range, collect_values, NULL) == CONTAINER_ERROR_NOMEMORY);
+    TEST_REQUIRE(iRange.Fold(range, &out, sum_fold, NULL) == CONTAINER_ERROR_NOMEMORY);
+    TEST_REQUIRE(iRange.FindIf(range, is_even, NULL, &out) == CONTAINER_ERROR_NOMEMORY);
+    TEST_REQUIRE(iRange.AnyOf(range, is_even, NULL) == CONTAINER_ERROR_NOMEMORY);
+    TEST_REQUIRE(iRange.AllOf(range, is_even, NULL) == CONTAINER_ERROR_NOMEMORY);
+    TEST_REQUIRE(iRange.CountIf(range, is_even, NULL, &count) == CONTAINER_ERROR_NOMEMORY);
+    TEST_REQUIRE(iRange.ToVector(range, &vec) == CONTAINER_ERROR_NOMEMORY && vec == NULL);
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* ToVector edge cases */
+    TEST_REQUIRE(iRange.FromArrayWithAllocator(values, 2, sizeof(int),
+                                               &range_test_allocator, &range) == 1);
+    TEST_REQUIRE(iRange.ToVector(range, NULL) == CONTAINER_ERROR_BADARG);
+    fail_calloc = 1;
+    TEST_REQUIRE(iRange.ToVector(range, &vec) == CONTAINER_ERROR_NOMEMORY);
+    fail_calloc = 0;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* ToVector failing during iteration */
+    init_protocol_source(&src, 2, 3); /* causes OBJECT_CHANGED during Next */
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.ToVector(range, &vec) == CONTAINER_ERROR_OBJECT_CHANGED && vec == NULL);
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* Terminals with negative return from callbacks */
+    TEST_REQUIRE(iRange.FromArray(values, 2, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Fold(range, &out, negative_fold, NULL) == -42);
+    TEST_REQUIRE(iRange.FindIf(range, predicate_error, NULL, &out) == CONTAINER_ERROR_BADMASK);
+    TEST_REQUIRE(iRange.AnyOf(range, predicate_error, NULL) == CONTAINER_ERROR_BADMASK);
+    TEST_REQUIRE(iRange.AllOf(range, predicate_error, NULL) == CONTAINER_ERROR_BADMASK);
+    TEST_REQUIRE(iRange.CountIf(range, predicate_error, NULL, &count) == CONTAINER_ERROR_BADMASK);
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* Next propagating underlying errors for wrappers */
+    /* Filter over failing source */
+    init_protocol_source(&src, 2, 3);
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Filter(&range, is_even, NULL) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == CONTAINER_ERROR_OBJECT_CHANGED);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* Transform over failing source and function returning < 0 */
+    init_protocol_source(&src, 2, 3);
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Transform(&range, sizeof(int), square, NULL) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == CONTAINER_ERROR_OBJECT_CHANGED);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    TEST_REQUIRE(iRange.FromArray(values, 2, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Transform(&range, sizeof(int), negative_transform, NULL) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == -42);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* Take over failing source and Take running out before count */
+    init_protocol_source(&src, 2, 3);
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Take(&range, 10) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == CONTAINER_ERROR_OBJECT_CHANGED);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    TEST_REQUIRE(iRange.FromArray(values, 2, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Take(&range, 10) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 0);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* TakeWhile over failing source and predicate returning < 0 */
+    init_protocol_source(&src, 2, 3);
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.TakeWhile(&range, is_positive, NULL) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == CONTAINER_ERROR_OBJECT_CHANGED);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    TEST_REQUIRE(iRange.FromArray(values, 2, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.TakeWhile(&range, predicate_error, NULL) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == CONTAINER_ERROR_BADMASK);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* DropWhile over failing source and predicate returning < 0 */
+    init_protocol_source(&src, 2, 3);
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.DropWhile(&range, is_positive, NULL) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == CONTAINER_ERROR_OBJECT_CHANGED);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    TEST_REQUIRE(iRange.FromArray(values, 2, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.DropWhile(&range, predicate_error, NULL) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == CONTAINER_ERROR_BADMASK);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* NextGeneric: currentSize != Expected at normal end of iteration */
+    init_protocol_source(&src, 2, 2);
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    src.ReportedSize = 5; /* mutate reported size before end */
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == CONTAINER_ERROR_OBJECT_CHANGED);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    /* NextGeneric: CorruptPosition returning -1 at end */
+    init_protocol_source(&src, 2, 2);
+    src.CorruptPosition = 1;
+    TEST_REQUIRE(iRange.FromGeneric(&src.Container, sizeof(int), &range) == 1);
+    TEST_REQUIRE(iRange.Open(range, &cursor) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == 1);
+    TEST_REQUIRE(iRange.Next(cursor, &elem) == CONTAINER_ERROR_OBJECT_CHANGED);
+    iRange.DeleteCursor(cursor);
+    cursor = NULL;
+    iRange.Finalize(range);
+    range = NULL;
+
+    return 0;
+
+cleanup:
+    fail_malloc = 0;
+    fail_calloc = 0;
+    if (cursor) iRange.DeleteCursor(cursor);
+    if (vec) iVector.Finalize(vec);
+    if (range2) iRange.Finalize(range2);
+    if (range) iRange.Finalize(range);
+    return -1;
+}
+
 static const TestCase tests[] = {
     {"lazy pipeline and reuse", test_lazy_pipeline_and_reuse},
     {"while, concat, and terminals", test_while_concat_and_terminals},
@@ -866,6 +1232,8 @@ static const TestCase tests[] = {
     {"allocator failures and empty range", test_allocator_failures_and_empty_range},
     {"bad arguments", test_bad_arguments},
     {"edge cases", test_edge_cases},
+    {"deep pipeline and set error", test_range_deep_pipeline_and_set_error},
+    {"more coverage", test_range_more_coverage},
 };
 
 const TestSuite *ccl_get_test_suite(void)

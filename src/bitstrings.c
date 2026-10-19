@@ -1151,7 +1151,7 @@ static BitString *Load(FILE *stream, ReadFunction read_fn, void *arg)
     return result;
 }
 
-static ErrorFunction *SetErrorFunction(BitString *b, ErrorFunction fn)
+static ErrorFunction SetErrorFunction(BitString *b, ErrorFunction fn)
 {
     (void)b;
     (void)fn;

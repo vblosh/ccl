@@ -450,6 +450,144 @@ cleanup:
     return result;
 }
 
+static int test_additional_generic_coverage(void)
+{
+    List *list = NULL;
+    Dlist *dlist = NULL;
+    Vector *vector = NULL;
+    strCollection *strings = NULL;
+    WstrCollection *wstrings = NULL;
+    Iterator *it = NULL;
+    Iterator *wit = NULL;
+    FILE *stream = NULL;
+    unsigned char iter_buf1[512];
+    unsigned char iter_buf2[512];
+    unsigned char fake_iter[128];
+    int val = 123;
+    wchar_t *wstr = L"hello";
+    char *cstr = "hello";
+    int result = -1;
+
+    list = iList.Create(sizeof(int));
+    dlist = iDlist.Create(sizeof(int));
+    vector = iVector.Create(sizeof(int), 4);
+    strings = istrCollection.Create(4);
+    wstrings = iWstrCollection.Create(4);
+    TEST_REQUIRE(list && dlist && vector && strings && wstrings);
+
+    /* Populate a bit */
+    TEST_REQUIRE(iList.Add(list, &val) == 1);
+    TEST_REQUIRE(iDlist.Add(dlist, &val) == 1);
+    TEST_REQUIRE(iVector.Add(vector, &val) == 1);
+    TEST_REQUIRE(istrCollection.Add(strings, cstr) == 1);
+    TEST_REQUIRE(iWstrCollection.Add(wstrings, wstr) == 1);
+
+    /* 1. Size */
+    TEST_REQUIRE(iGeneric.Size((const GenericContainer *)dlist) == 1);
+    TEST_REQUIRE(iGeneric.Size((const GenericContainer *)vector) == 1);
+    TEST_REQUIRE(iGeneric.Size((const GenericContainer *)strings) == 1);
+    TEST_REQUIRE(iGeneric.Size((const GenericContainer *)wstrings) == 1);
+
+    /* 2. GetFlags */
+    TEST_REQUIRE(iGeneric.GetFlags((const GenericContainer *)vector) == 0);
+    TEST_REQUIRE(iGeneric.GetFlags((const GenericContainer *)strings) == 0);
+    TEST_REQUIRE(iGeneric.GetFlags((const GenericContainer *)wstrings) == 0);
+
+    /* 3. SetFlags */
+    TEST_REQUIRE(iGeneric.SetFlags((GenericContainer *)vector, 0) == 0);
+    TEST_REQUIRE(iGeneric.SetFlags((GenericContainer *)strings, 0) == 0);
+    TEST_REQUIRE(iGeneric.SetFlags((GenericContainer *)wstrings, 0) == 0);
+
+    /* 4. Erase on WstrCollection */
+    TEST_REQUIRE(iGeneric.Erase((GenericContainer *)wstrings, wstr) == 1);
+    TEST_REQUIRE(iGeneric.Size((const GenericContainer *)wstrings) == 0);
+    TEST_REQUIRE(iWstrCollection.Add(wstrings, wstr) == 1);
+
+    /* 5. SetErrorFunction */
+    TEST_REQUIRE(iGeneric.SetErrorFunction((GenericContainer *)dlist, capture_error) != NULL);
+    TEST_REQUIRE(iGeneric.SetErrorFunction((GenericContainer *)vector, capture_error) != NULL);
+    TEST_REQUIRE(iGeneric.SetErrorFunction((GenericContainer *)strings, capture_error) != NULL);
+    TEST_REQUIRE(iGeneric.SetErrorFunction((GenericContainer *)wstrings, capture_error) != NULL);
+
+    /* 6. NewIterator for Vector, WstrCollection */
+    it = iGeneric.NewIterator((GenericContainer *)vector);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(iGeneric.DeleteIterator(it) == 1);
+    it = NULL;
+
+    wit = iGeneric.NewIterator((GenericContainer *)wstrings);
+    TEST_REQUIRE(wit != NULL);
+    TEST_REQUIRE(iGeneric.DeleteIterator(wit) == 1);
+    wit = NULL;
+
+    /* 7. InitIterator for Dlist, strCollection, WstrCollection */
+    TEST_REQUIRE(iGeneric.InitIterator((GenericContainer *)dlist, iter_buf1) == 1);
+    TEST_REQUIRE(iGeneric.DeleteIterator((Iterator *)iter_buf1) == 1);
+
+    /* Test RememberIterator existing entry update */
+    TEST_REQUIRE(iGeneric.InitIterator((GenericContainer *)strings, iter_buf1) == 1);
+    TEST_REQUIRE(iGeneric.InitIterator((GenericContainer *)strings, iter_buf1) == 1);
+
+    /* Also create a second iterator so cursor advances in ForgetIterator */
+    TEST_REQUIRE(iGeneric.InitIterator((GenericContainer *)wstrings, iter_buf2) == 1);
+    TEST_REQUIRE(iGeneric.DeleteIterator((Iterator *)iter_buf1) == 1);
+    TEST_REQUIRE(iGeneric.DeleteIterator((Iterator *)iter_buf2) == 1);
+
+    /* 8. DeleteKnownIterator with STRINGLIST_MAGIC_NUMBER */
+    {
+        static GenericContainerInterface dummy_iface;
+        GenericContainer dummy_owner;
+        struct {
+            Iterator it;
+            long long magic;
+            GenericContainer *owner;
+        } custom_slist_it;
+        memset(&dummy_iface, 0, sizeof(dummy_iface));
+        dummy_iface.DeleteIterator = spy_delete_iterator;
+        dummy_owner.vTable = &dummy_iface;
+        memset(&custom_slist_it, 0, sizeof(custom_slist_it));
+        custom_slist_it.magic = STRINGLIST_MAGIC_NUMBER;
+        custom_slist_it.owner = &dummy_owner;
+        TEST_REQUIRE(iGeneric.DeleteIterator((Iterator *)&custom_slist_it) == 1);
+
+        /* When owner == NULL, returns WRONG_ITERATOR */
+        custom_slist_it.owner = NULL;
+        TEST_REQUIRE(iGeneric.DeleteIterator((Iterator *)&custom_slist_it) == CONTAINER_ERROR_WRONG_ITERATOR);
+    }
+
+    /* DeleteKnownIterator with unknown magic */
+    memset(fake_iter, 0, sizeof(fake_iter));
+    TEST_REQUIRE(iGeneric.DeleteIterator((Iterator *)fake_iter) == CONTAINER_ERROR_WRONG_ITERATOR);
+
+    /* 9. SizeofIterator for List, strCollection, WstrCollection */
+    TEST_REQUIRE(iGeneric.SizeofIterator((const GenericContainer *)list) > 0);
+    TEST_REQUIRE(iGeneric.SizeofIterator((const GenericContainer *)strings) > 0);
+    TEST_REQUIRE(iGeneric.SizeofIterator((const GenericContainer *)wstrings) > 0);
+
+    /* 10. Save for WstrCollection */
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL);
+    TEST_REQUIRE(iGeneric.Save((const GenericContainer *)wstrings, stream, NULL, NULL) == 1);
+    fclose(stream);
+    stream = NULL;
+
+    iList.Finalize(list); list = NULL;
+    iDlist.Finalize(dlist); dlist = NULL;
+    iVector.Finalize(vector); vector = NULL;
+    istrCollection.Finalize(strings); strings = NULL;
+    iWstrCollection.Finalize(wstrings); wstrings = NULL;
+    result = 0;
+
+cleanup:
+    if (stream) fclose(stream);
+    if (wstrings) iWstrCollection.Finalize(wstrings);
+    if (strings) istrCollection.Finalize(strings);
+    if (vector) iVector.Finalize(vector);
+    if (dlist) iDlist.Finalize(dlist);
+    if (list) iList.Finalize(list);
+    return result;
+}
+
 static const TestCase tests[] = {
     {"list dispatch", test_list_dispatch},
     {"other concrete dispatch", test_other_concrete_dispatch},
@@ -458,6 +596,7 @@ static const TestCase tests[] = {
     {"string dispatch", test_string_dispatch},
     {"null arguments", test_null_arguments},
     {"review findings generic fixes", test_review_findings_generic},
+    {"additional generic coverage", test_additional_generic_coverage},
 };
 
 const TestSuite *ccl_get_test_suite(void)
@@ -465,3 +604,4 @@ const TestSuite *ccl_get_test_suite(void)
     static const TestSuite suite = {"generic", tests, sizeof(tests) / sizeof(tests[0])};
     return &suite;
 }
+

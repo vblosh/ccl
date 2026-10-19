@@ -612,6 +612,292 @@ cleanup:
     return -1;
 }
 
+static int test_apply_fn(const char *key, const void *val, void *arg)
+{
+    (void)key;
+    (void)val;
+    (void)arg;
+    return 1;
+}
+
+static size_t two_bucket_hash(const char *key)
+{
+    if (key == NULL || key[0] == '\0')
+        return 0;
+    return (key[0] == 'a') ? 0 : 1;
+}
+
+static int test_dictionary_coverage_boost(void)
+{
+    Dictionary *d1 = NULL;
+    Dictionary *d2 = NULL;
+    Dictionary *set = NULL;
+    Dictionary *ro_dict = NULL;
+    Dictionary *obs_dict = NULL;
+    Dictionary *empty_dict = NULL;
+    Dictionary *coll_dict = NULL;
+    Iterator *it = NULL;
+    Iterator *coll_it = NULL;
+    FILE *stream = NULL;
+    int val1 = 10, val2 = 20;
+    char bad_it_mem[256];
+
+    /* 1. Equal branch coverage */
+    d1 = iDictionary.Create(sizeof(int), 10);
+    d2 = iDictionary.Create(sizeof(int), 10);
+    TEST_REQUIRE(d1 != NULL && d2 != NULL);
+    iDictionary.SetErrorFunction(d1, quiet_error);
+    iDictionary.SetErrorFunction(d2, quiet_error);
+
+    /* Equal: different counts */
+    iDictionary.Add(d1, "a", &val1);
+    TEST_REQUIRE(iDictionary.Equal(d1, d2) == 0);
+
+    /* Equal: different flags */
+    iDictionary.Add(d2, "a", &val1);
+    TEST_REQUIRE(iDictionary.Equal(d1, d2) == 1);
+    iDictionary.SetFlags(d1, 2);
+    TEST_REQUIRE(iDictionary.Equal(d1, d2) == 0);
+    iDictionary.SetFlags(d1, 0);
+
+    /* Equal: different hash functions */
+    iDictionary.SetHashFunction(d1, constant_hash);
+    TEST_REQUIRE(iDictionary.Equal(d1, d2) == 0);
+    iDictionary.Finalize(d2);
+    d2 = NULL;
+
+    /* Equal: different table sizes */
+    d2 = iDictionary.Create(sizeof(int), 1000);
+    TEST_REQUIRE(d2 != NULL);
+    iDictionary.SetErrorFunction(d2, quiet_error);
+    iDictionary.SetHashFunction(d2, constant_hash);
+    iDictionary.Add(d2, "a", &val1);
+    TEST_REQUIRE(iDictionary.Equal(d1, d2) == 0);
+    iDictionary.Finalize(d2);
+    d2 = NULL;
+
+    /* Equal: different element sizes */
+    d2 = iDictionary.Create(sizeof(char), 10);
+    TEST_REQUIRE(d2 != NULL);
+    iDictionary.SetErrorFunction(d2, quiet_error);
+    iDictionary.SetHashFunction(d2, constant_hash);
+    {
+        char cval = 'x';
+        iDictionary.Add(d2, "a", &cval);
+    }
+    TEST_REQUIRE(iDictionary.Equal(d1, d2) == 0);
+    iDictionary.Finalize(d2);
+    d2 = NULL;
+
+    /* Equal: same size & hash, but different keys */
+    d2 = iDictionary.Create(sizeof(int), 10);
+    TEST_REQUIRE(d2 != NULL);
+    iDictionary.SetErrorFunction(d2, quiet_error);
+    iDictionary.SetHashFunction(d2, constant_hash);
+    iDictionary.Add(d2, "b", &val1);
+    TEST_REQUIRE(iDictionary.Equal(d1, d2) == 0);
+
+    /* Equal: same key, but different value */
+    iDictionary.Add(d2, "a", &val2);
+    iDictionary.Add(d1, "b", &val1);
+    TEST_REQUIRE(iDictionary.Equal(d1, d2) == 0);
+
+    /* 2. GetElement on missing key */
+    TEST_REQUIRE(iDictionary.GetElement(d1, "nonexistent") == NULL);
+
+    /* 3. Bad args for Add, Replace, Erase */
+    TEST_REQUIRE(iDictionary.Add(d1, NULL, &val1) < 0);
+    TEST_REQUIRE(iDictionary.Replace(d1, NULL, &val1) < 0);
+    TEST_REQUIRE(iDictionary.Replace(d1, "a", NULL) < 0);
+    TEST_REQUIRE(iDictionary.Erase(d1, NULL) < 0);
+
+    /* 4. Set (ElementSize == 0) and CastToArray/Apply/Replace */
+    set = iDictionary.Create(0, 10);
+    TEST_REQUIRE(set != NULL);
+    iDictionary.SetErrorFunction(set, quiet_error);
+    TEST_REQUIRE(iDictionary.Add(set, "item", NULL) == 1);
+    TEST_REQUIRE(iDictionary.Replace(set, "item", NULL) == 1);
+    TEST_REQUIRE(iDictionary.CastToArray(set) == NULL);
+    TEST_REQUIRE(iDictionary.Apply(set, test_apply_fn, NULL) == 1);
+
+    /* Observer on Set: Insert existing element (result == 0 branch) */
+    observer_events = 0;
+    TEST_REQUIRE(iObserver.Subscribe(set, dictionary_observer, CCL_ADD | CCL_INSERT | CCL_REPLACE) == 1);
+    TEST_REQUIRE(iDictionary.Insert(set, "item", NULL) == 0);
+    iObserver.Unsubscribe(set, NULL);
+
+    /* 5. Read-only dict with Apply */
+    ro_dict = iDictionary.Create(sizeof(int), 10);
+    TEST_REQUIRE(ro_dict != NULL);
+    iDictionary.SetErrorFunction(ro_dict, quiet_error);
+    TEST_REQUIRE(iDictionary.Add(ro_dict, "item", &val1) == 1);
+    iDictionary.SetFlags(ro_dict, CONTAINER_READONLY);
+    TEST_REQUIRE(iDictionary.Apply(ro_dict, test_apply_fn, NULL) == 1);
+
+    /* Apply with NULL callback */
+    TEST_REQUIRE(iDictionary.Apply(d1, NULL, NULL) < 0);
+
+    /* 6. InsertIn error cases */
+    TEST_REQUIRE(iDictionary.InsertIn(d1, NULL) < 0);
+    iDictionary.SetFlags(d1, CONTAINER_READONLY);
+    TEST_REQUIRE(iDictionary.InsertIn(d1, set) < 0);
+    iDictionary.SetFlags(d1, 0);
+
+    /* 7. Observer on Dictionary Replace via Iterator */
+    obs_dict = iDictionary.Create(sizeof(int), 10);
+    TEST_REQUIRE(obs_dict != NULL);
+    iDictionary.SetErrorFunction(obs_dict, quiet_error);
+    TEST_REQUIRE(iObserver.Subscribe(obs_dict, dictionary_observer, CCL_REPLACE) == 1);
+    TEST_REQUIRE(iDictionary.Add(obs_dict, "obs_key", &val1) == 1);
+    it = iDictionary.NewIterator(obs_dict);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    TEST_REQUIRE(it->Replace(it, &val2, 1) == 1);
+    iDictionary.DeleteIterator(it);
+    it = NULL;
+    iObserver.Unsubscribe(obs_dict, NULL);
+
+    /* 8. Iterator Replace with direction == 0 */
+    iDictionary.Add(obs_dict, "obs_key2", &val1);
+    it = iDictionary.NewIterator(obs_dict);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetLast(it) != NULL);
+    TEST_REQUIRE(it->Replace(it, &val2, 0) == 1);
+    iDictionary.DeleteIterator(it);
+    it = NULL;
+
+    /* 9. Iterator error conditions */
+    memset(bad_it_mem, 0, sizeof(bad_it_mem));
+    {
+        Iterator *bad_it = (Iterator *)bad_it_mem;
+        TEST_REQUIRE(iDictionary.DeleteIterator(NULL) < 0);
+        TEST_REQUIRE(iDictionary.DeleteIterator(bad_it) < 0);
+    }
+
+    /* Empty dictionary iterator */
+    empty_dict = iDictionary.Create(sizeof(int), 10);
+    TEST_REQUIRE(empty_dict != NULL);
+    iDictionary.SetErrorFunction(empty_dict, quiet_error);
+    it = iDictionary.NewIterator(empty_dict);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetPosition(it) == 0);
+    TEST_REQUIRE(it->GetLast(it) == NULL);
+    TEST_REQUIRE(it->Replace(it, &val1, 1) == 0);
+    iDictionary.DeleteIterator(it);
+    it = NULL;
+
+    /* Stale iterator checks */
+    it = iDictionary.NewIterator(d1);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    /* Modifying d1 increments timestamp */
+    iDictionary.Add(d1, "stamp_change", &val1);
+    TEST_REQUIRE(it->GetFirst(it) == NULL);
+    TEST_REQUIRE(it->GetPrevious(it) == NULL);
+    TEST_REQUIRE(it->GetLast(it) == NULL);
+    TEST_REQUIRE(it->Replace(it, &val1, 1) < 0);
+    TEST_REQUIRE(it->Seek(it, 0) == NULL);
+
+    /* Calling iterator methods with NULL iterator */
+    TEST_REQUIRE(it->GetNext(NULL) == NULL);
+    TEST_REQUIRE(it->GetFirst(NULL) == NULL);
+    TEST_REQUIRE(it->GetPrevious(NULL) == NULL);
+    TEST_REQUIRE(it->GetCurrent(NULL) == NULL);
+    TEST_REQUIRE(it->GetLast(NULL) == NULL);
+    TEST_REQUIRE(it->Replace(NULL, &val1, 1) < 0);
+    TEST_REQUIRE(it->Seek(NULL, 0) == NULL);
+    TEST_REQUIRE(it->GetPosition(NULL) == 0);
+    {
+        Iterator *bad_it = (Iterator *)bad_it_mem;
+        TEST_REQUIRE(it->GetPosition(bad_it) == 0);
+    }
+
+    iDictionary.DeleteIterator(it);
+    it = NULL;
+
+    /* Iterator Replace on readonly container */
+    iDictionary.SetFlags(d1, CONTAINER_READONLY);
+    it = iDictionary.NewIterator(d1);
+    TEST_REQUIRE(it != NULL);
+    TEST_REQUIRE(it->GetFirst(it) != NULL);
+    TEST_REQUIRE(it->Replace(it, &val1, 1) < 0);
+    iDictionary.DeleteIterator(it);
+    it = NULL;
+    iDictionary.SetFlags(d1, 0);
+
+    /* 10. Multi-bucket collision navigation: covers lines 868, 875, 962 */
+    coll_dict = iDictionary.Create(sizeof(int), 3);
+    TEST_REQUIRE(coll_dict != NULL);
+    iDictionary.SetErrorFunction(coll_dict, quiet_error);
+    iDictionary.SetHashFunction(coll_dict, two_bucket_hash);
+    iDictionary.Add(coll_dict, "a1", &val1);
+    iDictionary.Add(coll_dict, "a2", &val2);
+    iDictionary.Add(coll_dict, "b1", &val1);
+    iDictionary.Add(coll_dict, "b2", &val2);
+
+    coll_it = iDictionary.NewIterator(coll_dict);
+    TEST_REQUIRE(coll_it != NULL);
+    /* GetLast on multi-element bucket covers line 962 */
+    TEST_REQUIRE(coll_it->GetLast(coll_it) != NULL);
+    /* Navigate from bucket 1 backwards into bucket 0 multi-element */
+    TEST_REQUIRE(coll_it->GetFirst(coll_it) != NULL);
+    TEST_REQUIRE(coll_it->GetNext(coll_it) != NULL);
+    TEST_REQUIRE(coll_it->GetNext(coll_it) != NULL);
+    TEST_REQUIRE(coll_it->GetPrevious(coll_it) != NULL);
+    iDictionary.DeleteIterator(coll_it);
+    coll_it = NULL;
+
+    /* 11. Save and Load edge cases */
+    stream = ccl_test_tmpfile();
+    TEST_REQUIRE(stream != NULL);
+    TEST_REQUIRE(iDictionary.Save(NULL, stream, NULL, NULL) < 0);
+    TEST_REQUIRE(iDictionary.Save(d1, NULL, NULL, NULL) < 0);
+    TEST_REQUIRE(iDictionary.Load(NULL, NULL, NULL) == NULL);
+
+    /* Load with wrong GUID */
+    rewind(stream);
+    {
+        char bad_guid[64] = "WRONG_GUID_HEADER_DATA_1234567890";
+        TEST_REQUIRE(fwrite(bad_guid, sizeof(bad_guid), 1, stream) == 1);
+        rewind(stream);
+        TEST_REQUIRE(iDictionary.Load(stream, NULL, NULL) == NULL);
+    }
+    fclose(stream);
+    stream = NULL;
+
+    /* 12. Miscellaneous API coverage */
+    TEST_REQUIRE(iDictionary.GetElementSize(d1) == sizeof(int));
+    TEST_REQUIRE(iDictionary.SetHashFunction(d1, NULL) != NULL);
+    {
+        HashFunction current_h = iDictionary.SetHashFunction(d1, constant_hash);
+        TEST_REQUIRE(iDictionary.SetHashFunction(d1, constant_hash) == current_h);
+    }
+    TEST_REQUIRE(iDictionary.GetLoadFactor(d1) > 0.0);
+
+    /* Cleanup */
+    iDictionary.Finalize(coll_dict);
+    iDictionary.Finalize(empty_dict);
+    iDictionary.Finalize(obs_dict);
+    iDictionary.Finalize(ro_dict);
+    iDictionary.Finalize(set);
+    iDictionary.Finalize(d2);
+    iDictionary.Finalize(d1);
+    return 0;
+
+cleanup:
+    if (stream != NULL) fclose(stream);
+    if (coll_it != NULL) iDictionary.DeleteIterator(coll_it);
+    if (it != NULL) iDictionary.DeleteIterator(it);
+    if (coll_dict != NULL) iDictionary.Finalize(coll_dict);
+    if (empty_dict != NULL) iDictionary.Finalize(empty_dict);
+    if (obs_dict != NULL) iDictionary.Finalize(obs_dict);
+    if (ro_dict != NULL) iDictionary.Finalize(ro_dict);
+    if (set != NULL) iDictionary.Finalize(set);
+    if (d2 != NULL) iDictionary.Finalize(d2);
+    if (d1 != NULL) iDictionary.Finalize(d1);
+    return -1;
+}
+
 static const TestCase dictionary_tests[] = {
     {"narrow CRUD, hash, equality, and iterator", test_narrow_crud_hash_iterator},
     {"narrow copy, persistence, and set policy", test_narrow_bulk_copy_and_persistence},
@@ -620,6 +906,7 @@ static const TestCase dictionary_tests[] = {
     {"wide apply clear mutation", test_wide_apply_clear},
     {"dictionary error and allocator paths", test_dictionary_error_and_allocator_paths},
     {"dictionary views, observers, and stale iterators", test_dictionary_views_observers_and_stale_iterators},
+    {"dictionary coverage boost", test_dictionary_coverage_boost},
 };
 
 const TestSuite *ccl_get_test_suite(void)

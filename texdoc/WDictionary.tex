@@ -2,6 +2,7 @@
 typedef struct tagWDictionaryInterface {
    int (*Add)(WDictionary *Dict,const wchar_t *key,const void *Data);
    int (*Apply)(WDictionary *Dict,int (*Applyfn)(const wchar_t *Key,
+         const void *data,void *arg),void *arg);
    Vector *(*CastToArray)(const WDictionary *);
    int (*Clear)(WDictionary *Dict);
    int (*Contains)(const WDictionary *dict,const wchar_t *key);

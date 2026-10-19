@@ -3,13 +3,14 @@
 
 % Example of the Memoir class, an alternative to the default LaTeX classes such as article and book, with many added features built into the class itself.
 
-\documentclass[12pt,a4paper]{memoir} % for a long document
+\documentclass[12pt,a4paper,openany]{memoir} % for a long document
 %\documentclass[12pt,a4paper,article]{memoir} % for a short document
 \newif\iftth
 \iftth\else
 \usepackage{makeidx}
 \makeindex
 \usepackage[utf8]{inputenc} % set input encoding to utf8
+\usepackage{url}
 \usepackage{moreverb}
 \usepackage{graphicx}
 \usepackage{longtable}
@@ -25,6 +26,8 @@
 \iftth\else
 \usepackage{tikz}
 \usetikzlibrary{mindmap,trees,snakes}
+\openany
+\let\cleardoublepage\clearpage
 \fi
 %\definecolor{tableShade}{HTML}{F1F5FA}   %iTunes
 %\definecolor{tableShade2}{HTML}{ECF3FE} %Finder
@@ -110,7 +113,6 @@
 \newcommand{\raisedrule}[2][0em]{\leaders\hbox{\rule[#1]{1pt}{#2}}\hfill}
 
 \title{\textsl{A container library for C}}
-\author{Jacob Navia}
 \date{} % Delete this line to display the current date
 \usepackage{xargs}
 \usepackage{color}
@@ -204,7 +206,7 @@ see \S\ref{#1} on page~\pageref{#1}
 \drop = 0.08\textheight \vspace*{\drop}
 \hspace*{0.3\textwidth} {}\\[1\drop] 
 \hspace*{0.3\textwidth}
-{\Huge\itshape\raggedleft A container library for C}\par \vspace{13cm} {\raggedleft\Huge\itshape Jacob Navia\  \par} \vfill \hspace*{0.3\textwidth}{\Large \raggedleft }\\[0.5\baselineskip] \hspace*{0.3\textwidth}{\Large } \vspace*{\drop} \endgroup}
+{\Huge\itshape\raggedleft A container library for C}\par \vfill \endgroup}
 \newlength{\drop}
 \fi
 \makeindex
@@ -285,7 +287,7 @@ see \S\ref{#1} on page~\pageref{#1}
 \hspace*{-1.0in}
 %\addtolength{\topmargin}{-1.8in}
 \includegraphics[scale=0.65]{Containers.png}
-\cleardoublepage
+\clearpage
 %\addtolength{\topmargin}{1.8in}
 \pagestyle{headings}
 
@@ -482,8 +484,7 @@ All errors are negative constants, it suffices to test if the result is less tha
 \end{center}
 In the positive return code some implementations may encode additional information. The sample implementation returns always 1
 \footnote{In general most return values could be a \verb+size_t+, but it would be very difficult to differentiate a huge unsigned number from a 
-negative error code. Under some versions of UNIX there exists the type \verb+rsize_t+ for a signed version of \verb+size_t+ but it is not in the C 
-standard.}. The zero return value means that nothing was done: it isn't an error but the container was empty for instance, or nothing was written to a 
+negative error code. POSIX defines \verb+ssize_t+ as the signed counterpart to \verb+size_t+. Conversely, \verb+rsize_t+ is an unsigned type defined in ISO C (C11 Annex K).}. The zero return value means that nothing was done: it isn't an error but the container was empty for instance, or nothing was written to a 
 file, etc. 
 
 
@@ -525,7 +526,7 @@ The following drawing tries to make this clear:
 \includegraphics[scale=0.46]{NamingConventions.png}
 
 The different containers built from a basic container (say \verb,List,) are named by concatenating the name of the type and the name of the container:
-\verb,intList,, \verb,doubleList, etc.
+\verb,intList,, \verb,doubleList, etc.\footnote{Note: While the diagram depicts \texttt{idoubleVector} and \texttt{doubleVector}, CCL provides predefined numeric vectors through the \texttt{ValArray} interfaces (such as \texttt{iValArrayDouble}). When generating typed vectors with \texttt{vectorgen.h}, note that its iterator deletion member is named \texttt{deleteIterator} with a lowercase \texttt{d}.}
 
 \section{The different containers}
 All data structures in this section are known and used for several decades. Lists are a common feature of any data processing task since the sixties for instance. 
@@ -557,7 +558,7 @@ Hashtables are present in all major computer languages:
 \begin{itemize}
 \item C\# features a hash table class that "Represents a collection of key/value pairs that are organized based on the hash code of the key." 
 according to the documentation from Microsoft.
-\item Java has relatively recently added a HashTable class that "... maps keys to values. Any non-null object can be used as a key or as a value."
+\item Java has included \texttt{Hashtable} since JDK 1.0 (1996), which "... maps keys to values. Any non-null object can be used as a key or as a value" (largely superseded by \texttt{HashMap} in JDK 1.2).
 \item Fortran doesn't include them in the language itself but there are libraries that implement hash tables in Fortran. For instance 
 Herbert J. Bernstein implemented a hash table library in Fortran 2003.
 \item In Common Lisp hash tables are standard: \param{make-hash-table} and other functions implement all the needed functionality.
@@ -631,7 +632,7 @@ in numerical programming. There are ValArrays for the types \texttt{short}, \tex
 but some members have specialized operations: trigonometric operations are defined only in floating point ValArrays, boolean operations only in the unsigned versions of the \texttt{int/short} and the \texttt{long long} types.
 
 ValArray functions come often in two flavors: The first uses two arrays where the left argument is both source and destination, and a second form where
-a number is applied to the whole array. For instance we have \verb,AddTo(leftArray,\textbf{,}\verb,rightArray), and \verb,AddToScalar(Array,\textbf{,}\verb,number),.
+a number is applied to the whole array. For instance we have \verb,AddTo(leftArray,\textbf{,}\verb,rightArray), and \verb,AddToScalar(Array,\textbf{,}\verb,number),. Note that parameter order reflects the mathematical operation: \verb,SubtractFromScalar(number,\textbf{,}\verb,Array), takes the scalar on the left ($s - A_i$), whereas \verb,DivideScalarBy(Array,\textbf{,}\verb,number), takes the scalar on the right ($A_i / s$).
 \subsection{String collection}
 This container is designed to handle a collection of C strings. It is essentially an application of the flexible array container with some extra functionality to handle strings. It comes in two flavors, as strings in C: multi-byte and wide character strings.
 \subsection{Bit-string}
@@ -687,9 +688,9 @@ Dlist&iDlist&Double linked list \\
 HashTable&iHashTable&Hash tables with arbitrary binary keys \\
 List&iList&Single linked list \\
 Queue&iQueue&Queue \\
-PQueue&iPriorityQueue&Priority queue. \\
+PQueue&iPQueue&Priority queue. \\
 StreamBuffer&iStreamBuffer&Stream buffer \\
-StringList&iStringList&Single linked list of strings\\
+StringList&iStringInterface&Single linked list of strings\\
 strCollection&istrCollection&Flexible string arrays. \\
 TreeMap&iTreeMap&Scapegoat trees \\
 Value array&iValArrayXXX&Growable array of numbers \\
@@ -761,25 +762,23 @@ Container * iContainer.CreateWithAllocator(size_t elementsize,
 Sometimes it can be useful for some containers (specially lists) to create the  header structure using an already existing space, for instance in the space for local variables. For this an 'Init' function can exist, that initializes a container within an existing space.
 Since normally the detailed structure (and the size of course) of each container header is implementation dependent, you use the Sizeof function with an argument of \Null to get the size of the header. This can be used within a C99 compiler environment to allocate the space for that variable.
 \footnote{This incredibly useful feature has been made now optional by the C99 committee, even if it was mandatory when the C99 standard was published.}
-The declaration of the container header in C99 would be:
-\begin{verbatim}lc tta
+The declaration of the container header using C11 alignment would be:
+\begin{verbatim}
 int function(void)
 {
-    char listSpace[iList.Sizeof(NULL)];
-    iList.Init(listSpace);
+    alignas(max_align_t) char listSpace[iList.Sizeof(NULL)];
+    List *list = iList.Init((List *)listSpace, sizeof(double));
+    // Use list ...
 }
 \end{verbatim}
 
-If C99 is not available, the best way is to just print the size of the container you are interested in, and then use that value that should stay fixed 
-for a given version. This can be automated and you can find in the Appendix 1, a small program that generates a series of \texttt{\#defines} with the 
-values of the sizes of the containers described in this documentation.
-
-Problems with the above construct could arise because of the alignment requirements of the platform 
-where the library is running. Instead of a \verb,char, as the type
-of the buffer, it is better to use a slightly more complicated expression to ensure correct alignment. For instance:
+If C11 \texttt{alignas} is not available, careful alignment must be ensured because casting an under-aligned buffer to a container pointer invokes undefined behavior. A \texttt{char[]} array only guarantees 1-byte alignment, and even \texttt{void *} may only be 4-byte aligned on 32-bit architectures where types like \texttt{double} or \texttt{long long} require 8-byte alignment. A union with \texttt{max\_align\_t} or \texttt{double} ensures proper alignment:
 \begin{verbatim}
- size_t s = (sizeof(void *)-1+iList.Sizeof(NULL))/sizeof(void *);
- void *listSpace[s];
+    union {
+        double align;
+        char space[128]; /* size >= iList.Sizeof(NULL) */
+    } u;
+    List *list = iList.Init((List *)u.space, sizeof(double));
 \end{verbatim}
 
 \item Initializing with existing data
@@ -1075,9 +1074,7 @@ using the container API an implementation may not catch this error.
 Each container has a set of flags that can be read and written to change the container's behavior. The only flag that is defined by all containers
 is the read-only flag. Implementations can extend this to offer different services like copy-on-write, or other applications. 
 
-The read-only flag means that no direct pointers to an element or to the whole data are returned, no functions that modify the
-container are allowed to proceed and that the \verb,Clear(),
-and \verb,Finalize(), APIs will not work. You must unset this flag to allow for destruction of the object.
+The read-only flag means that no direct pointers to an element or to the whole data are returned, and no functions that modify the container are allowed to proceed. While \verb,Clear(), rejects read-only containers with \verb,CONTAINER_ERROR_READONLY,, the \verb,Finalize(), API intentionally clears read-only containers and invokes element destructors before releasing the container so that finalization does not leak memory.
 \footnote{Contrary to C++ \texttt{const} directive this is done at run time and an explicit check of this flag is needed. This has disadvantages 
 (one instruction and a conditional jump are needed) but it has also advantages: you can set it when you pass some container to another module, and unset it when you need to update the container. This solution is more flexible than the static solution at the cost of a very small runtime cost.}
 
@@ -1089,7 +1086,7 @@ All containers support querying the number of elements stored. The prototype is:
 \begin{verbatim}
     size_t iContainer.Size(const Container *);
 \end{verbatim}
-There is no error return. If a \Null pointer is given to those functions the result is zero.
+If a \Null pointer is given to this function, \texttt{CONTAINER\_ERROR\_BADARG} is raised and the result is zero.
 \section{Sizes}
 \subsection{Sizeof}
 This computes the total size used by the container in bytes, including the header structure and the data stored in the container. Any other overhead 
@@ -1102,17 +1099,16 @@ If its argument is \Null, \texttt{Sizeof} returns the size of the container head
 
 \subsection{SizeofIterator}
 \index{SizeofIterator}
-Computes the size of the iterator for the given container. The objective here is to allow the declaration of the iterator as a local variable
-to avoid having to free the iterator at the exit of the function.
+Computes the size of the iterator for the given container. The container pointer must be valid so that trailing storage for the element buffer is included. The objective here is to allow the declaration of the iterator as a local variable to avoid having to free the iterator at the exit of the function.
 \begin{verbatim}
-int Fn(void)
+int Fn(const List *list)
 {
-    char buf[iList.SizeofIterator(NULL)];
+    char buf[iList.SizeofIterator(list)];
+    iList.InitIterator((List *)list, buf);
     Iterator *it = (Iterator *)buf;
-    iList.InitIterator(it);
     // Use iterator "it" here
     // ...
-    // No need to call DeleteIterator at exit
+    // No need to call DeleteIterator for stack-allocated iterators
 }
 \end{verbatim}
 
@@ -1260,6 +1256,7 @@ These interfaces are used by all the containers in the rest of the library. They
 \item Lazy, composable traversal with the \texttt{iRange} interface.
 \item Masks used to select items
 \end{itemize}
+\index{iRange}\index{Range}
 \includegraphics[scale=0.63]{Basic.png}
 \section{Masks}
 A mask is a sequence that contains boolean data used for selection of items in a sequential container. 
@@ -1273,18 +1270,21 @@ memory they use when created. This allocator will be initialized to the current 
 \begin{verbatim}
 typedef struct _Mask Mask;
 typedef struct tagMaskInterface {
-    int (*And)(Mask *src1,Mask *src2);
-    int (*Clear)(Mask *m);
-    Mask *(*Copy)(const Mask *src);
+    int (*And)(Mask *src1,const Mask *src2);
+    int (*Or)(Mask *src1,const Mask *src2);
+    int (*Not)(Mask *src);
+    Mask *(*CreateFromMask)(size_t length,const char *data);
     Mask *(*Create)(size_t length);
-    Mask *(*CreateFromMask)(size_t length,char *data);
-    int (*Finalize)(Mask *m);
-    int (*Or)(Mask *src1,Mask *src2);
-    size_t (*PopulationCount)(const Mask *m);
+    Mask *(*Copy)(const Mask *src);
+    size_t (*Size)(const Mask *m);
+    size_t (*Sizeof)(const Mask *m);
     int (*SetElement)(Mask *m,size_t idx,int val);
-    size_t (*Size)(Mask *);
-    size_t (*Sizeof)(Mask *);
-} iMask;
+    int (*GetElement)(const Mask *m,size_t position);
+    int (*Clear)(Mask *m);
+    int (*Finalize)(Mask *m);
+    size_t (*PopulationCount)(const Mask *m);
+} MaskInterface;
+extern MaskInterface iMask;
 \end{verbatim}
 \subsection{The API}
 \api{And}
@@ -1347,15 +1347,14 @@ The memory used by the mask is reclaimed.
 \returns A positive number if the memory was reclaimed, or a negative error code.
 
 \api{GetElement}
-    void *(GetElement)(Mask *m, size_t idx);
+    int (*GetElement)(const Mask *m, size_t position);
 \end{verbatim}
 \apidescription
-Returns a pointer to an element of the given mask, or \Null if an error occurs. The specific type of pointer is implementation defined and depends on the underlying type of the mask elements. It could be a single bit, or a byte, or another unit of storage able to store 
-a boolean value.
+Returns the boolean value (1 or 0) of the mask element at the given position.
 \apierrors
 \doerror{BADARG} The mask pointer is \Null.
-\doerror{INDEX} The index is beyond the end of the mask.
-\returns A pointer to the data or \Null.
+\doerror{INDEX} The position is beyond the end of the mask.
+\returns The value of the element (1 or 0), or 0 on error.
 
 \api{Not}
     int (*Not)(Mask *src);
@@ -2088,7 +2087,7 @@ This happens normally immediately after the notification \texttt{FINALIZE} is se
 \hline
 \endhead
 Add&Pointer to the new object& \Null or slice specs if any\\ \hline
-AddRange&A \texttt{size\_t} with the number of objects added&Pointer to a table of \textsl{n} elements that were added\\ \hline
+AddRange&Pointer to a table of \textsl{n} elements that were added&A \texttt{size\_t} with the number of objects added\\ \hline
 Append&A pointer to the object being appended.&  \Null\\ \hline
 Clear&Pointer to the container being cleared& \Null\\ \hline
 Copy&Pointer to the copy of the container& \Null\\ \hline
@@ -2104,7 +2103,7 @@ ReplaceAt&Pointer to the old value&Pointer to the new value\\ \hline
 \end{longtable}
 Here is a complete example that demonstrates some of the above functions.
 \example
-include "containers.h"
+#include "containers.h"
 static void fn(void *ObservedObject, unsigned operation,
                void *extraInfo[])
 {
@@ -2267,7 +2266,7 @@ double linked lists the iDlist type
 \end{itemize}
 The space overhead of single linked lists is smaller at the expense of more difficult access to the elements. It is up to the application programmer to decide which container fits best in his/her application
 \footnote{
-The single linked list container corresponds to the C++ STL \texttt{forward\_list}, the \texttt{list} container is double linked. In Java the \texttt{LinkedList} class corresponds to a double linked list. In C\# \texttt{LinkedList}  seems to be a double linked one, and \texttt{list} a single linked. And we should not forget LISP, a computer language for \textbf{LIS}t \textbf{P}rocesing.
+The single linked list container corresponds to the C++ STL \texttt{forward\_list}, while the \texttt{list} container is double linked. In Java, \texttt{LinkedList} is a doubly linked list. In C\#/.NET, \texttt{LinkedList<T>} is doubly linked, while \texttt{List<T>} is a dynamically resizing array (equivalent to C++ \texttt{std::vector} or CCL \texttt{Vector}). And we should not forget LISP, a computer language for \textbf{LIS}t \textbf{P}rocessing.
 }.
 
 It is often more efficient to get the next element from a list starting with the previous element instead of searching the whole list starting from the beginning. For this, the list and the Dlist containers provide:
@@ -2339,7 +2338,7 @@ actual data type of the specialization. For instance the \verb,GetElement, API i
 data type: an 
 integer for \verb,intList,, a double for \verb,doubleList, etc.
 \item The creation and initialization functions that construct a new container receive one argument less than its generic counterparts since the
-size of each element is fixed.
+size of each element is fixed.\footnote{While single linked list templates (\texttt{listgen.h}, such as \texttt{intList} and \texttt{doubleList}) omit the \texttt{element\_size} parameter, double linked list templates (\texttt{dlistgen.h}) retain the \texttt{size\_t elementsize} argument in \texttt{Create}, \texttt{CreateWithAllocator}, \texttt{Init}, \texttt{InitWithAllocator}, and \texttt{InitializeWith}.}
 
 To make things clear and to save work from the library user, some specializations are delivered with the sample implementation to show how a
 \textsl{file templated} container looks like.
@@ -2418,7 +2417,7 @@ static void PrintList(doubleList *AL)
 {
     size_t i;
     for (i=0; i<idoubleList.Size(AL);i++) {
-        printf("%g ",idoubleList.GetElement(AL,i));
+        printf("%g ",*idoubleList.GetElement(AL,i));
     }
     printf("\n");
 }
@@ -2538,7 +2537,7 @@ static int Callback(void *pElement,void *pResult)
     return 1;
 }
     
-void main(void) 
+int main(void) 
 {
     double sum = 0;
     List *list = iList.Create(sizeof(double));
@@ -2549,27 +2548,29 @@ void main(void)
     iList.Apply(list,Callback,&sum);
     // Here sum should be 5.
     printf("%g\n",sum);
+    return 0;
 }
 
 /* Template file example */
 #include <containers.h>
 #include "doublelist.h"
-static int Callback(double Element,void *pResult)
+static int Callback(double *Element,void *pResult)
 {
     double *result = pResult;
-    *result += Element;
+    *result += *Element;
     return 1;
 }
     
-void main(void) 
+int main(void) 
 {
     double sum = 0;
     doubleList *list = idoubleList.Create();
-    iList.Add(list,2);
-    iList.Add(list,3);
-    iList.Apply(list,Callback,&sum);
+    idoubleList.Add(list,2);
+    idoubleList.Add(list,3);
+    idoubleList.Apply(list,Callback,&sum);
     // Here sum should be 5.
     printf("%g\n",sum);
+    return 0;
 }
 \end{verbatim}
 The above example shows a function callback as used by "Apply". It receives two pointers, one to the current element and another to an extra argument that in this case contains a pointer to the sum. For each call to the callback, the function adds the contents of the element to the sum.
@@ -2712,19 +2713,6 @@ Reclaims the memory used by the given iterator object
 \apierrors
 \doerror{BADARG} The iterator pointer is \Null.
 \returns A positive value if successful or a negative error code.
-%--------------------------------------------------------------------------------------------------------------------------
-\api{GetElement}
-     void *(*GetElement)(const List *l, size_t index);
-\end{verbatim}
-\apidescription
-Returns a pointer to the data stored at position \verb,index, within the given list.
-\apierrors
-\doerror{BADARG} The list pointer is \Null.
-\doerror{INDEX} The \verb,index, argument contains an index that is not between zero and the size of the list.
-\doerror{READ\_ONLY} You can't use \verb,GetElement, in a read only list since it returns a raw pointer to the data. You should use \verb,CopyElement, instead.
-
-\returns
-A pointer to the data or \Null if an error occurs.
 
 %--------------------------------------------------------------------------------------------------------------------------
 \api{GetElementData}
@@ -2836,10 +2824,9 @@ OUTPUT:
     int (*Finalize)(List *list);
 \end{verbatim}
 \apidescription
-Reclaims all memory used by the list, including the list header object itself.
+Reclaims all memory used by the list, including the list header object itself. Memory is reclaimed and element destructors are called even if the list is marked read-only.
 \apierrors
 \doerror{BADARG} The given list pointer is \Null.
-\doerror{READONLY} The list is read-only. No modifications allowed.
 \returns
 A positive value means the operation completed. A negative error code indicates failure.
 \example
@@ -2917,7 +2904,7 @@ Use the CopyElement function to get a read/write copy of an element of the list.
     doubleList *dlist;
     // ...
     double d = *(double *)iList.GetElement(list,3);
-    double d = idoubleList.GetElement(dlist,3);
+    double d = *idoubleList.GetElement(dlist,3);
 \end{verbatim}
 
 %--------------------------------------------------------------------------------------------------------------------------
@@ -2936,7 +2923,7 @@ The flags or zero if there was an error.
 %--------------------------------------------------------------------------------------------------------------------------
 \api{GetRange}
     List *(*GetRange)(const List *list,size_t start,size_t end);
-    TYPE *(*GetRange)(const TYPEList *l,size_t start,size_t end);
+    TYPEList *(*GetRange)(const TYPEList *l,size_t start,size_t end);
 \end{verbatim}
 \apidescription
 Selects a series of consecutive elements starting at position start and ending at position end.  Both the elements at start and end are included in the result.
@@ -2974,7 +2961,7 @@ A positive value if element is found or a negative value if not found or an erro
     List *list;
     double data;
     size_t idx;
-    int r = iList.IndexOf(list,&data,&idx);
+    int r = iList.IndexOf(list,&data,NULL,&idx);
     if (r == CONTAINER_ERROR_NOTFOUND)
         printf("Not found\n");
     else if (r < 0)
@@ -2992,12 +2979,12 @@ It is assumed that the memory pointed by \texttt{aList} contains at least the si
 \apierrors
 \doerror{BADARG} The given list pointer is \Null.
 \example
-// This example uses C99
+// This example uses C11 alignas for proper alignment
 void Example(void)
 {
-    char aList[iList.Sizeof(NULL)];
-    List *list = iList.Init((List *)aList);
-    doubleList *l = idoubleList.Init((TYPEList *)aList);
+    alignas(max_align_t) char aList[iList.Sizeof(NULL)];
+    List *list = iList.Init((List *)aList, sizeof(double));
+    doubleList *l = idoubleList.Init((doubleList *)aList);
 }
 \end{verbatim}
 %--------------------------------------------------------------------------------------------------------------------------
@@ -3194,7 +3181,7 @@ Allocates and initializes a new iterator object to iterate this list.
 \end{verbatim}
 %--------------------------------------------------------------------------------------------------------------------------
 \api{NextElement}
-DlistElement *(*NextElement)(DlistElement *le);
+ListElement *(*NextElement)(ListElement *le);
 \end{verbatim}
 \apidescription
 Returns a pointer to the next element in the list. If the input list is\Null it returns\Null.
@@ -3459,7 +3446,7 @@ Select of the list:
 \end{verbatim}
 %--------------------------------------------------------------------------------------------------------------------------
 \api{SetCompareFunction}
-CompareFunction (*SetCompareFunction)(List l,CompareFunction f);
+CompareFunction (*SetCompareFunction)(List *l,CompareFunction f);
 \end{verbatim}
 \apidescription
 if the f argument is non \Null, it sets the list comparison function to f.
@@ -3469,7 +3456,7 @@ if the f argument is non \Null, it sets the list comparison function to f.
 \returns
 The old value of the comparison function.
 \example
-    ErrorFunction fn,newfn;
+    CompareFunction fn,newfn;
     List *list;
     fn = iList.SetCompareFunction(list,newfn);
 \end{verbatim}
@@ -3488,7 +3475,7 @@ Copies \verb,ElementSize, bytes from its parameter \verb,data, into the given li
 remain valid. Any iterators into the list will stop working.
 \apierrors
 \doerror{BADARG} Any argument is\Null.
-\returns The old value of the error function, or \Null if there is an error.
+\returns A positive value if successful, or a negative error code if an error occurs.
 %--------------------------------------------------------------------------------------------------------------------------
 \api{SetErrorFunction}
     ErrorFunction (*SetErrorFunction)(List *L,ErrorFunction); 
@@ -3508,7 +3495,8 @@ The old value of the error function, or \Null if there is an error.
 \apidescription
 Returns the number of elements stored in the list.
 \apierrors
-If the given list pointer is \Null, it returns \textsc{SIZE\_MAX}.
+\doerror{BADARG} The given list pointer is \Null.
+\returns The number of elements stored in the list, or zero if the list pointer is \Null.
 \example
     List *li;
     size_t bytes = iList.Size(li);
@@ -3559,7 +3547,7 @@ Returns the total size in bytes of the list iterator.
 The number of bytes used by the list iterator.
 \example
     List *list;
-    size_t  siz = iList.Sizeof(list);
+    size_t  siz = iList.SizeofIterator(list);
 \end{verbatim}
 %--------------------------------------------------------------------------------------------------------------------------
 \api{Sort}
@@ -3660,13 +3648,12 @@ If m is \Null, the current memory manager object will be used for allocating and
 Portability:
 This function is optional and may not be present in all implementations.
 \subsection{Specializations of linked lists}
-The sample implementation proposes a \texttt{stringlist} container that can hold a list of strings. Its interface functions and all its vocabulary
-are identical to the linked list one. This is a recommended extension but may not be present in all implementations of the library.
+The sample implementation proposes a \texttt{stringlist} container that can hold a list of strings. Its vocabulary closely mirrors the linked list one, with range erasure named \texttt{EraseRange}. Note that \texttt{PopFront} and \texttt{CopyElement} copy strings directly into caller-provided buffers without an explicit destination buffer length argument (unlike \texttt{strCollection}, which accepts a buffer-size limit). This is a recommended extension but may not be present in all implementations of the library.
 
 It comes in two flavors:
 \begin{itemize}
-\item Single byte character strings. The name of the interface is \texttt{iStringList}.
-\item Wide character strings. The name of the interface is \texttt{iWStringList}.
+\item Single byte character strings. The name of the interface is \texttt{iStringInterface} (defined in \texttt{stringlist.h}).
+\item Wide character strings. The name of the interface is \texttt{iwStringInterface} (defined in \texttt{wstringlist.h}).
 \end{itemize}
 In this specialization the function \texttt{GetElementSize} returns always zero since it has no meaning in a list composed of strings of different
 length.\footnote{An alternative would have been to return the average string length, but that solution would have needed a result type different from a 
@@ -3702,7 +3689,7 @@ This container shares most of its interface with the single linked list containe
 \input{Dlist.tex}
 %--------------------------------------------------------------------------------------------------------------------------
 \api{MoveBack}
-void *(*MoveBack)(ListElement **ppElement);
+void *(*MoveBack)(DlistElement **ppElement);
 \end{verbatim}
 \apidescription
 Given the address of a pointer to an element, it returns a pointer to the data stored into that element and writes the address of the previous element
@@ -3710,7 +3697,7 @@ into its argument \verb,ppElement,. If ppElement is\Null it returns\Null. If \ve
 \returns A pointer to the data stored in the given element or\Null if the data can't be retrieved.
 %--------------------------------------------------------------------------------------------------------------------------
 \api{PopBack}
-    int (*PopBack)(List *L,void *result);
+    int (*PopBack)(Dlist *L,void *result);
 \end{verbatim} 
 \apidescription
 Pops the element at the last position copying it to the result pointer. If the "result" pointer is \Null, the last element is removed without any 
@@ -3722,7 +3709,7 @@ copying. Otherwise, the library supposes that result points to at least ElementS
 A positive value if an element was popped, zero if the list was empty, or a negative error code if an error occurred.
 \example
     double d;
-    int r = iList.PopBack(L,&d);
+    int r = iDlist.PopBack(L,&d);
     if (r==0)
         printf("List empty\n");
     else if (r < 0) {
@@ -3740,7 +3727,7 @@ Returns a pointer to the previous element in the list. If the input list is\Null
 
 %--------------------------------------------------------------------------------------------------------------------------
 \api{PushBack}
-    int (*PushBack)(List *L,void *element);
+    int (*PushBack)(Dlist *L,void *element);
 \end{verbatim} 
 \apidescription
 Inserts the given element at the last position of the list. 
@@ -3753,7 +3740,7 @@ Inserts the given element at the last position of the list.
 A positive value if the operation completed, or a negative error code otherwise.
 \example
     double d = 2.3;
-    if (iList.PushBack(list,&d) < 0)
+    if (iDlist.PushBack(list,&d) < 0)
         printf("Error\n");
 \end{verbatim}
 %--------------------------------------------------------------------------------------------------------------------------
@@ -3824,7 +3811,7 @@ For \verb,ValArrays, the data should be of the same type that the ValArray.
 \returns
 A positive number if the operation completed, negative error code otherwise.
 \example
-    Vector *AL = iVector.Create(sizeof(double));
+    Vector *AL = iVector.Create(sizeof(double),5);
     double data = 4.5;
     int result = iVector.Add(AL,&data);
     if (result < 0) { /* Error handling */ }
@@ -3836,8 +3823,8 @@ A positive number if the operation completed, negative error code otherwise.
 \end{verbatim}
 %-----------------------------------------------------------------------------------------------------
 \api{AddRange}
-    int (*Add)(Vector *AL,size_t n, void *data);
-    int (*Add)(ValArrayXXXX *AL,size_t n, XXXX *data);
+    int (*AddRange)(Vector *AL,size_t n, const void *data);
+    int (*AddRange)(ValArrayXXXX *AL,size_t n, const XXXX *data);
 \end{verbatim} 
 \apidescription
 Adds the n given elements to the end of the container. It is the same operations as the PushBack operation. It is assumed that "data" points to a contiguous memory area of at least n*ElementSize bytes. Returns a value greater than zero if the addition completed successfully, a negative error code otherwise. If n is zero no error is issued even if the array pointer or the data pointer are \Null.
@@ -3853,12 +3840,12 @@ A positive number if the operation completed, negative error code otherwise.
     Vector *AL;
     double data[] = {4.5, 4.6, 4.7 };
     AL = iVector.Create(sizeof(double),5);
-    int result = iVector.Add(AL,3, data);
+    int result = iVector.AddRange(AL,3, data);
     if (result < 0) { /* Error handling */ }
     // Template version
     ValArrayDouble *AL = iValArrayDouble.Create(5);
     double data[] = {4.5, 4.6, 4.7 };
-    int result = iValArrayDouble.Add(AL,3, data);
+    int result = iValArrayDouble.AddRange(AL,3, data);
     if (result < 0) { /* Error handling */ }
 \end{verbatim}
 %-----------------------------------------------------------------------------------------------------
@@ -3875,16 +3862,16 @@ Adds all elements of AL2 at the end of the first container AL1. The two vectors 
 A positive number if the operation completed, negative error code otherwise.
 %-----------------------------------------------------------------------------------------------------
 \api{Apply}
-    int (*Apply)(Vector l,int (Applyfn)(void *,void *),void *arg);
-    int (*Apply)(ValArrayXXXX l,int (Applyfn)(XXXX,void *),void *arg);
+    int (*Apply)(Vector *l,int (Applyfn)(void *,void *),void *arg);
+    int (*Apply)(ValArrayXXXX *l,int (Applyfn)(XXXX,void *),void *arg);
 \end{verbatim} 
 \apidescription
 Will call the given function for each element of the array. The first argument of the callback function receives an element of the array. The second argument of the callback is the arg argument that the Apply function receives and passes to  the callback. This way some context can be passed to the callback, and from one element to the next.
 Note that the result of the callback is not used. This allows all kinds of result types to be accepted after a suitable cast.
 If the array is read-only, a copy of the element will be passed to the callback function.
 \apierrors
-\doerror{BADARG} Either list or Applyfn are \Null.
-\doerror{NOMEMORY} The list is read-only and there is no more memory to allocate the buffer to copy each element.
+\doerror{BADARG}  Either the array pointer or Applyfn are \Null.
+\doerror{NOMEMORY} The array is read-only and there is no more memory to allocate the buffer to copy each element.
 \returns
 A positive value if no errors or a negative error code.
 \example
@@ -3902,7 +3889,7 @@ A positive value if no errors or a negative error code.
         iVector.Add(alist,&d);
         d = 3;
         iVector.Add(alist,&d);
-        iList.Apply(alist,Callback,&sum);
+        iVector.Apply(alist,Callback,&sum);
         // Here sum should be 5.
         return sum;
     }
@@ -3913,12 +3900,12 @@ A positive value if no errors or a negative error code.
         *result += element;
         return 1;
     }
-    double AddVector(Vector *l) {
+    double AddValArray(ValArrayDouble *l) {
         double sum = 0;
         ValArrayDouble *alist = iValArrayDouble.Create(2);
         iValArrayDouble.Add(alist,2);
         iValArrayDouble.Add(alist,3);
-        idoubleList.Apply(alist,Callback,&sum);
+        iValArrayDouble.Apply(alist,Callback,&sum);
         // Here sum should be 5.
         return sum;
     }
@@ -3954,7 +3941,7 @@ The result is greater than zero if successful, or an error code if an error occu
 %-----------------------------------------------------------------------------------------------------
 \api{CompareEqual}
 Mask *(*CompareEqual)(const Vector *left,const Vector *right,
-                       Mask bitarray);
+                       Mask *bitarray);
 \end{verbatim}
 \apidescription
 Assigns to each element of the mask the result of comparing the corresponding elements of the left and right arrays. Conceptually this operation is: \begin{verbatim}
@@ -3970,7 +3957,7 @@ allocated with the necessary length.
 \returns A pointer to the bitarray passed or allocated, or \Null if an error occurs.
 %-----------------------------------------------------------------------------------------------------
 \api{CompareEqualScalar}
-Mask *(*CompareEqual)(const Vector *left,const void *right,
+Mask *(*CompareEqualScalar)(const Vector *left,const void *right,
                        Mask *bitarray);
 \end{verbatim}
 \apidescription
@@ -3985,8 +3972,8 @@ If the bitarray argument is \Null it will be allocated and returned. The allocat
 \returns A pointer to the bitarray or \Null if an error occurs.
 %-----------------------------------------------------------------------------------------------------
 \api{Contains}
-    int (*Contains)(Vector *a,void *data);
-    int (*Contains)(ValArrayXXXX *a,XXXX data);
+    int (*Contains)(const Vector *a,const void *data,void *extraArgs);
+    int (*Contains)(const ValArrayXXXX *a,XXXX data);
 \end{verbatim} 
 \apidescription
 Searches the given data in the array. The "data" argument is supposed to point to an element at least ElementSize bytes. The array's comparison function is used for determining if two elements are equal. This comparison function defaults to memcmp.
@@ -3997,10 +3984,10 @@ One if the given data is stored in the array, zero otherwise. If either the data
 \example
     Vector *a = iVector.Create(sizeof(double),2);
     double data = 78.67;
-    int r = iVector.Contains(a,&data);
+    int r = iVector.Contains(a,&data,NULL);
     // ---------------------------Template version
-    ValArrayDouble *a = iVector.Create(2);
-    int r = iVector.Contains(a,78.67);
+    ValArrayDouble *a = iValArrayDouble.Create(2);
+    int r = iValArrayDouble.Contains(a,78.67);
 \end{verbatim}
 %-----------------------------------------------------------------------------------------------------
 \api{Copy}
@@ -4017,7 +4004,7 @@ A shallow copy of the given array is performed. Only ElementSize bytes will be c
 \end{verbatim}
 %-----------------------------------------------------------------------------------------------------
 \api{CopyElement}
-    Vector *(*Copy)(const Vector *A,size_t idx,void *result);
+    int (*CopyElement)(const Vector *AL,size_t idx,void *outbuf);
 \end{verbatim} 
 \apidescription
 The element at the given index is copied into the output buffer that should be at least big enough to hold one element. If the index is bigger
@@ -4031,7 +4018,7 @@ different than \Null, the function assumes that it is a pointer to some value th
 \example
     Vector *V;
     char buffer[16];
-    newVector = iVector.CopyElement(V,3,buffer);
+    int r = iVector.CopyElement(V,3,buffer);
 \end{verbatim}
 %------------------------------------------------------------------------------------------------------
 \api{CopyTo}
@@ -4040,12 +4027,12 @@ void **(*CopyTo)(Vector *AL);
 \apidescription
 Copies the whole contents of the given array into a table of pointers to newly allocated elements, finished by a \Null pointer.
 \apierrors
-\doerror{BADARG} The iterator pointer is \Null.
+\doerror{BADARG} The vector pointer is \Null.
 \doerror{NOMEMORY} There is not enough memory to complete the operation.
 \returns
 A pointer to a table of pointers or \Null if an error occurs.
 \api{DeleteIterator}
-    int DeleteIterator(Iterator *it);
+    int (*DeleteIterator)(Iterator *it);
 \end{verbatim}
 \apidescription
 Reclaims the memory used by the given iterator object
@@ -4110,7 +4097,7 @@ If the element is not in the vector the result value is \notfound.
     Vector *AL;
     int r = iVector.Erase(AL,&d);
     if (r > 0)
-        printf("2.3 erased|n");
+        printf("2.3 erased\n");
     else if (r == 0)
         printf("No element with value 2.3 present\n");
     else
@@ -4246,14 +4233,14 @@ GetFlags returns the state of the container flags, SetFlags sets the flags to a 
 The Vector container supports the following flags:
 
 \textsc{CONTAINER\_READONLY}
-If this flag is set, no modifications to the container are allowed, and the Clear and Finalize functions will not work. The GetElement function will always return \Null. You should use the CopyElement function to access the data
+If this flag is set, no modifications to the container are allowed, and Clear will return an error (though Finalize will still reclaim the container and its elements). The GetElement function will always return \Null. You should use the CopyElement function to access the data.
 %-----------------------------------------------------------------------------------------------------
 \api{GetRange}
     Vector *(*GetRange)(Vector *AL,size_t start,size_t end);
 \end{verbatim}
 \apidescription
 Selects a series of consecutive elements starting at position start and ending at position end.  Both the elements at start and end are included in the result.
-If start > end or start > Size(AL), \Null is returned. If end is bigger than the number of elements in the vector AL, only elements up to the number of elements will be used.
+If start $>$ end or start $>$ Size(AL), \Null is returned. If end is bigger than the number of elements in the vector AL, only elements up to the number of elements will be used.
 The selected elements are copied into a new array. The original array remains unchanged.
 \apierrors
 \doerror{BADARG} The given array pointer or the element given are \Null
@@ -4384,13 +4371,13 @@ static void PrintVector(ValArrayDouble *AL)
     size_t i;
     printf("Count %ld, Capacity %ld\n",(long)iValArrayDouble.Size(AL),
                                   (long)iValArrayDouble.GetCapacity(AL));
-    for (i=0; i<iVector.Size(AL);i++) {
+    for (i=0; i<iValArrayDouble.Size(AL);i++) {
         printf("%g ",iValArrayDouble.GetElement(AL,i));
     }
     printf("\n");
 }
 
-static void FillVector(Vector * AL,int start)
+static void FillVector(ValArrayDouble *AL,int start)
 {
     size_t i;
 
@@ -4401,8 +4388,8 @@ static void FillVector(Vector * AL,int start)
 
 int main(void)
 {
-    Vector *AL = iValArrayDouble.Create(10);
-    Vector *AL1 =iValArrayDouble.Create(10);
+    ValArrayDouble *AL = iValArrayDouble.Create(10);
+    ValArrayDouble *AL1 = iValArrayDouble.Create(10);
     FillVector(AL,0);
     FillVector(AL1,100);
     iValArrayDouble.InsertIn(AL,5,AL1);
@@ -4508,7 +4495,7 @@ A negative error code if an error occurs, or a positive value if the operation s
     int r = iVector.ReplaceAt(AL,2,&d);
     if (r < 0) { /* Error handling */ }
     // --------------------------------Template version
-    ValArrayDouble *AL = iValARrayDouble.Create(2);
+    ValArrayDouble *AL = iValArrayDouble.Create(2);
     int r = iValArrayDouble.ReplaceAt(AL,2,6.7);
     if (r < 0) { /* Error handling */ }
 \end{verbatim}
@@ -4673,9 +4660,9 @@ if the f argument is non \Null, it sets the array comparison function to f.
 \returns
 The old value of the comparison function.
 \example
-    ErrorFunction fn,newfn;
+    CompareFunction fn,newfn;
     Vector *AL;
-    fn = iVector.SetErrorFunction(AL,newfn);
+    fn = iVector.SetCompareFunction(AL,newfn);
 \end{verbatim}
 %--------------------------------------------------------------------------------------------------------------------------
 \api{SetDestructor}
@@ -5040,7 +5027,7 @@ OUTPUT:
 NOT b = 1111 1111  1111 1111  0000 0000  0000 0000
 \end{verbatim}
 \api{InitializeWith}
-    BitString *(*ObjectToBitString)(size_t size,void *p);
+    BitString *(*InitializeWith)(size_t size,const void *p);
 \end{verbatim}
 \apidescription
 The bits starting by the given pointer are copied into a new bit string using the size (in bytes) indicated by the second parameter \texttt{size}.
@@ -5055,7 +5042,7 @@ number by changing its sign bit */
 int main(void)
 {
     double d = -0.125; /* Number is negative */
-    BitString *b = iBitString.ObjectToBitString(sizeof(double),&d);
+    BitString *b = iBitString.InitializeWith(sizeof(double),&d);
     /* Now set sign to zero, making the number positive */
     iBitString.SetElement(b,63,0);
     iBitString.CopyBits(b,&d);
@@ -5251,7 +5238,7 @@ A positive number if the operation completed, negative error code otherwise.
 \Const The data added is copied and not modified in any way.
 \example
     strCollection *SC = istrCollection.Create(10);
-    char *data[] = { "one","two,"three"};
+    char *data[] = { "one","two","three"};
     int result = istrCollection.AddRange(SC,3,data);
     if (result < 0) { /* Error handling */ }
 \end{verbatim}
@@ -5285,8 +5272,8 @@ iError interface) is called.
 
 %--------------------------------------------------------------------------------------------------------------------------
 \api{FindFirst}
-size_t (*FindFirstText)(const strCollection *SC,
-                        const ElementType *text);
+size_t (*FindFirst)(const strCollection *SC,
+                    const ElementType *text);
 \end{verbatim}
  \apidescription
 Finds the first occurrence of the given text in the string collection. 
@@ -5298,8 +5285,8 @@ The zero based index of the line that contains the given text or the constant \n
 
 %--------------------------------------------------------------------------------------------------------------------------
 \api{FindNext}
-Iterator *(*Find)(const strCollection *SC,const ElementType *txt,
-                       size_t start);
+size_t (*FindNext)(const strCollection *SC,const ElementType *txt,
+                   size_t start);
 \end{verbatim}
 \apidescription
 Starts searching for the given text at the specified line.
@@ -5307,7 +5294,7 @@ Starts searching for the given text at the specified line.
 \doerror{BADARG} The strCollection or the text pointer are \Null.
 \Const Neither the input collection, nor the given text are modified in any way.
 \returns
-An iterator that points to the element found or \Null if nothing was found.
+The zero based index of the line that contains the given text, or the constant \notfound if the text is not found or an error occurs.
 %--------------------------------------------------------------------------------------------------------------------------
 \api{FindTextPositions}
 Vector *(*FindTextPositions)(const strCollection *SC,
@@ -5329,7 +5316,7 @@ The result is \Null if there wasn't any occurrences of the searched text in the 
 \example
   1 static void findTxt()
   2 {
-  3     strCollection *source = istrCollection.CreateFromFile("test.txt") ;;
+  3     strCollection *source = istrCollection.CreateFromFile("test.txt") ;
   4     Vector *Vec = istrCollection.FindTextPositions(source,"pizzas") ;
   5     size_t siz = Vec ? iVector.Size(Vec) : 0 ;   
   6     for (int i=0 ; i<siz ; i+=2) {
@@ -5339,8 +5326,8 @@ The result is \Null if there wasn't any occurrences of the searched text in the 
  10         col =  iVector.GetElement(Vec,i+1) ;
  11         printf("line = %d\n col = %d\n",line[0],col[0]) ;            
  12     }
- 13     iStrCollection.Finalize(source);
- 14     if (Vec) iStrCollection.Finalize(Vec);
+ 13     istrCollection.Finalize(source);
+ 14     if (Vec) iVector.Finalize(Vec);
  15 }
 \end{verbatim}
 The \verb,Vec, variable contains the result vector, that could be \Null.
@@ -5642,8 +5629,8 @@ Erases all stored data and releases the memory associated with it. The dictionar
 \returns
 The result is greater than zero if successful, or an error code if an error occurs. 
 \apierrors
-\doerror{BADARG} The vector pointer is \Null.
-\doerror{READONLY} The vector is read only.
+\doerror{BADARG} The dictionary pointer is \Null.
+\doerror{READONLY} The dictionary is read only.
 \example
     Dictionary *Dict;
     int m = iDictionary.Clear(Dict);
@@ -5670,7 +5657,7 @@ A shallow copy of the given dictionary is performed. Only ElementSize bytes will
 
 \apierrors
 \doerror{NOMEMORY} There is not enough memory to complete the operation.
-\doerror{BADARG} The given vector pointer is \Null.
+\doerror{BADARG} The given dictionary pointer is \Null.
 \returns A pointer to a copy of the given dictionary or \Null.
 \example
     Dictionary *newDict,*Old;
@@ -5686,7 +5673,7 @@ Only element size bytes will be copied. If the element contains pointers, only t
 
 \apierrors
 \doerror{NOMEMORY} There is not enough memory to complete the operation.
-\doerror{BADARG} The given vector pointer is \Null.
+\doerror{BADARG} The given dictionary pointer is \Null.
 \returns A positive value for success, zero if the element size of the dictionary is zero, or a negative error code.
 \example
     Dictionary *Dict;
@@ -5747,13 +5734,12 @@ A positive value that indicates that a match was found and the element was remov
 \doerror{BADARG} One or both arguments are \Null.
 
 \example
-    double d = 2.3;
-    Vector *AL;
-    int r = iVector.Erase(AL,&d);
+    Dictionary *dict;
+    int r = iDictionary.Erase(dict,"key");
     if (r > 0)
-        printf("2.3 erased|n");
+        printf("key erased\n");
     else if (r == 0)
-        printf("No element with value 2.3 present\n");
+        printf("No element with key present\n");
     else
         printf("error code %d\n",r);
 \end{verbatim}
@@ -5763,10 +5749,9 @@ A positive value that indicates that a match was found and the element was remov
     int (*Finalize)(Dictionary *dict);
 \end{verbatim}
 \apidescription
-Reclaims all memory used by the dictionary, including the array header object itself.
+Reclaims all memory used by the dictionary, including the dictionary header object itself. Memory is reclaimed even if the dictionary is marked read-only.
 \apierrors
 \doerror{BADARG} The given pointer is \Null.
-\doerror{READONLY} The dictionary is read-only. No modifications allowed.
 \returns
 A positive value means the operation completed. A negative error code indicates failure.
 \example
@@ -5813,7 +5798,7 @@ void *(*GetElement)(Dictionary *Dict,const char *key);
 Returns a pointer to the element at the given index, or \Null if the operation failed.  This function will return \Null if the dictionary is read only.
 \apierrors
 \doerror{BADARG}    The given dictionary pointer or the key are \Null.
-\doerror{READONLY}    The array is read only.
+\doerror{READONLY}    The dictionary is read only.
 \example
     Dictionary *Dict;
     double *d = iDictionary.GetElement(Dict,"Index");
@@ -5905,7 +5890,7 @@ Inserts the new key and its corresponding data into the given dictionary. If the
 behavior of \texttt{Add} that will replace an existing key.
 \apierrors
 \doerror{BADARG} Any of the given pointers is \Null.
-\doerror{READONLY}    The array is read only.
+\doerror{READONLY}    The dictionary is read only.
 \doerror{NOMEMORY} Not enough memory to complete the operation.
 \returns A positive value if the key was inserted, zero if the key was already present, or a negative error code.
 %--------------------------------------------------------------------------------------------------------------------------
@@ -5920,9 +5905,9 @@ used.
 \doerror{BADARG} The given stream pointer is \Null.
 \doerror{NOMEMORY} There is not enough memory to complete the operation.
 \returns
-A new dictionary or \Null if the operation could not be completed. Note that the function pointers in the array are NOT saved, nor any special allocator 
+A new dictionary or \Null if the operation could not be completed. Note that the function pointers in the dictionary are NOT saved, nor any special allocator 
 that was in the original dictionary. Those values will be the values by default. To rebuild the original state the user should replace the pointers 
-again in the new array.
+again in the new dictionary.
 
 \api{NewIterator}
     Iterator *(*NewIterator)(Dictionary *Dict);
@@ -5960,19 +5945,6 @@ size_t (*SetHashFunction)(Dictionary *dict,HashFunction newFn);
 \item If the \verb,newFn, parameter is \Null it returns the hash function used by the given dictionary without modifying it.
 \item Otherwise it sets the hash function in the given dictionary to the new one, returning the value of the old one.
 \end{ShorterItemize}
-
-\api{Size}
-    size_t (*Size)(const Dictionary *Dict);
-\end{verbatim}
-\apidescription
-Returns the number of elements stored in the dictionary or \textsc{SIZE\_MAX} if the dictionary pointer is \Null.
-
-\apierrors
-\doerror{BADARG}    The given array pointer or the key are \Null.
-\example
-    Dictionary *Dict;
-    size_t elem = iDictionary.Size(Dict);
-\end{verbatim}
 
 \api{Save}
 int (*Save)(const Dictionary *D, FILE *out, SaveFunction Fn, void *arg);
@@ -6025,6 +5997,9 @@ The old value of the error function or \Null if there is an error.
 \end{verbatim}
 \apidescription
 Returns the number of elements stored in the dictionary. If the argument is \Null the result is zero.
+\apierrors
+\doerror{BADARG} The dictionary pointer is \Null.
+\returns The number of elements stored in the dictionary, or zero if the argument is \Null.
 \example
     Dictionary *d;
     size_t elem = iDictionary.Size(d);
@@ -6145,26 +6120,27 @@ Apply will call the given function for each element of the array. The first argu
 
 Note that the result of the callback is not used. This allows all kinds of result types to be accepted after a suitable function type cast.
 
-If the dictionary is read-only, a copy of the element will be passed to the callback function.
+If the hash table is read-only, a copy of the element will be passed to the callback function.
 \apierrors
 \doerror{BADARG}  Either the hash table pointer or Applyfn are \Null.
 \doerror{NOMEMORY} The hash table is read-only and there is no more memory to allocate the buffer to copy each element.
 \example
-    static int print(const char *key,
+    static int print(void *key,
+                      size_t klen,
                       void *pElement,
-                      void *pResult)
+                      void *arg)
     {
         double *p = pElement;
-        printf("%s: %g\n",key,*p);
+        printf("%.*s: %g\n",(int)klen,(char *)key,*p);
         return 1;
     }
     int main(void) {
-        Dictionary *dict = iDictionary.Create(sizeof(double),5);
+        HashTable *ht = iHashTable.Create(sizeof(double));
         double d = 2;
-        iDictionary.Add(dict,"First item",&d);
+        iHashTable.Add(ht,"First item",strlen("First item"),&d);
         d = 3;
-        iDictionary.Add(dict,"Second item",&d);
-        iDictionary.Apply(dict,print,NULL);
+        iHashTable.Add(ht,"Second item",strlen("Second item"),&d);
+        iHashTable.Apply(ht,print,NULL);
         return 0;
     }
 Output should be:
@@ -6256,7 +6232,7 @@ Reads a table previously saved with the Save function from the stream pointed to
 \doerror{BADARG} The given stream pointer is \Null.
 \doerror{NOMEMORY} There is not enough memory to complete the operation.
 \returns
-A new table or \Null if the operation could not be completed. Note that the function pointers in the array are NOT saved in most implementations, nor any special allocator that was in the original table. In most implementations those values will be the values by default. To rebuild the original state the user should replace the pointers again in the new table.
+A new table or \Null if the operation could not be completed. Note that the function pointers in the hash table are NOT saved in most implementations, nor any special allocator that was in the original table. In most implementations those values will be the values by default. To rebuild the original state the user should replace the pointers again in the new table.
 
 \api{Merge}
     HashTable *(*Merge)(Pool *p, 
@@ -6288,7 +6264,7 @@ An argument to pass to the merger function.
     Iterator *(*NewIterator)(HashTable *HT);
 \end{verbatim}
 \apidescription
-Allocates and initializes a new iterator object to iterate this table. The exact sequence of each object returned is implementation defined but it will be the same for the same dictionary with the same number of elements.
+Allocates and initializes a new iterator object to iterate this table. The exact sequence of each object returned is implementation defined but it will be the same for the same hash table with the same number of elements.
 \apierrors
 \doerror{BADARG} The parameter is \Null.
 \doerror{NOMEMORY} Not enough memory to complete the operation.
@@ -6346,7 +6322,7 @@ int (*Save)(const HashTable *HT, FILE *out, SaveFunction Fn, void *arg);
 The contents of the given table are saved into the given stream. If the save function pointer is not \Null, it will be used to save the contents of each element and will receive the arg argument passed to Save, together with the output stream. Otherwise a default save function will be used and arg will be ignored.
 The output stream must be opened for writing and must be in binary mode.
 \apierrors
-\doerror{BADARG} The array pointer or the stream pointer are \Null.
+\doerror{BADARG} The hash table pointer or the stream pointer are \Null.
 \par\noindent 
 EOF A disk input/output error occurred.
 
@@ -6820,17 +6796,6 @@ Makes a copy of the given queue.
 \returns 
 A pointer to the new queue or \Null if the operation did not complete.
 %---------------------------------------------------------------------------------------------------------------------------------------
-\api{Create}
-    PQueue  *(*Create)(size_t elementSize);
-\end{verbatim}
-\apidescription
-Creates a new priority queue container using "elementSize" as the size that each element will have.
-\apierrors
-\doerror{BADARG} The elementSize parameter is zero or bigger than what the implementation supports.
-\doerror{NOMEMORY} Not enough memory to complete the operation.
-\returns 
-A pointer to the new container or \Null if the operation did not complete.
-%---------------------------------------------------------------------------------------------------------------------------------------
 \api{Equal}
     int (*Equal)(PQueue * q1, PQueue *q2);
 \end{verbatim}
@@ -6846,10 +6811,9 @@ A positive number if the two queues are equal, zero otherwise.
     int (*Finalize)(PQueue *d);
 \end{verbatim}
 \apidescription
-Reclaims all memory used by the container erasing all elements, if any. Then it destroys the container object itself.
+Reclaims all memory used by the container erasing all elements, if any. Then it destroys the container object itself. Memory is reclaimed even if marked read-only.
 \apierrors
 \doerror{BADARG} The priority queue pointer is \Null.
-\doerror{READONLY} The deque is read-only. No modifications allowed.
 \returns
 A positive number if the operation completed, a negative error code otherwise.
 %---------------------------------------------------------------------------------------------------------------------------------------
@@ -6867,7 +6831,7 @@ The value of the priority associated with the lowest priority element. If the qu
     intptr_t (*Pop)(PQueue *d,void *outbuf);
 \end{verbatim}
 \apidescription
-Copies into the given buffer the element with the lowest priority in the Deque d, then erases the element from the deque.
+Copies into the given buffer the element with the lowest priority in the priority queue d, then erases the element from the priority queue.
 \apierrors
 \doerror{BADARG} Either d or outbuf are \Null.
 \returns
@@ -6904,7 +6868,7 @@ It can return false answers, specifically a false positive meaning
 it can answer "yes, the element is there" when in fact it is not. When it tells you however that the element is \textbf{not} there you can be sure
 it is not in the set. The probability that a false answer occurs can be calculated in function of the size reserved for the bit table: the bigger
 the table, the smaller the probability of a false answer for a fixed number of elements. \footnote{More about bloom filters in:
-http://pages.cs.wisc.edu/~cao/papers/summary-cache/node8.html,\par\noindent and at the NIST: http://xw2k.nist.gov/dads/html/bloomFilter.html\par 
+https://pages.cs.wisc.edu/~cao/papers/summary-cache/node8.html,\par\noindent and at the NIST: https://xlinux.nist.gov/dads/HTML/bloomFilter.html\par 
 The original paper about them was published by Burton Bloom: \textbf{Space/time trade-offs in hash coding with allowable errors.
 Communications of ACM, pages 13(7):422-426, July 1970}.\par 
 The idea behind this data structure is to allocate a vector of m bits, initially all set to 0, and then choose k independent hash functions, $h_1, h_2, 
@@ -7032,7 +6996,7 @@ Applies the given function to each node of the tree. The argument \verb,arg, wil
 \apidescription
 Erases all stored data and releases the memory associated with it. The suffix tree header will not be destroyed, and its contents will be the same as when it was initially created. 
 \apierrors
-\doerror{BADARG} The list pointer is \Null.
+\doerror{BADARG} The suffix tree pointer is \Null.
 \returns
 The result is greater than zero if successful, or an error code if an error occurs. 
 \api{Create}
@@ -7045,8 +7009,8 @@ Creates a suffix tree for the given text. The current allocator is used for memo
 \doerror{NOMEMORY} Insufficient memory to create the object.
 \returns
 A pointer to the new suffix tree or \Null if an error occurs.
-\api{CreateWith Allocator}
- SuffixTree *(*Create)(char *text, ContainerAllocator *allocator);
+\api{CreateWithAllocator}
+ SuffixTree *(*CreateWithAllocator)(char *text, ContainerAllocator *allocator);
 \end{verbatim}
 \apidescription
 Creates a suffix tree for the given text using the given allocator object to allocate memory.
@@ -7059,7 +7023,7 @@ A pointer to the new suffix tree or \Null if an error occurs.
     int (*Finalize)(SuffixTree *tree);
 \end{verbatim}
 \apidescription
-Reclaims all memory used by the suffix tree, including the list header object itself.
+Reclaims all memory used by the suffix tree, including the suffix tree header object itself.
 \apierrors
 \doerror{BADARG} The given suffix tree pointer is \Null.
 \returns
@@ -7466,7 +7430,7 @@ as implemented by Theodore C. Belding
 \footnote{
 University of Michigan Center for the Study of Complex Systems\par
 \texttt{$<$mailto:Ted.Belding@umich.edu$>$}\par
-\texttt{http://www-personal.umich.edu/\textasciitilde streak}\par
+\texttt{https://web.archive.org/web/20060910165039/http://www-personal.umich.edu/\textasciitilde streak/}\par
 }
 In the documentation of its software, Mr Belding writes:
 \begin{quotation}
@@ -8108,7 +8072,7 @@ implementations are available in the net. The same situation applies for Java.
 \item The C++ STL doesn't provide circular buffers directly but the \texttt{boost} C++ library does provide an implementation. See:
 \par
 {\small
-http://www.boost.org/doc/libs/1\_48\_0/libs/circular\_buffer/doc/circular\_buffer.html}
+https://www.boost.org/doc/libs/release/libs/circular\_buffer/doc/circular\_buffer.html}
 \par
 In the usual simplicity of that language, the class has around 60 entry points, including specialized templates for some functions. Around 14 auxiliary 
 types are involved and the documentation for this component goes for around 50 pages. That is the exact opposite of this proposal.
@@ -8493,7 +8457,7 @@ typedef struct tagGenericContainerInterface {
                 SaveFunction saveFn,void *arg);
     GenericContainer *(*Load)(FILE *stream, 
                               ReadFunction readFn,void *arg);
-    size_t GetElementSize(GenericContainer *Gen);
+    size_t (*GetElementSize)(const GenericContainer *Gen);
 } GenericContainerInterface;
 extern GenericContainerInterface iGenericContainer;
 \end{verbatim}
@@ -8529,7 +8493,7 @@ These containers include all the functions of the GenericContainer interfaces an
 typedef struct AssociativeContainer AssociativeContainer;
 typedef struct tagAssociativeContainerInterface {
     GenericContainerInterface Generic;
-    int (*Add)(SequentialContainer *SC,void *key,void *Element);
+    int (*Add)(AssociativeContainer *SC,void *key,void *Element);
     void *(*GetElement)(AssociativeContainer *SC,void *Key);
     int (*Replace)(AssociativeContainer *SC, void *Key, void *element);
 } AssociativeContainerInterface;
@@ -8636,10 +8600,10 @@ $value=(index+5)/(index-5)$ is not usable since it would provoke a division by z
 
 Infinite arrays exist in many computer languages.
 \begin{ShorterItemize}
-\item In APL they were proposed by McDonnel and Shallit in their paper "Extending APL to Infinity" \footnote{http://www.jsoftware.com/papers/eem/infinity.htm}.
+\item In APL they were proposed by McDonnel and Shallit in their paper "Extending APL to Infinity" \footnote{https://www.jsoftware.com/papers/eem/infinity.htm}.
 \item Common lisp has the "Series" construct that is similar to infinite arrays.
 \item The Translucid computer language features each variable as an infinite array of all its values
-\footnote{http://cartesianprogramming.com/2012/05/22/programming-with-infinite-arrays-factorial/}
+\footnote{https://web.archive.org/web/20160413000624/http://cartesianprogramming.com/2012/05/22/programming-with-infinite-arrays-factorial/}
 \end{ShorterItemize}
 
 Since in the C language arrays must contain elements of the same type, obvious restrictions apply: all C types have specific bounds (defined in the
@@ -9131,8 +9095,7 @@ Note that there are two important statements \textbf{missing} from the program a
 The objective of the sample implementation is to serve as a guide for the implementors of this proposal. It is not the fastest implementation and it is not the most efficient or compact one. As any other software, it contains bugs, that I hope to iron out with time.
 
 Please note that all the decisions done for the sample implementation are \textbf{not} part of the specifications of the containers library. Other
-implementations could do completely different things\footnote{The full source code of the sample implementation can be downloaded from
-the project's home page  \Verb,http://code.google.com/p/ccl/,. There you can find also the source code of this documentation. }.
+implementations could do completely different things\footnote{The source code of CCL is maintained as a Git repository and built via CMake (\texttt{cmake -S . -B build -DBUILD\_TESTING=ON; cmake -{}-build build}). The documentation sources reside in \texttt{texdoc/}.}.
 \section{The different source files}
 
 The sample implementation has two types of files:
@@ -9322,6 +9285,8 @@ typedef struct _ListElement {
 \end{verbatim}
 
 This assumes that \verb,sizeof(void *), is 4. 
+
+More generally, on 32-bit architectures where 8-byte types (\texttt{double}, \texttt{int64\_t}) require 8-byte alignment, placing payload data immediately after a 4-byte pointer without padding can cause unaligned access faults or performance penalties. In standard C11, using \texttt{alignas(max\_align\_t)} or dynamically aligning node allocations via \texttt{offsetof(ListElement, Data)} guarantees correct alignment portably across all architectures.
 
 In machines that handle unaligned data gracefully without crashing alignment requirements aren't useless, since in most cases they 
 provoke a performance loss.
@@ -9629,7 +9594,8 @@ event.
 static int AddRange(List * AL,size_t n, void *data)
 {
     unsigned char *p; 
-    list_element *oldLast;
+    list_element *oldLast, *oldFirst;
+    size_t original_n;
     
     if (AL == NULL) return NullPtrError("AddRange");
     if (AL->Flags & CONTAINER_READONLY) {
@@ -9641,23 +9607,23 @@ static int AddRange(List * AL,size_t n, void *data)
         AL->RaiseError("iList.AddRange",CONTAINER_ERROR_BADARG);
         return CONTAINER_ERROR_BADARG;
     }   
+    original_n = n;
+    oldFirst = AL->First;
     p = data;
     oldLast = AL->Last;
     while (n > 0) {
         int r = Add_nd(AL,p);
         if (r < 0) {
-            AL->Last = oldLast;
-            if (AL->Last) {
-                list_element *removed = oldLast->Next;
-                while (removed) {
-                    list_element *tmp = removed->Next;
-                    if (AL->Heap) 
-                        iHeap.FreeObject(AL->Heap,removed);
-                    else    AL->Allocator->free(removed);
-                    removed = tmp;
-                }   
-                AL->Last->Next = NULL;
+            list_element *removed = oldLast ? oldLast->Next : AL->First;
+            while (removed) {
+                list_element *tmp = removed->Next;
+                FreeListNode(AL, removed);
+                removed = tmp;
             }   
+            AL->First = oldFirst;
+            AL->Last = oldLast;
+            if (AL->Last)
+                AL->Last->Next = NULL;
             return r;
         }   
         p += AL->ElementSize; /* Point to the next element */
@@ -9665,7 +9631,7 @@ static int AddRange(List * AL,size_t n, void *data)
     }           
     AL->timestamp++;
     if (AL->Flags & CONTAINER_HAS_OBSERVER)
-        iObserver.Notify(AL,CCL_ADDRANGE,data,(void *)n);
+        iObserver.Notify(AL,CCL_ADDRANGE,data,(void *)original_n);
     return 1;
 }
 \end{Verbatim}
@@ -9802,7 +9768,7 @@ static int Clear_nd(List *l)
             tmp = rvp;
             rvp = rvp->Next;
                         if (l->DestructorFn)
-                                l->DestructorFn(tmp);
+                                l->DestructorFn(tmp->Data);
             l->Allocator->free(tmp);
         }
     }
@@ -10038,6 +10004,8 @@ static int Equal(List *l1,List *l2)
 \end{Verbatim}
 If two null pointers are passed to the \texttt{Equal} function it returns true. This is a design decision: \texttt{Equal} doesn't have any error result. Either the two objects are equal or not.
 
+Note that although the normative specification in Chapter 5 indicates that lists differing in flags or other characteristics compare unequal, this implementation checks element count, element size, and element values; checking \verb,l1->Flags == l2->Flags, and \verb,l1->VTable == l2->VTable, can be included if strict configuration equality is required.
+
 A redundant test is done at the end of the function: if the lists have the same count and all elements are equal, link1 and link2 should be \Null. If they aren't that means there is a memory overwrite problem somewhere...
 \function{Erase}
 static int Erase(List *l,void *elem)
@@ -10233,10 +10201,18 @@ static List *GetRange(List *l,size_t start,size_t end)
 {
     size_t counter;
     List *result;
-    list_element *rvp;;
+    list_element *rvp;
 
+    if (l == NULL) {
+        NullPtrError("GetRange");
+        return NULL;
+    }
     result = iList.Create(l->ElementSize);
+    if (result == NULL)
+        return NULL;
     result->VTable = l->VTable;
+    result->Compare = l->Compare;
+    result->RaiseError = l->RaiseError;
     if (l->count == 0)
         return result;
     if (end >= l->count)
@@ -10623,12 +10599,16 @@ static int ReplaceAt(List *l,size_t position,void *data)
             position--;
         }
     }
-    memcpy(&rvp->Data , data,l->ElementSize);
+    if (data == rvp->Data)
+        return 1;
+    if (l->DestructorFn)
+        l->DestructorFn(rvp->Data);
+    memcpy(&rvp->Data, data, l->ElementSize);
     l->timestamp++;
     return 1;
 }
 \end{Verbatim}
-After error checking (not shown), position the cursor at the right item, then copy from the given data pointer the element size bytes needed.
+After error checking (not shown), position the cursor at the right item. If the data pointer is not identical to the current data (avoiding self-aliasing), any destructor function is invoked for the old element before copying \verb,ElementSize, bytes of new data with \verb,memcpy,.
 
 An open issue is whether the "timestamp" field should be changed. Nothing in the list structure has been changed, only the data stored in the container. Any iterators will go on working as advertised even if this function is called to replace many items in the list. In the other hand, if  user programs were making assumptions about the data (for instance a search function doesn't always look again at past items to see if they have been changed) this could bad consequences. As a rule, any change will provoke the incrementing of the "timestamp" counter.
 \function{Reverse}
@@ -10804,19 +10784,22 @@ This function returns the old value of the comparison function and sets it to th
 In C there isn't any such hand holding and you have to write that code yourself. There are several other functions in the same style like \texttt{SetErrorFunction}, \texttt{Size} (that returns the \texttt{count} field) and \texttt{SetFlags}. They aren't listed here but you can look at the code by browsing through the list.c file distributed
 with this software.
 \function{Sizeof}
-static size_t Sizeof(List *l)
+static size_t Sizeof(const List *l)
 {
+    size_t nodeSize;
+
     if (l == NULL) {
         return sizeof(List);
     }
-
-    return sizeof(List) + 
-           l->ElementSize * l->count + 
-           l->count *sizeof(list_element);
+    nodeSize = offsetof(ListElement, Data) + l->ElementSize;
+    if (l->ElementSize > SIZE_MAX - offsetof(ListElement, Data) ||
+        l->count > (SIZE_MAX - sizeof(List)) / nodeSize)
+        return 0;
+    return sizeof(List) + nodeSize * l->count;
 }
 \end{Verbatim}
 Returns the number of bytes used by the given list, including the data, and all overhead. For lists, this is the size of the header object, and for 
-each element the overhead of a pointer to the next element and the size of each stored object. With a \Null list pointer returns the size of the list 
+each element the overhead computed via \texttt{offsetof(ListElement, Data)} plus the element size (checked against integer overflow). With a \Null list pointer returns the size of the list 
 header object, what allows you to allocate buffers containing a header object and use the \texttt{Init} function.
 \function{Sort}
 static int Sort(List *l)
@@ -10922,57 +10905,32 @@ if we didn't maintain a "count" field\footnote{This is an exception however, mos
 return a pre calculated field instead of going through all elements of the list each time we need to know that count. Besides we need to 
 set the pointer to the last element, so we would need to count anyway.}.
 In lines 27-31 we set the correct fields in the new list, decrease the "count" field in the source list by the number of elements in the new list,
-and we note the fact that the input list has been modified in line 31.
-\function{RotateLeft}
-  1 static int RotateLeft(List * l, size_t n)
-  2 {
-  3     ListElement    *rvp, *oldStart, *last = NULL;
-  4     if (l == NULL)
-  5         return NullPtrError("RotateLeft");
-  6     if (l->Flags & CONTAINER_READONLY)
-  7         return ErrorReadOnly(l, "RotateLeft");
-  8     if (l->count < 2 || n == 0)
-  9         return 0;
- 10     n %= l->count;
- 11     if (n == 0)
- 12         return 0;
- 13     rvp = l->First;
- 14     oldStart = rvp;
- 15     while (n > 0) {
- 16         last = rvp;
- 17         rvp = rvp->Next;
- 18         n--;
- 19     }
- 20     l->First = rvp;
- 21     last->Next = NULL;
- 22     l->Last->Next = oldStart;
- 23     l->Last = last;
- 24     return 1;
- 25 }
-\end{Verbatim}
-
-Rotating a list is very simple: Cut the list at the desired place, and append the list elements from the start up to the cut point at the 
-end of the list. 
-
-After the error checking is done (lines 3-12) we start
-a first loop where we find the place to cut: lines 15-19.
-Then, we cut (set the previous element's \verb,Next, pointer to\Null in line 21) and append the
-elements we cut to the end of the list, updating the list's header.
-
 \function{UseHeap}
-static int UseHeap(List *L, ContainerAllocator *m)
+static int UseHeap(List *L, const ContainerAllocator *m)
 {
+    size_t nodeSize;
+
     if (L == NULL) {
-        iError.RaiseError("iList.UseHeap",CONTAINER_ERROR_BADARG);
-        return CONTAINER_ERROR_BADARG;
+        return NullPtrError("UseHeap");
     }
     if (L->Heap || L->count) {
-        L->RaiseError("UseHeap",CONTAINER_ERROR_NOT_EMPTY);
+        L->RaiseError("UseHeap", CONTAINER_ERROR_NOT_EMPTY);
         return CONTAINER_ERROR_NOT_EMPTY;
     }
     if (m == NULL)
-        m = CurrentAllocator;
-    L->Heap = iHeap.Create(L->ElementSize+sizeof(list_element), m);
+        m = L->Allocator;
+    if (m == NULL)
+        return CONTAINER_ERROR_BADARG;
+    nodeSize = offsetof(ListElement, Data) + L->ElementSize;
+    if (L->ElementSize > SIZE_MAX - offsetof(ListElement, Data)) {
+        L->RaiseError("iList.UseHeap", CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
+    }
+    L->Heap = iHeap.Create(roundupTo(nodeSize, sizeof(void *)), m);
+    if (L->Heap == NULL) {
+        L->RaiseError("iList.UseHeap", CONTAINER_ERROR_NOMEMORY);
+        return CONTAINER_ERROR_NOMEMORY;
+    }
     return 1;
 }
 \end{Verbatim}
@@ -10997,8 +10955,8 @@ We do not document here some functions of the queue interface that trivially cal
 static int Back(Queue *Q,void *result)
 {
     size_t idx;
-    if (Q == NULL) {
-        iError.RaiseError("iQueue.Front",CONTAINER_ERROR_BADARG);
+    if (Q == NULL || result == NULL) {
+        iError.RaiseError("iQueue.Back",CONTAINER_ERROR_BADARG);
         return CONTAINER_ERROR_BADARG;
     }
     idx = iList.Size(Q->Items);
@@ -11010,9 +10968,13 @@ static int Back(Queue *Q,void *result)
 Returns the last element of the queue. We do not want to have any errors issued by the underlying list, so we test for \Null. We use the size as an index, except of course when the queue is empty.
 \function{CreateWithAllocator}
 static Queue *CreateWithAllocator(size_t ElementSize,
-                                  ContainerAllocator *allocator)
+                                  const ContainerAllocator *allocator)
 {
-    Queue *result = allocator->malloc(sizeof(Queue));
+    Queue *result;
+
+    if (allocator == NULL)
+        allocator = CurrentAllocator;
+    result = allocator->malloc(sizeof(Queue));
 
     if (result == NULL)
         return NULL;
@@ -11029,9 +10991,14 @@ Using the given allocator, we get memory for the Queue object, then for the list
 \function{Finalize}
 static int Finalize(Queue *Q)
 {
-    ContainerAllocator *allocator = iList.GetAllocator(Q->Items);
+    const ContainerAllocator *allocator;
+
+    if (Q == NULL)
+        return iError.NullPtrError("iQueue.Finalize");
+    allocator = iList.GetAllocator(Q->Items);
     iList.Finalize(Q->Items);
-    allocator->free(Q);
+    if (allocator != NULL && allocator->free != NULL)
+        allocator->free(Q);
     return 1;
 }
 \end{Verbatim}
@@ -11040,7 +11007,7 @@ We should free the queue header object with the same allocator we used for the l
 static int Front(Queue *Q,void *result)
 {
     size_t idx;
-    if (Q == NULL) {
+    if (Q == NULL || result == NULL) {
         iError.RaiseError("iQueue.Front",CONTAINER_ERROR_BADARG);
         return CONTAINER_ERROR_BADARG;
     }
@@ -11052,13 +11019,13 @@ static int Front(Queue *Q,void *result)
 \end{Verbatim}
 Same as \texttt{Back}. We make the error checking to avoid errors when accessing the list.
 \function{Sizeof}
-static size_t Sizeof(Queue *q)
+static size_t Sizeof(const Queue *q)
 {
     if (q == NULL) return sizeof(Queue);
     return sizeof(*q) + iList.Sizeof(q->Items);
 }
 \end{Verbatim}
-If passed a \Null queue, we return the size of the Queue header object. Note that we do not return the size of the underlying list even if it has been allocated and uses up space. An alternative design would have required to take into account the list header as it would have been part of the overhead of the Queue object. But in that case we could never know the size of the Queue itself...
+If passed a \Null queue, we return the size of the Queue header object. Note that with a \Null pointer we do not return the size of the underlying list. An alternative design would have required to take into account the list header as it would have been part of the overhead of the Queue object. But in that case we could never know the size of the Queue itself...
 \subsection{The dictionary}
 Dictionary is an instance of a hash table where the key is supposed to contain character strings (names) that are associated with some data. Hash 
 tables are normal tables that are indexed by a hash function, i.e. a function that maps character strings into some integer that is used to index the 
@@ -11075,7 +11042,7 @@ This is the popular `times 33' hash algorithm which is used by perl and that als
    
  The originator may be Dan Bernstein but the code in Berkeley DB cites Chris Torek as the source. The best citation I have found
  is "Chris Torek, Hash function for text in C, Usenet message  $<$27038@mimsy.umd.edu$>$ in comp.lang.c , October, 1990." in Rich
- Salz's USENIX 1992 paper about INN which can be found at  \underline{http://citeseer.nj.nec.com/salz92internetnews.html}.
+ Salz's USENIX 1992 paper about INN which can be found at  \url{https://www.usenix.org/legacy/publications/library/proceedings/sa92/salz.pdf}.
 \par
 
     The magic of number 33, i.e. why it works better than many other constants, prime or not, has never been adequately explained by
@@ -11085,8 +11052,7 @@ This is the popular `times 33' hash algorithm which is used by perl and that als
  table with an average percent of approx. 86\%.
  
    If one compares the $chi^{2}$ 
- values of the variants (see Bob Jenkins ``Hashing FAQ'' at \underline{
- http://burtleburtle.net/bob/hash/hashfaq.html}  for a description  of $chi^{2})$, the number 33 not even has the best value. \par But the
+ values of the variants (see Bob Jenkins ``Hashing FAQ'' at \url{https://burtleburtle.net/bob/hash/hashfaq.html} for a description of $chi^{2})$, the number 33 not even has the best value. \par But the
  number 33 and a few other equally good numbers like 17, 31, 63, 127 and 129 have nevertheless a great advantage to the remaining
  numbers in the large set of possible multipliers: their multiply operation can be replaced by a faster operation based on just one
  shift plus either a single addition or subtraction operation. And  because a hash function has to both distribute good \textsl{and} has to
@@ -11097,7 +11063,7 @@ This is the popular `times 33' hash algorithm which is used by perl and that als
 }                
 \end{quotation}
 Julienne Walker has another twist to this story. She says:\footnote{In the very interesting web page \par\noindent
-http://eternallyconfuzzled.com/tuts/algorithms/jsw\_tut\_hashing.aspx\par\noindent In that page she also proposes to replace the addition operation with an XOR operations. She says that that improves the algorithm.}
+\url{https://web.archive.org/web/20110811054336/http://eternallyconfuzzled.com/tuts/algorithms/jsw_tut_hashing.aspx}\par\noindent In that page she also proposes to replace the addition operation with an XOR operations. She says that that improves the algorithm.}
 \begin{quotation}
 Bernstein hash
 
@@ -11197,7 +11163,7 @@ static int Add(Dictionary *Dict,const unsigned char *Key,void *Value)
         Dict->count++;
     }
     memcpy((void *)p->Value,Value,Dict->ElementSize);
-    return 0;
+    return 1;
 }
 \end{Verbatim}
 Following the logical steps outlined above, we:
@@ -11736,7 +11702,7 @@ the initialization explicitly by their names and not only by their position.}.
 The Makefile builds also the \verb,ccl.html, file, that contains the same text of the documentation but in a form suitable to be displayed by any
 web browser. This task is done by the \verb,tth, program that is built from the \verb,tth.c, source file, an adaptation of the program written by
 Ian Hutchinson\footnote{The \Verb,tth, (\textbf{t}ex \textbf{t}o \textbf{h}tml) source code was modified to accept the \Verb,fancyverb, package
-and a few other details. The original package can be found at\par\noindent \verb,http://hutchinson.belmont.ma.us/tth/tth-noncom/download.html,.}.
+and a few other details. The original package can be found at CTAN at\par\noindent \verb,https://www.ctan.org/pkg/tth,.}.
 %---------------------------------------------------------------------------------------------------------------------------------------
 %                                             Templates
 %---------------------------------------------------------------------------------------------------------------------------------------
@@ -11873,7 +11839,7 @@ int main(int argc,char *argv[])
                  i++;
            }
            tmpBuf[j] = 0;
-           if (strrepl(tmpBuf,"$(TYPE)",TypeDefinition,NULL)) {
+           if (strrepl(tmpBuf,"$(TYPE)",TypeDefinition,NULL) >= sizeof(outputFile)) {
                  fprintf(stderr,"File name '%s' too long\n",
                                 tmpBuf);
                  return EXIT_FAILURE;
@@ -11881,12 +11847,12 @@ int main(int argc,char *argv[])
            strrepl(tmpBuf,"$(TYPE)",TypeDefinition,outputFile);
            if (output != NULL)
                fclose(output);
-               output = fopen(outputFile,"w");
-               if (output == NULL) {
-                  fprintf(stderr,
-                         "Impossible to open '%s'\n",outputFile);
-                  return(EXIT_FAILURE);
-               }
+           output = fopen(outputFile,"w");
+           if (output == NULL) {
+              fprintf(stderr,
+                     "Impossible to open '%s'\n",outputFile);
+              return(EXIT_FAILURE);
+           }
             }
             else if (lineno == 1) {
               fprintf(stderr,
@@ -11928,7 +11894,7 @@ int strrepl(const char *InputString, const char *StringToFind,
     if (output) {
         if (output != InputString)
             memmove(output,InputString,strlen(InputString)+1);
-            InputString = output;
+        InputString = output;
     }
     else
        result = strlen(InputString)+1;
@@ -11940,9 +11906,8 @@ int strrepl(const char *InputString, const char *StringToFind,
            break;
        CurrentPointer = (offset + (output ? insertlen : findlen));
        if (output) {
-           strcpy (offset, (offset + findlen));
-           memmove (offset + insertlen,
-                       offset, strlen (offset) + 1);
+           memmove (offset + insertlen, offset + findlen,
+                    strlen (offset + findlen) + 1);
            if (insertlen)
                memcpy (offset, StringToReplace, insertlen);
            result++;
@@ -12088,7 +12053,7 @@ The implementation file receives several other optional parameters.
 
 This expression is used to return -1 for $a < b$, zero for equality and 1 for $a > b$\footnote{The reason for using this expression instead of the simpler $a>b$ is that it is coherent with the other uses of the comparison function in other APIs}. 
 \section{The ccl and the stl}
-Here are some snippets I have developped when c++ programmers ask about the equivalences of some c++ conbstructs.
+Here are some snippets I have developed when C++ programmers ask about the equivalences of some C++ constructs.
 \subsection{Filling an integer table}
 \begin{verbatim}
 > So, what would the following simple three-line function look
@@ -12118,7 +12083,7 @@ The code would look like this:
  12
  13 }
 \end{verbatim}
-You create a table (line 6), then you fill it (line 8 to 10) and then you sort it (line 18).
+You create a table (line 6), then you fill it (lines 8 to 10) and then you sort it (line 11).
 
 A slightly more elaborate version prints the first 5 elements before and after sorting. I could have used iterators but for a small sample printing it is not really necessary. I could have reduced the line count by avoiding empty lines but who cares? The function is just as concise and small as the c++ one.
 \begin{verbatim}
@@ -12197,7 +12162,8 @@ Now the same example using the CCL:
 static int PrintInt(void *pdata,void *extraArgs)
 {
     int i = *(int *)pdata;
-    fprintf(extraArgs,"%d ",i);
+    fprintf((FILE *)extraArgs,"%d ",i);
+    return 1;
 }
 int main(void)
 {
@@ -12214,6 +12180,7 @@ int main(void)
     iList.Add(L,&data);
     iList.Apply(L,PrintInt,stdout);
     iList.Finalize(L);
+    return 0;
 } 
 \end{verbatim}
 \subsection{Sorting text files}
@@ -12325,6 +12292,7 @@ int main(int argc,char *argv[])
     istrCollection.Finalize(text);
     istrCollection.Finalize(Words);
     iDictionary.Finalize(dict);
+    return 0;
 }
 \end{Verbatim}
 \begin{enumerate}

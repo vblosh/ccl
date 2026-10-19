@@ -56,7 +56,7 @@ typedef struct tagBitStringInterface {
          SaveFunction saveFn,void *arg);
    int (*SetCapacity)(BitString *BitStr,size_t newCapacity);
    int (*SetElement)(BitString *bs,size_t position,int b);
-   ErrorFunction *(*SetErrorFunction)(BitString *,ErrorFunction fn);
+   ErrorFunction (*SetErrorFunction)(BitString *,ErrorFunction fn);
    unsigned (*SetFlags)(BitString *BitStr,unsigned flags);
    size_t (*Size)(BitString *BitStr); 
    size_t (*Sizeof)(BitString *b);

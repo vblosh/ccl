@@ -249,15 +249,31 @@ static void doFile(char *name,Iterator *it)
 	strCollection *sc = istrCollection.CreateWithAllocator(50,&iDebugMalloc);
 	do {
 		p = it->GetNext(it);
+		if (p == NULL)
+			break;
 		q = strstr(p,"//");
 		if (q) *q=0;
 		q = strstr(p,"(*");
 		if (q) {
 			Strtrim(p);
 			sprintf(buf,"   %s",p);
+			while (strchr(buf, ';') == NULL && strchr(buf, '}') == NULL) {
+				char *next_line = it->GetNext(it);
+				if (next_line == NULL)
+					break;
+				q = strstr(next_line, "//");
+				if (q) *q = 0;
+				Strtrim(next_line);
+				if (*next_line) {
+					strcat(buf, " ");
+					strcat(buf, next_line);
+				}
+				if (strchr(next_line, '}'))
+					break;
+			}
 			istrCollection.Add(sc,buf);
 		}
-	} while (strchr(p,'}') == 0);
+	} while (p && strchr(p,'}') == 0 && strchr(buf, '}') == 0);
 	istrCollection.SetCompareFunction(sc,comp);
 	EliminateComments(sc);
 	istrCollection.Sort(sc);

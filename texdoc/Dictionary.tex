@@ -2,6 +2,7 @@
 typedef struct tagDictionaryInterface {
    int (*Add)(Dictionary *Dict,const char *key,const void *Data);
    int (*Apply)(Dictionary *Dict,int (*Applyfn)(const char *Key,
+         const void *data,void *arg),void *arg);
    Vector *(*CastToArray)(const Dictionary *);
    int (*Clear)(Dictionary *Dict);
    int (*Contains)(const Dictionary *dict,const char *key);

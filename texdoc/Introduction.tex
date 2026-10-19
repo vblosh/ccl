@@ -1,7 +1,7 @@
 %--------------------------------------------------------------------------------------------------------------------------
 %                                                   INTRODUCTION
 %--------------------------------------------------------------------------------------------------------------------------
-The objective of this proposal is to standardize the usage of common data structures within the context of the C language. The existence of a common standard interface for lists, hash tables, flexible arrays, and other containers has several advantages:
+The objective of this library is to provide standardized, efficient implementations of common data structures within the context of the C and C++ languages. Originally presented to the ISO C standards committee (WG14 N1625) as a proposal for standard container interfaces following C99, CCL is distributed as an open-source, standalone library under the MIT License (WG14 subsequently published C11, C17, and C23 without adopting N1625). The existence of a common standard interface for lists, hash tables, flexible arrays, and other containers has several advantages:
 \begin{itemize}
 \item
 User code remains portable across different projects. In C, we all use the FILE abstraction, for instance. This abstraction allows software to be 
@@ -22,9 +22,7 @@ The portable specifications provide a common framework for library writers and c
 \item
 The language becomes easier to analyze mathematically.
 In their very interesting paper "Precise reasoning for programs using containers", Dillig, Dillig and Aiken
-\footnote{"Precise Reasoning for programs using containers" Isil Dillig, Thomas Dillig, and Alex Aitken, available on line at
-http://www.stanford.edu/\string~isil/popl2011.pdf or at POPL 2011 Proceedings of the 38th annual ACM SIGPLAN-SIGACT symposium on Principles of programming languages
-ACM New York, NY, USA ©2011 } enumerate three main points that make program analysis easier using containers:
+\footnote{"Precise Reasoning for programs using containers" Isil Dillig, Thomas Dillig, and Alex Aiken, POPL 2011 Proceedings of the 38th annual ACM SIGPLAN-SIGACT symposium on Principles of programming languages, ACM New York, NY, USA \copyright 2011, \url{https://doi.org/10.1145/1926385.1926406}.} enumerate three main points that make program analysis easier using containers:
 \begin{enumerate}
 \item Understanding the contents of a container doesn't require understanding the container's implementation
 \item Verifying container implementations requires different techniques and degrees of automation than verifying their clients. Hence, separating
@@ -48,7 +46,7 @@ The interfaces proposed try to present complete packages, i.e. interfaces with a
 This documentation is composed of several parts:
 \begin{enumerate}
 \item An introductory part where the general lines of the library are explained.
-\item A specifications part where each function of the library is fully specified. This is the proposal for the next C standard.
+\item A specifications part where each function of the library is fully specified.
 \item An "examples" part that shows the uses of the library and allows you to have a better idea of how the usage of the library looks like.
 \item An implementation part where the code of the sample implementation is discussed. This is designed as a guide for implementors to give them a basis to start with.
 \end{enumerate}
@@ -246,7 +244,7 @@ defined by the current error function in the container (if any), then by the beh
 The return value of the operation. Normally, negative values are error codes, positive values means success, and zero means non fatal errors, more in the sense of a warning.
 
 \section{Which sections of this document are normative?}
-This document presents the C container Library to the C standardization committee. The following sections are normative:
+This document presents the specification of the C Container Library. The following sections are normative:
 \begin{itemize}
 \item Chapter 4: The auxiliary interfaces. The required interfaces are:
 \begin{ShorterItemize}
@@ -273,9 +271,9 @@ Dlist&iDlist&\Checkmark &\footnotesize{Double linked list}\\
 HashTable&iHashTable&\XSolidBrush &\footnotesize{Associates a key with data.}\\
 List&iList&\Checkmark &\footnotesize{Single linked list.}\\
 Queue&iQueue&\Checkmark &\footnotesize{First in, first out container.}\\
-PQueue&iPriorityQueue&\Checkmark &\footnotesize{Pull out items by priority.}\\
+PQueue&iPQueue&\Checkmark &\footnotesize{Pull out items by priority.}\\
 StreamBuffer&iStreamBuffer&\Checkmark &\footnotesize{Sequence of bytes.}\\
-StringList&iStringList&\Checkmark&\footnotesize{List of character strings.}\\
+StringList&iStringInterface&\Checkmark&\footnotesize{List of character strings (\texttt{iSTRINGLIST}).}\\
 strCollection&istrCollection&\Checkmark &\footnotesize{Array of character strings.}\\
 TreeMap&iTreeMap&\Checkmark &\footnotesize{Tree structure associates key with data.}\\
 Value array&iValArrayXXX&\Checkmark &\footnotesize{Vector of numbers.\footnote{
@@ -291,13 +289,11 @@ WstrCollection&iWstrCollection&\XSolidBrush&\footnotesize{Array of wide characte
 \end{itemize}
 All text in footnotes, tables or drawings is not normative.
 
-The order of the APIs within each interface is implementation defined. In general no assumptions should 
-exist about any specific layout of the interfaces or data structures in the library. In the documentation
-the APIs are listed following the alphabetical order.
+The order of the APIs within this documentation is arranged in alphabetical order for convenience of reference. Note, however, that polymorphic features of CCL (such as casting to \texttt{GenericContainer *}, \texttt{SequentialContainer *}, or \texttt{AssociativeContainer *}, as well as observer notifications) require strict binary vtable prefix and header layout compatibility across all participating containers.
 
-The code of the sample implementation can be obtained from:
-
-\noindent\verb,http://code.google.com/p/ccl/,
-
-Go to Downloads and there you will find the documentation (this document) and the source code in the form of a \verb,ccl.zip, file.
-\index{Download!source} See also the chapter about the sample implementation in this document.
+The CCL library is distributed under the MIT License and built using CMake:
+\begin{verbatim}
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build
+\end{verbatim}
+User applications link against the \texttt{ccl} CMake target (\texttt{libccl.a} on POSIX, \texttt{ccl.lib} on Windows) and include the public header \texttt{<containers.h>}. See also the chapter about the sample implementation in this document.

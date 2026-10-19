@@ -4,6 +4,7 @@ typedef struct tagStreamBufferInterface {
    StreamBuffer *(*Create)(size_t startsize);
    StreamBuffer *(*CreateFromFile)(const char *FileName);
    StreamBuffer *(*CreateWithAllocator)(size_t startsize,
+                  const ContainerAllocator *allocator);
    int (*Finalize)(StreamBuffer *b);
    char *(*GetData)(const StreamBuffer *b);
    size_t (*GetPosition)(const StreamBuffer *b);

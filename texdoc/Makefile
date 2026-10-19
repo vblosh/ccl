@@ -6,6 +6,8 @@ PNGS = AuxiliaryInterfaces.png DListVocabulary.png Pool.png bitstrings.png \
 ROOT := ..
 BUILD_DIR ?= $(ROOT)/build
 CCL_LIBRARY ?= $(BUILD_DIR)/lib/libccl.a
+DOC_DIR ?= $(ROOT)/doc
+DOC_PDF ?= $(DOC_DIR)/ccl.pdf
 TEX_SOURCES := $(filter-out table.tex,$(wildcard *.tex))
 
 CC ?= cc
@@ -15,7 +17,11 @@ MAKEINDEX ?= makeindex
 
 .PHONY: all clean html zip
 
-all: ccl.pdf
+all: $(DOC_PDF)
+
+$(DOC_PDF): ccl.pdf
+	mkdir -p $(DOC_DIR)
+	cp -f $< $@
 
 ccl.pdf: $(TEX_SOURCES) table.tex $(PNGS) $(ROOT)/include/containers.h \
 	$(ROOT)/include/range.h
@@ -24,6 +30,8 @@ ccl.pdf: $(TEX_SOURCES) table.tex $(PNGS) $(ROOT)/include/containers.h \
 	$(PDFLATEX) -interaction=nonstopmode -halt-on-error ccl.tex
 	$(PDFLATEX) -interaction=nonstopmode -halt-on-error ccl.tex
 	$(PDFLATEX) -interaction=nonstopmode -halt-on-error ccl.tex
+	mkdir -p $(DOC_DIR)
+	cp -f $@ $(DOC_PDF)
 
 table.tex: dotable $(ROOT)/include/containers.h \
 	$(ROOT)/include/valarraygen.h $(ROOT)/include/stringlistgen.h
@@ -33,8 +41,17 @@ $(CCL_LIBRARY):
 	$(CMAKE) -S $(ROOT) -B $(BUILD_DIR) -DBUILD_TESTING=OFF
 	$(CMAKE) --build $(BUILD_DIR) --target ccl
 
+HAS_ASAN := $(shell nm $(CCL_LIBRARY) 2>/dev/null | grep -q __asan && echo yes)
+ifeq ($(HAS_ASAN),yes)
+  CFLAGS += -fsanitize=address,undefined
+endif
+HAS_GCOV := $(shell nm $(CCL_LIBRARY) 2>/dev/null | grep -q __gcov && echo yes)
+ifeq ($(HAS_GCOV),yes)
+  CFLAGS += --coverage
+endif
+
 dotable: dotable.c $(CCL_LIBRARY)
-	$(CC) -g -o $@ -I$(ROOT)/include dotable.c $(CCL_LIBRARY)
+	$(CC) $(CFLAGS) -g -o $@ -I$(ROOT)/include dotable.c $(CCL_LIBRARY)
 
 html: ccl.html
 
@@ -46,7 +63,8 @@ tth: tth.c
 
 clean:
 	rm -f table.tex ccl.pdf ccl.html dotable tth ccldoc.zip \
-		ccl.aux ccl.idx ccl.ilg ccl.ind ccl.log ccl.out ccl.toc
+		ccl.aux ccl.idx ccl.ilg ccl.ind ccl.log ccl.out ccl.toc \
+		*.gcda *.gcno
 
 zip: ccl.pdf
 	zip -9 ccldoc.zip dotable.c ccl.tex Range.tex tth.c ccl.pdf \
